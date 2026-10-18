@@ -1,0 +1,26 @@
+[project]
+name = "complexui-backend"
+version = "0.1.0"
+description = "ComplexUI backend: visual, code-first node graph IDE for Machine Learning"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.144.0",
+    "httpx2>=2.13.1",
+    "numpy>=2.5.4",
+    "packaging>=26.3",
+    "polars>=2.0.0",
+    "pydantic>=2.14.1",
+    "scikit-learn>=1.9.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "pytest>=9.1.1",
+]
