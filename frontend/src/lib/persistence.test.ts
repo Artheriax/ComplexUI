@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { startWorkflowAutosave } from "../hooks/useWorkflowAutosave";
@@ -5,6 +6,9 @@ import { useGraphStore } from "../store/useGraphStore";
 import type { AppEdge, AppNode, NodeSchema } from "../types/graph";
 import {
   AUTOSAVE_DELAY_MS,
+  MAX_NODE_CODE_CHARS,
+  MAX_WORKFLOW_NODES,
+  STORAGE_KEY,
   clearLocalWorkflow,
   loadLocalWorkflow,
   parseWorkflowJson,
@@ -83,6 +87,76 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
       ),
     ).toThrow("endpoints/handles");
   });
+
+  it("rejects duplicate ids and oversized documents", () => {
+    const node = {
+      id: "a",
+      label: "A",
+      position: { x: 0, y: 0 },
+      code: "x = 1\n",
+      widgetValues: {},
+      templateName: null,
+    };
+    expect(() =>
+      parseWorkflowJson(
+        JSON.stringify({
+          version: 1,
+          nodes: [node, { ...node }],
+          edges: [],
+        }),
+      ),
+    ).toThrow("duplicate node id");
+
+    const edge = {
+      id: "e1",
+      source: "a",
+      sourceHandle: "x",
+      target: "b",
+      targetHandle: "x",
+    };
+    expect(() =>
+      parseWorkflowJson(
+        JSON.stringify({
+          version: 1,
+          nodes: [node, { ...node, id: "b" }],
+          edges: [edge, { ...edge }],
+        }),
+      ),
+    ).toThrow("duplicate edge id");
+
+    expect(() =>
+      parseWorkflowJson(
+        JSON.stringify({
+          version: 1,
+          nodes: [{ ...node, code: "x".repeat(MAX_NODE_CODE_CHARS + 1) }],
+          edges: [],
+        }),
+      ),
+    ).toThrow("character code limit");
+
+    expect(() =>
+      parseWorkflowJson(
+        JSON.stringify({
+          version: 1,
+          nodes: Array.from({ length: MAX_WORKFLOW_NODES + 1 }, (_, index) => ({
+            ...node,
+            id: `n${index}`,
+          })),
+          edges: [],
+        }),
+      ),
+    ).toThrow("too many nodes");
+
+    expect(() =>
+      parseWorkflowJson(
+        JSON.stringify({
+          version: 1,
+          nodes: [node, { ...node, id: "b" }],
+          edges: [{ ...edge, sourceHandle: "" }],
+        }),
+      ),
+    ).toThrow("endpoints/handles must be");
+  });
 });
 
 describe("local workflow storage", () => {
@@ -101,6 +175,13 @@ describe("local workflow storage", () => {
 
     clearLocalWorkflow();
     expect(loadLocalWorkflow()).toBeNull();
+  });
+
+  it("discards corrupt autosave payloads", () => {
+    localStorage.setItem(STORAGE_KEY, "{not json");
+
+    expect(loadLocalWorkflow()).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 });
 

@@ -68,10 +68,10 @@ class FakeTensor:
         self.dtype = dtype
         self.device = device
 
-    def detach(self) -> "FakeTensor":
+    def detach(self) -> FakeTensor:
         return self
 
-    def reshape(self, *_shape: int) -> "FakeTensor":
+    def reshape(self, *_shape: int) -> FakeTensor:
         return self
 
     def __getitem__(self, item: Any) -> Any:

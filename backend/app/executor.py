@@ -7,7 +7,9 @@ optional sink, and caches each node's outputs keyed by
 ``sha256(node.code + json(widget_values) + "".join(upstream_hashes))``
 
 so that re-running a graph only re-executes nodes whose code, widget values,
-or transitive upstream state actually changed.
+or transitive upstream state actually changed. ``MAX_CACHE_ENTRIES`` bounds the
+number of retained intermediates, and ``MAX_CACHE_BYTES`` separately bounds
+cached rich-output payloads such as base64 images and Plotly figures.
 """
 
 from __future__ import annotations
@@ -17,10 +19,10 @@ import json
 import re
 import time
 import traceback
-from collections import deque
-from collections.abc import Sequence
+from collections import OrderedDict, deque
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 
@@ -29,14 +31,17 @@ from .env_manager import (
     install_dependencies,
     missing_dependencies,
 )
+from .output_capture import OutputCapture, rich_output_size
 from .schemas import (
     EventType,
     ExecutionEvent,
     GraphEdge,
     GraphNode,
     NodeSchema,
+    RichOutput,
     SocketType,
     WorkflowGraph,
+    serialize_rich_outputs,
 )
 from .security import SecurityRegistry, UntrustedNodeError, code_hash, get_security_registry
 from .transpiler import TranspileError, parse_node, transpile_node
@@ -49,6 +54,8 @@ __all__ = [
     "GraphError",
     "GraphPlan",
     "GraphValidationError",
+    "MAX_CACHE_BYTES",
+    "MAX_CACHE_ENTRIES",
     "NodeExecutionError",
     "build_output_preview",
     "clear_cache",
@@ -59,12 +66,27 @@ __all__ = [
 
 EventSink = Callable[[ExecutionEvent], None]
 
-_CACHE: dict[str, tuple[str, tuple[Any, ...]]] = {}
+MAX_CACHE_ENTRIES = 64
+MAX_CACHE_BYTES = 32 * 1024 * 1024
+
+
+@dataclass(slots=True)
+class _CacheEntry:
+    state_hash: str
+    outputs: tuple[Any, ...]
+    rich_outputs: tuple[RichOutput, ...]
+    size: int
+
+
+_CACHE: OrderedDict[str, _CacheEntry] = OrderedDict()
+_CACHE_BYTES = 0
 
 
 def clear_cache() -> None:
     """Drop all cached node outputs."""
+    global _CACHE_BYTES
     _CACHE.clear()
+    _CACHE_BYTES = 0
 
 
 class GraphError(Exception):
@@ -112,6 +134,7 @@ class ExecutionResult:
     outputs: dict[str, tuple[Any, ...]] = field(default_factory=dict)
     outputs_by_name: dict[str, dict[str, Any]] = field(default_factory=dict)
     previews: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rich_outputs: dict[str, list[RichOutput]] = field(default_factory=dict)
     cached: dict[str, bool] = field(default_factory=dict)
 
 
@@ -132,23 +155,33 @@ def validate_graph(
 
     Returns the topological order, per-node schemas, and the ``(node_id,
     code_hash)`` pairs of nodes whose code is neither an official template nor
-    approved for this session. When ``targets`` is given, the plan is scoped to
-    those nodes and their ancestors (run-to-node), including the trust check.
+    approved for this session. When ``targets`` is given, parsing, wiring,
+    cycle detection and the trust check are all scoped to those nodes and their
+    ancestors (run-to-node); unrelated nodes and edges are ignored.
     """
     registry = security if security is not None else get_security_registry()
     nodes_by_id = _index_nodes(graph)
-    order = _topological_order(nodes_by_id, graph.edges)
     allowed = _scope_to_targets(nodes_by_id, graph.edges, targets)
-    if allowed is not None:
-        order = [node_id for node_id in order if node_id in allowed]
-    schemas = _plan(graph)
+    nodes, edges = _scoped_graph(graph, allowed)
+    order = _topological_order({node.id: node for node in nodes}, edges)
+    schemas = _plan(nodes, edges)
     untrusted = [
         (node.id, code_hash(node.code))
-        for node in graph.nodes
-        if (allowed is None or node.id in allowed)
-        and not registry.is_trusted(node.id, node.code)
+        for node in nodes
+        if not registry.is_trusted(node.id, node.code)
     ]
     return GraphPlan(order=order, schemas=schemas, untrusted=untrusted)
+
+
+def _scoped_graph(
+    graph: WorkflowGraph, allowed: set[str] | None
+) -> tuple[list[GraphNode], list[GraphEdge]]:
+    """Return the nodes and edges in scope (everything when ``allowed`` is None)."""
+    if allowed is None:
+        return list(graph.nodes), list(graph.edges)
+    nodes = [node for node in graph.nodes if node.id in allowed]
+    edges = [edge for edge in graph.edges if edge.target_node_id in allowed]
+    return nodes, edges
 
 
 def _scope_to_targets(
@@ -156,7 +189,11 @@ def _scope_to_targets(
     edges: Sequence[GraphEdge],
     targets: Sequence[str] | None,
 ) -> set[str] | None:
-    """Return the target nodes plus all their ancestors (None = whole graph)."""
+    """Return the target nodes plus all their ancestors (None = whole graph).
+
+    Edges whose target is not a known node are skipped here; topological
+    validation reports them once the relevant edge is in scope.
+    """
     if targets is None:
         return None
     target_list = list(targets)
@@ -169,7 +206,8 @@ def _scope_to_targets(
         )
     incoming: dict[str, list[str]] = {node_id: [] for node_id in nodes_by_id}
     for edge in edges:
-        incoming[edge.target_node_id].append(edge.source_node_id)
+        if edge.target_node_id in incoming:
+            incoming[edge.target_node_id].append(edge.source_node_id)
     allowed: set[str] = set(target_list)
     queue: deque[str] = deque(target_list)
     while queue:
@@ -188,6 +226,7 @@ def execute_graph(
     allow_installs: bool = True,
     should_stop: Callable[[], bool] | None = None,
     targets: Sequence[str] | None = None,
+    plan: GraphPlan | None = None,
 ) -> ExecutionResult:
     """Execute a workflow graph and return per-node outputs and previews.
 
@@ -195,6 +234,10 @@ def execute_graph(
     :class:`ExecutionCancelled` is raised before the next node starts (outputs
     of already-completed nodes remain cached and are reused on re-run).
     ``targets`` scopes execution to the given nodes and their ancestors.
+
+    ``plan`` may carry a pre-flight :class:`GraphPlan` from
+    :func:`validate_graph`; when supplied it defines the run scope, avoids
+    re-parsing every node, and ``targets`` is ignored.
 
     Raises:
         GraphValidationError: malformed graph (bad references, missing wiring).
@@ -209,17 +252,15 @@ def execute_graph(
     """
     sink: EventSink = emit if emit is not None else _noop
     registry = security if security is not None else get_security_registry()
+    if plan is None:
+        plan = validate_graph(graph, security=registry, targets=targets)
     nodes_by_id = _index_nodes(graph)
-    order = _topological_order(nodes_by_id, graph.edges)
-    allowed = _scope_to_targets(nodes_by_id, graph.edges, targets)
-    if allowed is not None:
-        order = [node_id for node_id in order if node_id in allowed]
-    schemas = _plan(graph)
-    incoming: dict[str, dict[str, GraphEdge]] = {
-        node_id: {} for node_id in nodes_by_id
-    }
+    order = plan.order
+    schemas = plan.schemas
+    incoming: dict[str, dict[str, GraphEdge]] = {node_id: {} for node_id in order}
     for edge in graph.edges:
-        incoming[edge.target_node_id][edge.target_handle] = edge
+        if edge.target_node_id in incoming:
+            incoming[edge.target_node_id][edge.target_handle] = edge
 
     result = ExecutionResult()
     state_hashes: dict[str, str] = {}
@@ -237,9 +278,16 @@ def execute_graph(
         if not registry.is_trusted(node_id, node.code):
             raise UntrustedNodeError(node_id, code_hash(node.code))
 
-        cached_entry = _CACHE.get(node_id)
-        if cached_entry is not None and cached_entry[0] == state_hash:
-            _record_outputs(result, node_id, schema, cached_entry[1], cached=True)
+        cached_entry = _cache_lookup(node_id, state_hash)
+        if cached_entry is not None:
+            _record_outputs(
+                result,
+                node_id,
+                schema,
+                cached_entry.outputs,
+                cached_entry.rich_outputs,
+                cached=True,
+            )
             state_hashes[node_id] = state_hash
             sink(
                 ExecutionEvent(
@@ -248,6 +296,9 @@ def execute_graph(
                     data={
                         "cached": True,
                         "outputs": result.previews[node_id],
+                        "rich_outputs": serialize_rich_outputs(
+                            result.rich_outputs[node_id]
+                        ),
                         "duration_ms": 0.0,
                     },
                 )
@@ -257,10 +308,12 @@ def execute_graph(
         missing = missing_dependencies(schema.dependencies)
         if missing:
             if not allow_installs:
-                raise DependencyInstallError(
+                error = DependencyInstallError(
                     f"Node '{node_id}' requires missing dependencies: "
                     f"{', '.join(missing)}"
                 )
+                _emit_dependency_error(sink, node_id, error)
+                raise error
             sink(
                 ExecutionEvent(
                     type=EventType.INSTALLING_DEPS,
@@ -268,7 +321,19 @@ def execute_graph(
                     data={"dependencies": missing},
                 )
             )
-            install_dependencies(missing)
+            try:
+                install_dependencies(missing, should_stop=should_stop)
+            except DependencyInstallError as exc:
+                if should_stop is not None and should_stop():
+                    raise ExecutionCancelled(
+                        "Execution cancelled during dependency install"
+                    ) from exc
+                _emit_dependency_error(sink, node_id, exc)
+                raise
+            if should_stop is not None and should_stop():
+                raise ExecutionCancelled(
+                    "Execution cancelled after dependency install"
+                )
 
         sink(ExecutionEvent(type=EventType.NODE_STARTED, node_id=node_id, data={}))
         node_started = time.perf_counter()
@@ -290,8 +355,10 @@ def execute_graph(
                 edge.source_handle
             ]
 
+        capture = OutputCapture()
         try:
-            value = transpiled.func(**kwargs)
+            with capture.activate(transpiled.func):
+                value = transpiled.func(**kwargs)
             outputs = _normalize_outputs(value, len(schema.outputs), node_id)
         except Exception as exc:
             line, traceback_text = _localize_failure(
@@ -306,6 +373,7 @@ def execute_graph(
                         "message": str(exc),
                         "error_type": type(exc).__name__,
                         "traceback": traceback_text,
+                        "rich_outputs": serialize_rich_outputs(capture.outputs),
                     },
                 )
             )
@@ -317,9 +385,12 @@ def execute_graph(
                 traceback_text=traceback_text,
             ) from exc
 
-        _CACHE[node_id] = (state_hash, outputs)
+        rich_outputs = tuple(capture.outputs)
+        _cache_store(node_id, state_hash, outputs, rich_outputs)
         state_hashes[node_id] = state_hash
-        _record_outputs(result, node_id, schema, outputs, cached=False)
+        _record_outputs(
+            result, node_id, schema, outputs, rich_outputs, cached=False
+        )
         sink(
             ExecutionEvent(
                 type=EventType.NODE_COMPLETED,
@@ -327,6 +398,9 @@ def execute_graph(
                 data={
                     "cached": False,
                     "outputs": result.previews[node_id],
+                    "rich_outputs": serialize_rich_outputs(
+                        result.rich_outputs[node_id]
+                    ),
                     "duration_ms": round(
                         (time.perf_counter() - node_started) * 1000, 1
                     ),
@@ -417,6 +491,57 @@ def _noop(event: ExecutionEvent) -> None:
     return None
 
 
+def _emit_dependency_error(
+    sink: EventSink, node_id: str, exc: Exception
+) -> None:
+    sink(
+        ExecutionEvent(
+            type=EventType.NODE_ERROR,
+            node_id=node_id,
+            data={
+                "line": None,
+                "message": str(exc),
+                "error_type": type(exc).__name__,
+                "traceback": "",
+            },
+        )
+    )
+
+
+def _cache_lookup(node_id: str, state_hash: str) -> _CacheEntry | None:
+    entry = _CACHE.get(node_id)
+    if entry is None or entry.state_hash != state_hash:
+        return None
+    _CACHE.move_to_end(node_id)
+    return entry
+
+
+def _cache_store(
+    node_id: str,
+    state_hash: str,
+    outputs: tuple[Any, ...],
+    rich_outputs: tuple[RichOutput, ...],
+) -> None:
+    global _CACHE_BYTES
+    previous = _CACHE.pop(node_id, None)
+    if previous is not None:
+        _CACHE_BYTES -= previous.size
+    size = sum(rich_output_size(output) for output in rich_outputs)
+    _CACHE[node_id] = _CacheEntry(
+        state_hash=state_hash,
+        outputs=outputs,
+        rich_outputs=rich_outputs,
+        size=size,
+    )
+    _CACHE_BYTES += size
+    _CACHE.move_to_end(node_id)
+    while _CACHE and (
+        len(_CACHE) > MAX_CACHE_ENTRIES or _CACHE_BYTES > MAX_CACHE_BYTES
+    ):
+        _, evicted = _CACHE.popitem(last=False)
+        _CACHE_BYTES -= evicted.size
+
+
 def _index_nodes(graph: WorkflowGraph) -> dict[str, GraphNode]:
     nodes_by_id: dict[str, GraphNode] = {}
     for node in graph.nodes:
@@ -463,16 +588,19 @@ def _topological_order(
     return order
 
 
-def _plan(graph: WorkflowGraph) -> dict[str, NodeSchema]:
+def _plan(
+    nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]
+) -> dict[str, NodeSchema]:
     schemas: dict[str, NodeSchema] = {}
-    for node in graph.nodes:
+    for node in nodes:
         schema = parse_node(node.code, node.id)
         if schema.syntax_errors:
             raise TranspileError(schema)
         schemas[node.id] = schema
 
     connected: set[tuple[str, str]] = set()
-    for edge in graph.edges:
+    wired: dict[str, set[str]] = {}
+    for edge in edges:
         source_schema = schemas[edge.source_node_id]
         if edge.source_handle not in {
             socket.name for socket in source_schema.outputs
@@ -497,15 +625,12 @@ def _plan(graph: WorkflowGraph) -> dict[str, NodeSchema]:
                 f"'{edge.target_node_id}' has multiple incoming connections"
             )
         connected.add(key)
+        wired.setdefault(edge.target_node_id, set()).add(edge.target_handle)
 
-    for node in graph.nodes:
-        wired = {
-            edge.target_handle
-            for edge in graph.edges
-            if edge.target_node_id == node.id
-        }
+    for node in nodes:
+        handles = wired.get(node.id, set())
         for socket in schemas[node.id].inputs:
-            if socket.name not in wired:
+            if socket.name not in handles:
                 raise GraphValidationError(
                     f"Required input '{socket.name}' of node '{node.id}' "
                     f"is not connected"
@@ -544,17 +669,20 @@ def _record_outputs(
     node_id: str,
     schema: NodeSchema,
     outputs: tuple[Any, ...],
+    rich_outputs: Sequence[RichOutput],
     *,
     cached: bool,
 ) -> None:
     result.outputs[node_id] = outputs
     result.outputs_by_name[node_id] = {
-        socket.name: value for socket, value in zip(schema.outputs, outputs)
+        socket.name: value
+        for socket, value in zip(schema.outputs, outputs, strict=False)
     }
     result.previews[node_id] = {
         socket.name: build_output_preview(socket.data_type, value)
-        for socket, value in zip(schema.outputs, outputs)
+        for socket, value in zip(schema.outputs, outputs, strict=False)
     }
+    result.rich_outputs[node_id] = list(rich_outputs)
     result.cached[node_id] = cached
 
 

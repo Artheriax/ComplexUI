@@ -27,6 +27,7 @@ from app.schemas import (
     ExecutionEvent,
     GraphEdge,
     GraphNode,
+    NodeSchema,
     SocketType,
     WorkflowGraph,
 )
@@ -101,9 +102,121 @@ def _chain_graph(n_neighbors: int = 5) -> WorkflowGraph:
 
 EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "load_iris": ([], ["df"], []),
-    "train_test_split": (["df"], ["train", "test"], ["test_size"]),
+    "load_wine": ([], ["df"], []),
+    "load_breast_cancer": ([], ["df"], []),
+    "load_diabetes": ([], ["df"], []),
+    "load_digits": ([], ["df"], []),
+    "make_classification_dataset": (
+        [],
+        ["df"],
+        ["n_samples", "n_features", "n_informative", "n_classes", "random_state"],
+    ),
+    "make_messy_dataset": ([], ["df"], ["n_rows", "seed"]),
+    "load_csv": ([], ["df"], ["path", "separator", "has_header"]),
+    "load_parquet": ([], ["df"], ["path"]),
+    "load_excel": ([], ["df"], ["path", "sheet_id"]),
+    "load_json": ([], ["df"], ["path"]),
+    "drop_missing": (["df"], ["cleaned"], ["columns", "how"]),
+    "fill_missing": (["df"], ["filled"], ["columns", "strategy", "value"]),
+    "drop_duplicates": (["df"], ["deduped"], ["subset", "keep"]),
+    "drop_columns": (["df"], ["dropped"], ["columns"]),
+    "filter_rows": (["df"], ["filtered"], ["column", "operator", "value"]),
+    "cast_numeric": (["df"], ["converted"], ["columns", "dtype", "errors"]),
+    "clip_outliers": (
+        ["df"],
+        ["clipped"],
+        ["columns", "lower_quantile", "upper_quantile"],
+    ),
+    "trim_strings": (
+        ["df"],
+        ["trimmed"],
+        ["columns", "collapse_whitespace", "lowercase"],
+    ),
+    "describe_dataframe": (["df"], ["summary"], []),
+    "missing_values_report": (["df"], ["report"], []),
+    "correlation_matrix": (["df"], ["correlation"], ["method"]),
+    "value_counts": (["df"], ["counts"], ["column", "top_k"]),
+    "class_balance": (["df"], ["balance"], ["target_column"]),
+    "train_test_split": (
+        ["df"],
+        ["train", "test"],
+        ["target_column", "test_size", "stratify", "random_state"],
+    ),
+    "dataframe_to_dataset": (["df"], ["dataset"], ["target_column"]),
+    "drop_target": (["df"], ["features"], ["target_column"]),
+    "one_hot_encode": (["df"], ["encoded"], ["columns", "drop_first"]),
+    "standard_scaler": (["df"], ["scaled"], ["target_column", "columns"]),
+    "minmax_scaler": (["df"], ["scaled"], ["target_column", "columns"]),
+    "pca_reduce": (["train"], ["reduced"], ["n_components", "random_state"]),
+    "select_k_best": (["train"], ["reduced"], ["k", "score_func"]),
+    "random_oversample": (["train"], ["resampled"], ["random_state"]),
+    "random_undersample": (["train"], ["resampled"], ["random_state"]),
+    "smote_resample": (["train"], ["resampled"], ["k_neighbors", "random_state"]),
     "knn_train": (["train"], ["model"], ["n_neighbors"]),
+    "linear_regression": (["train"], ["model"], ["fit_intercept"]),
+    "logistic_regression": (
+        ["train"],
+        ["model"],
+        ["C", "max_iter", "class_weight"],
+    ),
+    "ridge_regression": (["train"], ["model"], ["alpha"]),
+    "lasso_regression": (["train"], ["model"], ["alpha"]),
+    "decision_tree_classifier": (
+        ["train"],
+        ["model"],
+        ["max_depth", "min_samples_leaf", "class_weight"],
+    ),
+    "decision_tree_regressor": (
+        ["train"],
+        ["model"],
+        ["max_depth", "min_samples_leaf"],
+    ),
+    "random_forest_classifier": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "max_depth", "class_weight"],
+    ),
+    "random_forest_regressor": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "max_depth"],
+    ),
+    "gradient_boosting_classifier": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "learning_rate", "max_depth"],
+    ),
+    "gradient_boosting_regressor": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "learning_rate", "max_depth"],
+    ),
+    "svm_classifier": (["train"], ["model"], ["kernel", "C"]),
+    "gaussian_nb_classifier": (["train"], ["model"], []),
+    "kmeans_clustering": (["train"], ["model"], ["n_clusters", "random_state"]),
+    "xgb_classifier": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "max_depth", "learning_rate", "random_state"],
+    ),
+    "xgb_regressor": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "max_depth", "learning_rate", "random_state"],
+    ),
+    "lgbm_classifier": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "num_leaves", "learning_rate", "random_state"],
+    ),
+    "lgbm_regressor": (
+        ["train"],
+        ["model"],
+        ["n_estimators", "num_leaves", "learning_rate", "random_state"],
+    ),
     "evaluate_metrics": (["model", "test"], ["metrics"], []),
+    "evaluate_regression": (["model", "test"], ["metrics"], []),
+    "cross_validate_classifier": (["model", "train"], ["metrics"], ["cv_folds"]),
     "tensor_dataset": ([], ["data"], ["samples", "seed", "noise", "device"]),
     "mlp_train": (
         ["data"],
@@ -111,6 +224,7 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
         ["hidden", "epochs", "lr", "seed"],
     ),
     "evaluate_torch": (["model", "data"], ["metrics"], []),
+    "dataframe_to_tensors": (["df"], ["data"], ["target_column", "device"]),
 }
 
 
@@ -149,6 +263,79 @@ def test_chain_executes_and_accuracy_above_90() -> None:
     assert types.count(EventType.NODE_STARTED) == 4
     assert types.count(EventType.NODE_COMPLETED) == 4
     json.dumps([event.model_dump(mode="json") for event in events])
+
+
+def test_node_rich_outputs_stream_and_replay_from_cache() -> None:
+    code = (
+        "import polars as pl\n"
+        'print("console line")\n'
+        'display(pl.DataFrame({"a": [1, 2], "b": ["x", "y"]}))\n'
+        "value = 1\n"
+        "return value: ANY"
+    )
+    node = GraphNode(id="rich", code=code)
+    graph = WorkflowGraph(nodes=[node])
+    events: list[ExecutionEvent] = []
+
+    result = execute_graph(graph, security=_custom_registry(node), emit=events.append)
+
+    assert [output.kind for output in result.rich_outputs["rich"]] == [
+        "text",
+        "table",
+    ]
+    completed = next(
+        event for event in events if event.type is EventType.NODE_COMPLETED
+    )
+    assert [output["kind"] for output in completed.data["rich_outputs"]] == [
+        "text",
+        "table",
+    ]
+    json.dumps(completed.model_dump(mode="json"))
+
+    replay_events: list[ExecutionEvent] = []
+    replay = execute_graph(
+        graph, security=_custom_registry(node), emit=replay_events.append
+    )
+
+    assert replay.cached == {"rich": True}
+    assert [output.kind for output in replay.rich_outputs["rich"]] == [
+        "text",
+        "table",
+    ]
+    cached_event = next(
+        event for event in replay_events if event.type is EventType.NODE_COMPLETED
+    )
+    assert cached_event.data["rich_outputs"][0]["text"] == "console line\n"
+
+
+def test_node_error_event_keeps_partial_console_output() -> None:
+    node = GraphNode(
+        id="boom",
+        code='print("before failure")\nraise RuntimeError("boom")',
+    )
+    events: list[ExecutionEvent] = []
+
+    with pytest.raises(NodeExecutionError):
+        execute_graph(
+            WorkflowGraph(nodes=[node]),
+            security=_custom_registry(node),
+            emit=events.append,
+        )
+
+    error_event = next(
+        event for event in events if event.type is EventType.NODE_ERROR
+    )
+    assert error_event.data["rich_outputs"][0]["text"] == "before failure\n"
+
+
+def test_cache_honours_byte_budget(monkeypatch) -> None:
+    monkeypatch.setattr("app.executor.MAX_CACHE_BYTES", 1)
+    node = GraphNode(id="text", code='print("cache me")\nvalue = 1\nreturn value: ANY')
+    graph = WorkflowGraph(nodes=[node])
+    registry = _custom_registry(node)
+
+    assert execute_graph(graph, security=registry).cached == {"text": False}
+    assert execute_graph(graph, security=registry).cached == {"text": False}
 
 
 def test_identical_rerun_is_fully_cached() -> None:
@@ -191,6 +378,24 @@ def test_modified_widget_reruns_only_downstream_nodes() -> None:
     assert started == {"knn", "evaluate"}
     assert result.previews["knn"]["model"]["params"]["n_neighbors"] == 7
     assert result.outputs_by_name["evaluate"]["metrics"]["accuracy"] > 0.90
+
+
+def test_cache_evicts_least_recently_used_node(monkeypatch) -> None:
+    monkeypatch.setattr("app.executor.MAX_CACHE_ENTRIES", 2)
+    templates = _templates()
+
+    def single(node_id: str) -> WorkflowGraph:
+        return WorkflowGraph(
+            nodes=[GraphNode(id=node_id, code=templates["load_iris"])]
+        )
+
+    execute_graph(single("a"))
+    execute_graph(single("b"))
+    assert execute_graph(single("a")).cached == {"a": True}
+    execute_graph(single("c"))
+
+    assert execute_graph(single("a")).cached == {"a": True}
+    assert execute_graph(single("b")).cached == {"b": False}
 
 
 def test_wire_overrides_widget_value() -> None:
@@ -487,7 +692,7 @@ def test_template_socket_types() -> None:
 
 def test_security_registry_hashes_and_normalizes_line_endings() -> None:
     registry = SecurityRegistry()
-    assert len(registry.templates()) == 7
+    assert len(registry.templates()) == len(EXPECTED_SOCKETS)
     for record in registry.templates():
         assert record.code_hash == code_hash(record.code)
         assert registry.is_official(record.code)
@@ -516,23 +721,49 @@ def test_missing_dependencies_detection() -> None:
 def test_install_dependencies_invokes_uv_pip(monkeypatch) -> None:
     calls: dict[str, object] = {}
 
-    def fake_run(command, **kwargs):
+    class _Process:
+        returncode = 0
+
+        def poll(self) -> int:
+            return 0
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_popen(command, **kwargs):
         calls["command"] = command
         calls["kwargs"] = kwargs
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return _Process()
 
-    monkeypatch.setattr("app.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", fake_popen)
     install_dependencies(["tiny-package>=0.1"])
 
     assert calls["command"] == ["uv", "pip", "install", "tiny-package>=0.1"]
-    assert calls["kwargs"]["check"] is True
+    assert calls["kwargs"]["stderr"] is subprocess.STDOUT
 
 
 def test_install_dependencies_failure_wrapped(monkeypatch) -> None:
-    def fake_run(command, **kwargs):
-        raise subprocess.CalledProcessError(1, command, stderr="resolution failed")
+    class _Process:
+        returncode = 1
 
-    monkeypatch.setattr("app.env_manager.subprocess.run", fake_run)
+        def poll(self) -> int:
+            return 1
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self) -> int:
+            return 1
+
+    def fake_popen(command, stdout, **_kwargs):
+        stdout.write(b"resolution failed\n")
+        stdout.flush()
+        return _Process()
+
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", fake_popen)
 
     with pytest.raises(DependencyInstallError, match="resolution failed"):
         install_dependencies(["tiny-package>=0.1"])
@@ -543,7 +774,10 @@ def test_installing_deps_event_streamed_before_started(monkeypatch) -> None:
         "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
     )
     installed: list[list[str]] = []
-    monkeypatch.setattr("app.executor.install_dependencies", installed.append)
+    monkeypatch.setattr(
+        "app.executor.install_dependencies",
+        lambda deps, **_kwargs: installed.append(deps),
+    )
 
     events: list[ExecutionEvent] = []
     graph = WorkflowGraph(
@@ -561,16 +795,93 @@ def test_installing_deps_event_streamed_before_started(monkeypatch) -> None:
     assert installed == [["fake-dep>=1.0"]]
 
 
-def test_allow_installs_false_raises(monkeypatch) -> None:
+def test_allow_installs_false_raises_with_node_error(monkeypatch) -> None:
     monkeypatch.setattr(
         "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
     )
     graph = WorkflowGraph(
         nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
     )
+    events: list[ExecutionEvent] = []
 
     with pytest.raises(DependencyInstallError, match="fake-dep"):
-        execute_graph(graph, allow_installs=False)
+        execute_graph(graph, emit=events.append, allow_installs=False)
+
+    assert [event.type for event in events] == [EventType.NODE_ERROR]
+    assert events[0].node_id == "load"
+    assert events[0].data["error_type"] == "DependencyInstallError"
+    assert events[0].data["line"] is None
+
+
+def test_dependency_failure_emits_node_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
+    )
+
+    def fail_install(deps, **_kwargs):
+        raise DependencyInstallError("installation exploded")
+
+    monkeypatch.setattr("app.executor.install_dependencies", fail_install)
+    graph = WorkflowGraph(
+        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
+    )
+    events: list[ExecutionEvent] = []
+
+    with pytest.raises(DependencyInstallError, match="exploded"):
+        execute_graph(graph, emit=events.append)
+
+    assert [event.type for event in events] == [
+        EventType.INSTALLING_DEPS,
+        EventType.NODE_ERROR,
+    ]
+    assert events[-1].data["error_type"] == "DependencyInstallError"
+
+
+def test_cancellation_during_dependency_install(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
+    )
+    stop = {"value": False}
+
+    def cancel_install(deps, **_kwargs):
+        stop["value"] = True
+        raise DependencyInstallError("install cancelled")
+
+    monkeypatch.setattr("app.executor.install_dependencies", cancel_install)
+    graph = WorkflowGraph(
+        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
+    )
+    events: list[ExecutionEvent] = []
+
+    with pytest.raises(ExecutionCancelled, match="during dependency install"):
+        execute_graph(
+            graph, emit=events.append, should_stop=lambda: stop["value"]
+        )
+
+    assert [event.type for event in events] == [EventType.INSTALLING_DEPS]
+
+
+def test_cancellation_after_dependency_install(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
+    )
+    stop = {"value": False}
+
+    def finish_install(deps, **_kwargs):
+        stop["value"] = True
+
+    monkeypatch.setattr("app.executor.install_dependencies", finish_install)
+    graph = WorkflowGraph(
+        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
+    )
+    events: list[ExecutionEvent] = []
+
+    with pytest.raises(ExecutionCancelled, match="after dependency install"):
+        execute_graph(
+            graph, emit=events.append, should_stop=lambda: stop["value"]
+        )
+
+    assert [event.type for event in events] == [EventType.INSTALLING_DEPS]
 
 
 def test_cancellation_between_nodes_keeps_completed_cache() -> None:
@@ -672,3 +983,80 @@ def test_unknown_and_empty_targets_raise() -> None:
         execute_graph(_chain_graph(), targets=["ghost"])
     with pytest.raises(GraphValidationError, match="must not be empty"):
         validate_graph(_chain_graph(), targets=[])
+
+
+def test_run_to_target_ignores_out_of_scope_syntax_errors() -> None:
+    graph = _chain_graph()
+    graph.nodes.append(GraphNode(id="broken", code="def broken(:\n"))
+
+    with pytest.raises(TranspileError):
+        validate_graph(graph)
+
+    plan = validate_graph(graph, targets=["knn"])
+    assert plan.order == ["load", "split", "knn"]
+
+    result = execute_graph(graph, plan=plan)
+    assert result.cached == {"load": False, "split": False, "knn": False}
+
+
+def test_run_to_target_ignores_out_of_scope_wiring_errors() -> None:
+    graph = _chain_graph()
+    graph.nodes.append(GraphNode(id="orphan", code=_templates()["knn_train"]))
+
+    with pytest.raises(GraphValidationError, match="not connected"):
+        validate_graph(graph)
+
+    plan = validate_graph(graph, targets=["knn"])
+    result = execute_graph(graph, plan=plan)
+    assert result.cached == {"load": False, "split": False, "knn": False}
+
+
+def test_run_to_target_ignores_out_of_scope_cycle() -> None:
+    code = "value: ANY\nreturn value: ANY"
+    graph = _chain_graph()
+    graph.nodes.extend(
+        [GraphNode(id="a", code=code), GraphNode(id="b", code=code)]
+    )
+    graph.edges.extend(
+        [
+            GraphEdge(
+                source_node_id="a",
+                source_handle="value",
+                target_node_id="b",
+                target_handle="value",
+            ),
+            GraphEdge(
+                source_node_id="b",
+                source_handle="value",
+                target_node_id="a",
+                target_handle="value",
+            ),
+        ]
+    )
+
+    with pytest.raises(GraphCycleError):
+        validate_graph(graph)
+
+    plan = validate_graph(graph, targets=["knn"])
+    assert plan.order == ["load", "split", "knn"]
+
+
+def test_execute_graph_reuses_preflight_plan(monkeypatch) -> None:
+    graph = _chain_graph()
+    plan = validate_graph(graph, targets=["knn"])
+
+    calls = 0
+    original = parse_node
+
+    def counting_parse(code: str, node_id: str = "") -> NodeSchema:
+        nonlocal calls
+        calls += 1
+        return original(code, node_id)
+
+    monkeypatch.setattr("app.executor.parse_node", counting_parse)
+
+    execute_graph(graph, plan=plan)
+    assert calls == 0
+
+    execute_graph(graph, targets=["knn"])
+    assert calls == 3

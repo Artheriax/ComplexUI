@@ -10,21 +10,29 @@ import {
   BoltIcon,
   DownloadIcon,
   PlayIcon,
+  RedoIcon,
   SpinnerIcon,
   StopIcon,
   TrashIcon,
+  UndoIcon,
   UploadIcon,
 } from "./icons";
 
 const ghostButton =
   "flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600";
+const iconButton =
+  "flex items-center rounded-md border border-zinc-700 p-1.5 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600";
 
 export function Toolbar() {
   const wsConnected = useGraphStore((state) => state.wsConnected);
   const status = useGraphStore((state) => state.execution.status);
   const nodeCount = useGraphStore((state) => state.nodes.length);
+  const canUndo = useGraphStore((state) => state.past.length > 0);
+  const canRedo = useGraphStore((state) => state.future.length > 0);
   const runGraph = useGraphStore((state) => state.runGraph);
   const cancelRun = useGraphStore((state) => state.cancelRun);
+  const undo = useGraphStore((state) => state.undo);
+  const redo = useGraphStore((state) => state.redo);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const running = status === "running";
@@ -70,7 +78,7 @@ export function Toolbar() {
     }
     if (
       window.confirm(
-        "Clear the canvas? Autosave will also be overwritten; this cannot be undone.",
+        "Clear the canvas? Autosave will also be overwritten. You can undo this with Ctrl+Z.",
       )
     ) {
       state.clearCanvas();
@@ -88,6 +96,26 @@ export function Toolbar() {
       </div>
 
       <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          className={iconButton}
+          title="Undo (Ctrl+Z)"
+          aria-label="Undo"
+          disabled={running || !canUndo}
+          onClick={undo}
+        >
+          <UndoIcon />
+        </button>
+        <button
+          type="button"
+          className={iconButton}
+          title="Redo (Ctrl+Shift+Z)"
+          aria-label="Redo"
+          disabled={running || !canRedo}
+          onClick={redo}
+        >
+          <RedoIcon />
+        </button>
         <button
           type="button"
           className={ghostButton}
@@ -118,6 +146,7 @@ export function Toolbar() {
           ref={fileInputRef}
           type="file"
           accept=".json,application/json"
+          aria-label="Import workflow file"
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0];
@@ -131,13 +160,19 @@ export function Toolbar() {
 
       <div className="ml-auto flex items-center gap-3">
         <span
+          role="status"
+          aria-live="polite"
           className="flex items-center gap-1.5 text-[11px] text-zinc-500"
           title={wsConnected ? "Backend streaming connected" : "Backend streaming offline"}
         >
           <span
+            aria-hidden="true"
             className={`h-2 w-2 rounded-full ${wsConnected ? "bg-emerald-400" : "bg-red-500"}`}
           />
-          backend
+          <span className="sr-only">
+            {wsConnected ? "Backend connected" : "Backend offline"}
+          </span>
+          <span aria-hidden="true">backend</span>
         </span>
 
         <span className="text-[11px] text-zinc-600">

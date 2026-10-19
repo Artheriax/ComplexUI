@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { fetchRunStatus } from "../lib/api";
 import { useGraphStore } from "../store/useGraphStore";
 import type { ExecutionEvent } from "../types/graph";
 
@@ -27,6 +28,16 @@ export function useExecutionSocket(): void {
       socket.onopen = () => {
         attempts = 0;
         useGraphStore.getState().setWsConnected(true);
+        void fetchRunStatus()
+          .then((status) => {
+            if (!disposed) {
+              useGraphStore.getState().syncRunStatus(status);
+            }
+          })
+          .catch(() => {
+            // The socket is open but REST may lag during a restart; the next
+            // reconnect will resync again.
+          });
       };
 
       socket.onmessage = (message: MessageEvent<string>) => {

@@ -74,11 +74,19 @@ class Theme:
 
 
 def _resolve_color(explicit_off: bool) -> bool:
-    if explicit_off or os.environ.get("NO_COLOR"):
+    if explicit_off or "NO_COLOR" in os.environ:
         return False
-    if os.environ.get("FORCE_COLOR"):
-        return True
+    force_color = os.environ.get("FORCE_COLOR")
+    if force_color is not None:
+        return force_color.strip().lower() not in {"0", "false", "no", "off"}
+    if os.environ.get("TERM", "").strip().lower() == "dumb":
+        return False
     return sys.stdout.isatty()
+
+
+def _default_log_format() -> str:
+    value = os.environ.get("COMPLEXUI_LOG_FORMAT", "text").strip().lower()
+    return value if value in {"text", "json"} else "text"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -103,9 +111,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--host", default="127.0.0.1", help="bind address (default 127.0.0.1)"
     )
     parser.add_argument(
+        "--allow-network",
+        action="store_true",
+        help="allow non-loopback access (disables Host/Origin protection)",
+    )
+    parser.add_argument(
         "--log-level",
         default=os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"),
         help="backend console log level (default INFO)",
+    )
+    parser.add_argument(
+        "--log-format",
+        choices=("text", "json"),
+        default=_default_log_format(),
+        help="backend log format (default text; json emits one object per line)",
     )
     parser.add_argument(
         "--no-reload", action="store_true", help="disable uvicorn auto-reload"
@@ -119,7 +138,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value = getattr(args, flag)
         if not 1 <= value <= 65535:
             parser.error(f"--{flag.replace('_', '-')} must be 1-65535")
+    if not is_loopback_host(args.host) and not args.allow_network:
+        parser.error(
+            f"--host {args.host} exposes the API beyond loopback; "
+            "add --allow-network to confirm the risk"
+        )
     return args
+
+
+def is_loopback_host(host: str) -> bool:
+    return host.strip().lower() in {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def require_tool(name: str) -> str:
@@ -153,7 +181,7 @@ def build_backend_command(args: argparse.Namespace, *, reload: bool) -> list[str
 
 
 def build_frontend_command(npm: str, args: argparse.Namespace) -> list[str]:
-    return [
+    command = [
         npm,
         "run",
         "dev",
@@ -162,17 +190,31 @@ def build_frontend_command(npm: str, args: argparse.Namespace) -> list[str]:
         str(args.frontend_port),
         "--strictPort",
     ]
+    if not is_loopback_host(args.host):
+        command.extend(["--host", args.host])
+    return command
 
 
 def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[str, str]:
     environment = os.environ.copy()
     environment["COMPLEXUI_LOG_LEVEL"] = args.log_level
+    environment["COMPLEXUI_LOG_FORMAT"] = args.log_format
+    if args.allow_network and not is_loopback_host(args.host):
+        environment.setdefault("COMPLEXUI_ALLOWED_HOSTS", "*")
     if serve_dist:
         environment["COMPLEXUI_SERVE_DIST"] = str(FRONTEND_DIR / "dist")
     return environment
 
 
-def spawn(name: str, command: list[str], cwd: Path, env: dict[str, str], theme: Theme):
+def spawn(
+    name: str,
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    theme: Theme,
+    *,
+    prefix: bool = True,
+):
     kwargs: dict[str, object] = {}
     if os.name != "nt":
         kwargs["start_new_session"] = True
@@ -193,7 +235,7 @@ def spawn(name: str, command: list[str], cwd: Path, env: dict[str, str], theme: 
     def pump() -> None:
         assert process.stdout is not None
         for line in process.stdout:
-            sys.stdout.write(f"{tag} {line}")
+            sys.stdout.write(f"{tag} {line}" if prefix else line)
             sys.stdout.flush()
 
     threading.Thread(target=pump, name=f"{name}-pump", daemon=True).start()
@@ -265,7 +307,9 @@ def ensure_frontend_dependencies(npm: str, theme: Theme) -> int:
 def run_check(args: argparse.Namespace, theme: Theme, npm: str) -> int:
     require_tool("uv")
     steps: list[tuple[str, list[str], Path]] = [
+        ("backend lint", ["uv", "run", "ruff", "check", "."], BACKEND_DIR),
         ("backend tests", ["uv", "run", "pytest", "-q"], BACKEND_DIR),
+        ("frontend lint", [npm, "run", "lint"], FRONTEND_DIR),
         ("frontend typecheck", [npm, "run", "typecheck"], FRONTEND_DIR),
         ("frontend tests", [npm, "run", "test"], FRONTEND_DIR),
         ("frontend build", [npm, "run", "build"], FRONTEND_DIR),
@@ -295,7 +339,7 @@ def warn_port_mismatches(args: argparse.Namespace, theme: Theme) -> None:
 
 def supervise(processes: dict[str, subprocess.Popen]) -> int:
     while True:
-        for name, process in processes.items():
+        for process in processes.values():
             code = process.poll()
             if code is not None:
                 return code
@@ -321,7 +365,7 @@ def launch_servers(
     theme.info(
         f"mode={'dev' if with_frontend else ('prod' if serve_dist else 'backend')} "
         f"backend=http://{args.host}:{args.backend_port} "
-        f"log-level={args.log_level.upper()}"
+        f"log-level={args.log_level.upper()} log-format={args.log_format}"
     )
     try:
         processes["backend"] = spawn(
@@ -330,6 +374,7 @@ def launch_servers(
             BACKEND_DIR,
             backend_environment(args, serve_dist=serve_dist),
             theme,
+            prefix=args.log_format != "json",
         )
         if with_frontend:
             processes["frontend"] = spawn(
@@ -369,6 +414,17 @@ def launch_servers(
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     theme = Theme(_resolve_color(args.no_color))
+
+    if (
+        args.allow_network
+        and not is_loopback_host(args.host)
+        and args.mode in {"dev", "backend", "prod"}
+    ):
+        theme.warn(
+            "NETWORK MODE: the API executes Python code without "
+            "authentication and is reachable beyond loopback. "
+            "Use only on trusted networks."
+        )
 
     npm = ""
     if args.mode in ("dev", "frontend", "prod", "check"):

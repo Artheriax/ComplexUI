@@ -1,0 +1,19 @@
+{
+  "name": "eda_iris_report",
+  "title": "EDA Iris Report",
+  "category": "Data Quality & EDA",
+  "description": "Fan out the iris frame into describe, missing, balance and correlation reports.",
+  "nodes": [
+    { "id": "load", "template": "load_iris", "position": { "x": 0, "y": 160 } },
+    { "id": "describe", "template": "describe_dataframe", "position": { "x": 300, "y": 0 } },
+    { "id": "missing", "template": "missing_values_report", "position": { "x": 300, "y": 160 } },
+    { "id": "balance", "template": "class_balance", "position": { "x": 300, "y": 320 }, "widget_values": { "target_column": "target" } },
+    { "id": "corr", "template": "correlation_matrix", "position": { "x": 300, "y": 480 }, "widget_values": { "method": "pearson" } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "describe", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "missing", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "balance", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "corr", "target_handle": "df" }
+  ]
+}

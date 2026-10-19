@@ -1,0 +1,17 @@
+{
+  "name": "pca_kmeans_segmentation",
+  "title": "PCA K-Means Segmentation",
+  "category": "Classical ML",
+  "description": "Project iris to two components and cluster with k-means++.",
+  "nodes": [
+    { "id": "load", "template": "load_iris", "position": { "x": 0, "y": 40 } },
+    { "id": "dataset", "template": "dataframe_to_dataset", "position": { "x": 280, "y": 40 }, "widget_values": { "target_column": "target" } },
+    { "id": "pca", "template": "pca_reduce", "position": { "x": 560, "y": 40 }, "widget_values": { "n_components": 2 } },
+    { "id": "kmeans", "template": "kmeans_clustering", "position": { "x": 840, "y": 40 }, "widget_values": { "n_clusters": 3 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "dataset", "target_handle": "df" },
+    { "source_node_id": "dataset", "source_handle": "dataset", "target_node_id": "pca", "target_handle": "train" },
+    { "source_node_id": "pca", "source_handle": "reduced", "target_node_id": "kmeans", "target_handle": "train" }
+  ]
+}

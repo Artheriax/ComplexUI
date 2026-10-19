@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Hex } from "../lib/hash";
 import { clearLocalWorkflow, saveLocalWorkflow } from "../lib/persistence";
 import type { SavedWorkflow } from "../lib/persistence";
-import type { NodeSchema, TemplateInfo } from "../types/graph";
+import type {
+  AppNode,
+  NodeSchema,
+  TemplateInfo,
+  WorkflowTemplateInfo,
+} from "../types/graph";
 import {
   SCRATCH_NODE_CODE,
   serialiseGraph,
@@ -34,6 +39,9 @@ async function makeTemplate(
   return {
     name: "demo",
     title: "Demo Node",
+    category: "Preprocessing",
+    description: "Demo template for tests",
+    hidden: false,
     code,
     code_hash: await sha256Hex(code),
     node_schema: nodeSchema,
@@ -46,8 +54,15 @@ function resetStore(): void {
     templates: [],
     templatesLoaded: false,
     templatesError: null,
+    workflows: [],
+    workflowsLoaded: false,
+    workflowsError: null,
     nodes: [],
     edges: [],
+    past: [],
+    future: [],
+    clipboard: null,
+    historyMeta: { coalesceKey: null, coalesceAt: 0, dragging: false },
     editingNodeId: null,
     pendingApproval: null,
     approvalBusy: false,
@@ -60,6 +75,7 @@ function resetStore(): void {
       order: [],
       nodeStates: {},
       previews: {},
+      richOutputs: {},
       cached: {},
       error: null,
     },
@@ -319,6 +335,162 @@ describe("applyExecutionEvent", () => {
     });
     expect(useGraphStore.getState().execution.status).toBe("cancelled");
     expect(useGraphStore.getState().execution.error).toBeNull();
+  });
+
+  it("publishes previews as soon as each node completes", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+
+    store.applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "r2", order: [id] },
+    });
+    store.applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: true, outputs: { k: 9 } },
+    });
+
+    const execution = useGraphStore.getState().execution;
+    expect(execution.status).toBe("running");
+    expect(execution.previews[id]).toEqual({ k: 9 });
+    expect(execution.cached[id]).toBe(true);
+    expect(execution.nodeStates[id]?.status).toBe("completed");
+  });
+
+  it("stores rich outputs from completion and error events", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+    const textOutput = {
+      kind: "text" as const,
+      source: "print",
+      text: "hello\n",
+      truncated: false,
+    };
+    const tableOutput = {
+      kind: "table" as const,
+      source: "display",
+      columns: ["a"],
+      rows: [[1]],
+      total_rows: 1,
+      total_cols: 1,
+      truncated: false,
+    };
+
+    store.applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "r3", order: [id] },
+    });
+    store.applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: false, outputs: { k: 1 }, rich_outputs: [textOutput, tableOutput] },
+    });
+
+    let execution = useGraphStore.getState().execution;
+    expect(execution.richOutputs[id]).toEqual([textOutput, tableOutput]);
+    expect(execution.nodeStates[id]?.richOutputs).toEqual([textOutput, tableOutput]);
+
+    store.applyExecutionEvent({
+      type: "NODE_ERROR",
+      node_id: id,
+      data: {
+        line: 3,
+        message: "boom",
+        error_type: "ValueError",
+        traceback: "",
+        rich_outputs: [textOutput],
+      },
+    });
+
+    execution = useGraphStore.getState().execution;
+    expect(execution.richOutputs[id]).toEqual([textOutput]);
+    expect(execution.nodeStates[id]?.richOutputs).toEqual([textOutput]);
+  });
+
+  it("resets running nodes when the run is cancelled", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+
+    store.applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "r1", order: [id] },
+    });
+    store.applyExecutionEvent({
+      type: "INSTALLING_DEPS",
+      node_id: id,
+      data: { dependencies: ["torch>=2.2"] },
+    });
+    store.applyExecutionEvent({
+      type: "EXECUTION_CANCELLED",
+      node_id: "",
+      data: { run_id: "r1" },
+    });
+
+    const state = useGraphStore.getState();
+    expect(state.execution.status).toBe("cancelled");
+    expect(state.execution.nodeStates[id]?.status).toBe("idle");
+    expect(state.execution.nodeStates[id]?.installing).toBeUndefined();
+  });
+});
+
+describe("syncRunStatus", () => {
+  it("adopts a run that started while the socket was down", () => {
+    useGraphStore
+      .getState()
+      .syncRunStatus({ status: "running", run_id: "srv-1" });
+
+    const execution = useGraphStore.getState().execution;
+    expect(execution.status).toBe("running");
+    expect(execution.runId).toBe("srv-1");
+  });
+
+  it("fails a tracked run when the backend reports idle", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+
+    store.applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "r1", order: [id] },
+    });
+    store.applyExecutionEvent({ type: "NODE_STARTED", node_id: id, data: {} });
+
+    useGraphStore
+      .getState()
+      .syncRunStatus({ status: "idle", run_id: null });
+
+    const execution = useGraphStore.getState().execution;
+    expect(execution.status).toBe("failed");
+    expect(execution.error?.errorType).toBe("Disconnected");
+    expect(execution.nodeStates[id]?.status).toBe("idle");
+  });
+
+  it("ignores idle reports while a run request is still in flight", () => {
+    useGraphStore.setState((state) => ({
+      execution: { ...state.execution, status: "running", runId: null },
+    }));
+
+    useGraphStore
+      .getState()
+      .syncRunStatus({ status: "idle", run_id: null });
+
+    expect(useGraphStore.getState().execution.status).toBe("running");
   });
 });
 
@@ -717,6 +889,36 @@ describe("restoreWorkflow", () => {
     expect(state.edges).toHaveLength(1);
     expect(state.edges[0]?.id).toBe("e1");
   });
+
+  it("drops restored widget values that no longer match the schema", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const parsedSchema = makeSchema({
+      widgets: [{ name: "k", data_type: "int", default: 5 }],
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(parsedSchema)));
+
+    await useGraphStore.getState().restoreWorkflow({
+      version: 1,
+      savedAt: "",
+      nodes: [
+        {
+          id: "n1",
+          label: "Demo Node",
+          position: { x: 0, y: 0 },
+          code: template.code,
+          widgetValues: { k: "not-a-number" },
+          templateName: "demo",
+        },
+      ],
+      edges: [],
+    });
+    vi.unstubAllGlobals();
+
+    expect(useGraphStore.getState().nodes[0]?.data.widgetValues).toEqual({
+      k: 5,
+    });
+  });
 });
 
 describe("restoreFromStorage", () => {
@@ -747,9 +949,581 @@ describe("restoreFromStorage", () => {
     await useGraphStore.getState().restoreFromStorage();
     vi.unstubAllGlobals();
     expect(useGraphStore.getState().nodes).toHaveLength(1);
+    expect(useGraphStore.getState().past).toHaveLength(0);
 
     const before = useGraphStore.getState().nodes;
     await useGraphStore.getState().restoreFromStorage();
     expect(useGraphStore.getState().nodes).toBe(before);
+  });
+});
+
+function makeWorkflow(
+  overrides: Partial<WorkflowTemplateInfo> = {},
+): WorkflowTemplateInfo {
+  return {
+    name: "demo_flow",
+    title: "Demo Flow",
+    category: "Getting Started",
+    description: "Demo workflow for tests",
+    nodes: [
+      {
+        id: "load",
+        template: "demo",
+        position: { x: 0, y: 0 },
+        widget_values: {},
+      },
+      {
+        id: "tuned",
+        template: "demo",
+        position: { x: 240, y: 0 },
+        widget_values: { k: 9 },
+      },
+    ],
+    edges: [
+      {
+        source_node_id: "load",
+        source_handle: "k",
+        target_node_id: "tuned",
+        target_handle: "df",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("loadWorkflowTemplates", () => {
+  it("stores fetched workflows and clears prior errors", async () => {
+    useGraphStore.setState({ workflowsError: "stale" });
+    const workflow = makeWorkflow();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse([workflow])),
+    );
+
+    await useGraphStore.getState().loadWorkflowTemplates();
+    vi.unstubAllGlobals();
+
+    const state = useGraphStore.getState();
+    expect(state.workflowsLoaded).toBe(true);
+    expect(state.workflows).toHaveLength(1);
+    expect(state.workflows[0]?.name).toBe("demo_flow");
+    expect(state.workflowsError).toBeNull();
+  });
+
+  it("records fetch failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("offline");
+      }),
+    );
+
+    await useGraphStore.getState().loadWorkflowTemplates();
+    vi.unstubAllGlobals();
+
+    const state = useGraphStore.getState();
+    expect(state.workflowsLoaded).toBe(false);
+    expect(state.workflowsError).toContain("Backend unreachable");
+  });
+});
+
+describe("loadWorkflowTemplate", () => {
+  it("materialises nodes with widget overrides and resets execution", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({
+      templates: [template],
+      nodes: [await builtNode(template)],
+      execution: { ...useGraphStore.getState().execution, status: "running" },
+    });
+
+    const ok = useGraphStore.getState().loadWorkflowTemplate(makeWorkflow());
+
+    expect(ok).toBe(true);
+    const state = useGraphStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(["load", "tuned"]);
+    expect(state.nodes[0]?.data.widgetValues).toEqual({ k: 5 });
+    expect(state.nodes[1]?.data.widgetValues).toEqual({ k: 9 });
+    expect(state.nodes[0]?.data.isTrusted).toBe(true);
+    expect(state.nodes[0]?.position).toEqual({ x: 0, y: 0 });
+    expect(state.edges).toHaveLength(1);
+    expect(state.edges[0]?.sourceHandle).toBe("k");
+    expect(state.execution.status).toBe("idle");
+    expect(state.workflowsError).toBeNull();
+  });
+
+  it("still loads workflows that reference hidden templates", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({
+      templates: [{ ...template, hidden: true }],
+      nodes: [],
+      edges: [],
+    });
+
+    const ok = useGraphStore.getState().loadWorkflowTemplate(makeWorkflow());
+
+    expect(ok).toBe(true);
+    const state = useGraphStore.getState();
+    expect(state.nodes.map((node) => node.id)).toEqual(["load", "tuned"]);
+    expect(state.nodes[0]?.data.isTrusted).toBe(true);
+    expect(state.workflowsError).toBeNull();
+  });
+
+  it("reports missing templates without clobbering the canvas", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const existing = await builtNode(template);
+    useGraphStore.setState({ nodes: [existing] });
+
+    const workflow = makeWorkflow({
+      nodes: [
+        {
+          id: "ghost",
+          template: "missing_template",
+          position: { x: 0, y: 0 },
+          widget_values: {},
+        },
+      ],
+      edges: [],
+    });
+    const ok = useGraphStore.getState().loadWorkflowTemplate(workflow);
+
+    expect(ok).toBe(false);
+    const state = useGraphStore.getState();
+    expect(state.workflowsError).toContain("missing_template");
+    expect(state.nodes).toHaveLength(1);
+    expect(state.nodes[0]?.id).toBe(existing.id);
+  });
+});
+
+async function builtNode(template: TemplateInfo): Promise<AppNode> {
+  return {
+    id: "existing",
+    type: "complex",
+    position: { x: 0, y: 0 },
+    data: {
+      label: template.title,
+      templateName: template.name,
+      templateCode: template.code,
+      code: template.code,
+      schema: template.node_schema,
+      widgetValues: { k: 5 },
+      isTrusted: true,
+    },
+  };
+}
+
+function selectNodes(ids: string[]): void {
+  useGraphStore.setState((state) => ({
+    nodes: state.nodes.map((node) => ({
+      ...node,
+      selected: ids.includes(node.id),
+    })),
+  }));
+}
+
+describe("undo/redo", () => {
+  it("undoes and redoes node additions", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    expect(useGraphStore.getState().past).toHaveLength(1);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(0);
+    expect(useGraphStore.getState().future).toHaveLength(1);
+
+    useGraphStore.getState().redo();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([id]);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+    expect(useGraphStore.getState().future).toHaveLength(0);
+  });
+
+  it("restores edges when undoing a node deletion", async () => {
+    const template = await makeTemplate();
+    const source = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const target = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source,
+      target,
+      sourceHandle: "k",
+      targetHandle: "df",
+    });
+    expect(useGraphStore.getState().edges).toHaveLength(1);
+    const edgeId = useGraphStore.getState().edges[0]?.id as string;
+    const historyBefore = useGraphStore.getState().past.length;
+
+    useGraphStore.getState().checkpoint();
+    useGraphStore.getState().onEdgesChange([{ type: "remove", id: edgeId }]);
+    useGraphStore.getState().onNodesChange([{ type: "remove", id: target }]);
+    expect(useGraphStore.getState().nodes).toHaveLength(1);
+    expect(useGraphStore.getState().edges).toHaveLength(0);
+    expect(useGraphStore.getState().past).toHaveLength(historyBefore + 1);
+
+    useGraphStore.getState().undo();
+    const state = useGraphStore.getState();
+    expect(state.nodes).toHaveLength(2);
+    expect(state.edges).toHaveLength(1);
+  });
+
+  it("undoes connections", async () => {
+    const template = await makeTemplate();
+    const source = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const target = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source,
+      target,
+      sourceHandle: "k",
+      targetHandle: "df",
+    });
+    expect(useGraphStore.getState().edges).toHaveLength(1);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().edges).toHaveLength(0);
+
+    useGraphStore.getState().redo();
+    expect(useGraphStore.getState().edges).toHaveLength(1);
+  });
+
+  it("coalesces rapid widget edits into a single undo step", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    vi.useFakeTimers();
+    try {
+      useGraphStore.getState().updateWidgetValue(id, "k", 6);
+      useGraphStore.getState().updateWidgetValue(id, "k", 7);
+      expect(useGraphStore.getState().past).toHaveLength(2);
+
+      useGraphStore.getState().undo();
+      const node = useGraphStore.getState().nodes.find((n) => n.id === id);
+      expect(node?.data.widgetValues).toEqual({ k: 5 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts a new history entry after the coalesce window", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    vi.useFakeTimers();
+    try {
+      useGraphStore.getState().updateWidgetValue(id, "k", 6);
+      vi.advanceTimersByTime(1000);
+      useGraphStore.getState().updateWidgetValue(id, "k", 7);
+      expect(useGraphStore.getState().past).toHaveLength(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces a node drag into a single undo step", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+
+    useGraphStore.getState().onNodesChange([
+      { type: "position", id, position: { x: 10, y: 0 }, dragging: true },
+    ]);
+    useGraphStore.getState().onNodesChange([
+      { type: "position", id, position: { x: 20, y: 0 }, dragging: true },
+    ]);
+    expect(useGraphStore.getState().past).toHaveLength(2);
+
+    useGraphStore.getState().onNodesChange([
+      { type: "position", id, position: { x: 30, y: 0 }, dragging: false },
+    ]);
+    expect(useGraphStore.getState().nodes[0]?.position).toEqual({ x: 30, y: 0 });
+
+    useGraphStore.getState().onNodesChange([
+      { type: "position", id, position: { x: 40, y: 0 }, dragging: true },
+    ]);
+    expect(useGraphStore.getState().past).toHaveLength(3);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes[0]?.position).toEqual({ x: 30, y: 0 });
+  });
+
+  it("ignores selection and measurement changes", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.getState().onNodesChange([
+      { type: "select", id, selected: true },
+      { type: "dimensions", id, dimensions: { width: 100, height: 40 } },
+    ]);
+    expect(useGraphStore.getState().past).toHaveLength(1);
+  });
+
+  it("undoes clearCanvas and workflow loads", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const existing = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+
+    useGraphStore.getState().clearCanvas();
+    expect(useGraphStore.getState().nodes).toHaveLength(0);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      existing,
+    ]);
+
+    const ok = useGraphStore.getState().loadWorkflowTemplate(makeWorkflow());
+    expect(ok).toBe(true);
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      "load",
+      "tuned",
+    ]);
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      existing,
+    ]);
+  });
+
+  it("undoes approved code commits", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const code = "# demo node\nk: int = 9\nreturn k: ANY\n";
+    const hash = await sha256Hex(code);
+    useGraphStore.setState((state) => ({
+      approvedHashes: new Set(state.approvedHashes).add(`${id}:${hash}`),
+    }));
+
+    await useGraphStore.getState().saveNodeCode(id, code, template.node_schema);
+    expect(useGraphStore.getState().nodes[0]?.data.code).toBe(code);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes[0]?.data.code).toBe(template.code);
+  });
+
+  it("clears the redo stack when a new action lands", async () => {
+    const template = await makeTemplate();
+    const first = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().future).toHaveLength(1);
+
+    const second = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    expect(useGraphStore.getState().future).toHaveLength(0);
+
+    useGraphStore.getState().redo();
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      second,
+    ]);
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).not.toContain(
+      first,
+    );
+  });
+
+  it("caps the history stack and blocks undo while running", async () => {
+    const template = await makeTemplate();
+    for (let index = 0; index < 105; index += 1) {
+      useGraphStore
+        .getState()
+        .addNodeFromTemplate(template, { x: index, y: 0 });
+    }
+    expect(useGraphStore.getState().past).toHaveLength(100);
+
+    useGraphStore.setState((state) => ({
+      execution: { ...state.execution, status: "running" },
+    }));
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(105);
+
+    useGraphStore.setState((state) => ({
+      execution: { ...state.execution, status: "idle" },
+    }));
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(104);
+  });
+});
+
+describe("clipboard", () => {
+  it("copies and pastes selected nodes with new ids and remapped edges", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const source = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const target = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source,
+      target,
+      sourceHandle: "k",
+      targetHandle: "df",
+    });
+    selectNodes([source, target]);
+
+    expect(useGraphStore.getState().copySelection()).toBe(true);
+    const pasted = await useGraphStore.getState().pasteClipboard();
+
+    expect(pasted).toHaveLength(2);
+    const state = useGraphStore.getState();
+    expect(state.nodes).toHaveLength(4);
+    const pastedNodes = state.nodes.filter((node) => pasted.includes(node.id));
+    expect(pastedNodes.every((node) => node.selected)).toBe(true);
+    expect(
+      state.nodes
+        .filter((node) => !pasted.includes(node.id))
+        .every((node) => !node.selected),
+    ).toBe(true);
+    expect(
+      pastedNodes.every((node) => node.data.isTrusted),
+    ).toBe(true);
+    const original = state.nodes.find((node) => node.id === source);
+    const copySource = pastedNodes.find(
+      (node) => node.position.x === (original?.position.x ?? 0) + 40,
+    );
+    expect(copySource).toBeDefined();
+
+    const pastedEdges = state.edges.filter(
+      (edge) => pasted.includes(edge.source) && pasted.includes(edge.target),
+    );
+    expect(pastedEdges).toHaveLength(1);
+    expect(pastedEdges[0]?.sourceHandle).toBe("k");
+    expect(pastedEdges[0]?.targetHandle).toBe("df");
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(2);
+  });
+
+  it("only copies internal edges for the selection", async () => {
+    const template = await makeTemplate();
+    const source = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const target = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source,
+      target,
+      sourceHandle: "k",
+      targetHandle: "df",
+    });
+    selectNodes([source]);
+
+    expect(useGraphStore.getState().copySelection()).toBe(true);
+    expect(useGraphStore.getState().clipboard?.edges).toHaveLength(0);
+  });
+
+  it("cuts selected nodes and their attached edges", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const source = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const target = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source,
+      target,
+      sourceHandle: "k",
+      targetHandle: "df",
+    });
+    useGraphStore.setState((state) => ({
+      execution: {
+        ...state.execution,
+        richOutputs: {
+          [source]: [
+            {
+              kind: "text",
+              source: "print",
+              text: "cached output",
+              truncated: false,
+            },
+          ],
+        },
+      },
+    }));
+    selectNodes([source, target]);
+
+    expect(useGraphStore.getState().cutSelection()).toBe(true);
+
+    const state = useGraphStore.getState();
+    expect(state.nodes).toHaveLength(0);
+    expect(state.edges).toHaveLength(0);
+    expect(state.clipboard?.nodes).toHaveLength(2);
+    expect(state.clipboard?.edges).toHaveLength(1);
+    expect(state.execution.richOutputs).toEqual({});
+
+    state.undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(2);
+    expect(useGraphStore.getState().edges).toHaveLength(1);
+  });
+
+  it("marks pasted modified code as untrusted", async () => {
+    const id = useGraphStore.getState().addScratchNode({ x: 0, y: 0 });
+    selectNodes([id]);
+
+    expect(useGraphStore.getState().copySelection()).toBe(true);
+    const pasted = await useGraphStore.getState().pasteClipboard();
+
+    const copied = useGraphStore
+      .getState()
+      .nodes.find((node) => node.id === pasted[0]);
+    expect(copied?.data.isTrusted).toBe(false);
+    expect(copied?.data.code).toBe(SCRATCH_NODE_CODE);
+  });
+
+  it("keeps the clipboard snapshot independent of later edits", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    selectNodes([id]);
+    useGraphStore.getState().copySelection();
+
+    useGraphStore.getState().deleteNode(id);
+    expect(useGraphStore.getState().nodes).toHaveLength(0);
+
+    const pasted = await useGraphStore.getState().pasteClipboard();
+    expect(pasted).toHaveLength(1);
+    expect(useGraphStore.getState().nodes[0]?.data.code).toBe(template.code);
+  });
+
+  it("no-ops on empty selections and empty clipboards", async () => {
+    expect(useGraphStore.getState().copySelection()).toBe(false);
+    expect(useGraphStore.getState().cutSelection()).toBe(false);
+    expect(useGraphStore.getState().clipboard).toBeNull();
+    expect(await useGraphStore.getState().pasteClipboard()).toEqual([]);
+    expect(useGraphStore.getState().past).toHaveLength(0);
+  });
+
+  it("duplicates the selection in one step", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    selectNodes([id]);
+
+    const created = await useGraphStore.getState().duplicateSelection();
+    expect(created).toHaveLength(1);
+    const state = useGraphStore.getState();
+    expect(state.nodes).toHaveLength(2);
+    const copy = state.nodes.find((node) => node.id === created[0]);
+    expect(copy?.position).toEqual({ x: 40, y: 40 });
   });
 });

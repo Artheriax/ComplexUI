@@ -8,7 +8,9 @@ import logging
 import os
 import subprocess
 import sys
-from collections.abc import Sequence
+import tempfile
+import time
+from collections.abc import Callable, Sequence
 
 from packaging.requirements import InvalidRequirement, Requirement
 
@@ -16,6 +18,7 @@ logger = logging.getLogger("complexui.deps")
 
 __all__ = [
     "DependencyInstallError",
+    "INSTALL_TIMEOUT_SECONDS",
     "build_install_command",
     "install_dependencies",
     "missing_dependencies",
@@ -24,6 +27,8 @@ __all__ = [
 _TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 _PYPI_INDEX = "https://pypi.org/simple"
 _TORCH_PACKAGES = {"torch", "torchvision", "torchaudio"}
+_POLL_INTERVAL_SECONDS = 0.2
+INSTALL_TIMEOUT_SECONDS = 600.0
 
 
 class DependencyInstallError(Exception):
@@ -87,8 +92,18 @@ def build_install_command(
     return command
 
 
-def install_dependencies(requirements: Sequence[str]) -> None:
-    """Install missing requirements with ``uv pip install``."""
+def install_dependencies(
+    requirements: Sequence[str],
+    *,
+    timeout: float = INSTALL_TIMEOUT_SECONDS,
+    should_stop: Callable[[], bool] | None = None,
+) -> None:
+    """Install missing requirements with ``uv pip install``.
+
+    The install process is polled so ``should_stop`` can terminate it and
+    ``timeout`` caps the whole operation. Spawn failures, cancellations,
+    timeouts and non-zero exits raise :class:`DependencyInstallError`.
+    """
     if not requirements:
         return
     environment = os.environ.copy()
@@ -96,18 +111,61 @@ def install_dependencies(requirements: Sequence[str]) -> None:
     command = build_install_command(requirements)
     logger.info("installing dependencies: %s", ", ".join(requirements))
     logger.debug("install command: %s", " ".join(command))
-    try:
-        subprocess.run(  # noqa: S603 - command is built from parsed requirements
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=environment,
+    started = time.monotonic()
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        try:
+            process = subprocess.Popen(  # noqa: S603 - command is parsed deps
+                command,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                env=environment,
+            )
+        except OSError as exc:
+            raise DependencyInstallError(
+                f"could not start `uv pip install`: {exc}"
+            ) from exc
+        deadline = time.monotonic() + timeout
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if should_stop is not None and should_stop():
+                _terminate(process)
+                logger.warning("dependency install cancelled")
+                raise DependencyInstallError(
+                    f"`uv pip install {' '.join(requirements)}` was cancelled"
+                )
+            if time.monotonic() >= deadline:
+                _terminate(process)
+                logger.error("dependency install timed out after %.0fs", timeout)
+                raise DependencyInstallError(
+                    f"`uv pip install {' '.join(requirements)}` timed out "
+                    f"after {timeout:.0f}s"
+                )
+            time.sleep(_POLL_INTERVAL_SECONDS)
+        output.seek(0)
+        detail = output.read().decode("utf-8", "replace").strip()
+    if returncode != 0:
+        logger.error(
+            "dependency install failed after %.1fs: %s",
+            time.monotonic() - started,
+            detail[:400],
         )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip() or f"exit code {exc.returncode}"
-        logger.error("dependency install failed: %s", detail[:400])
         raise DependencyInstallError(
-            f"`uv pip install {' '.join(requirements)}` failed: {detail}"
-        ) from exc
+            f"`uv pip install {' '.join(requirements)}` failed: "
+            f"{detail or f'exit code {returncode}'}"
+        )
+    logger.info(
+        "dependencies installed in %.1fs: %s",
+        time.monotonic() - started,
+        ", ".join(requirements),
+    )
     importlib.invalidate_caches()
+
+
+def _terminate(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.kill()
+    except OSError:
+        pass
+    process.wait()

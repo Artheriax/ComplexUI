@@ -10,6 +10,7 @@ import type {
   TensorPreview,
 } from "../types/graph";
 import { CheckIcon, SpinnerIcon, WarningIcon } from "./icons";
+import { RichOutputView } from "./RichOutputView";
 
 function isDataFramePreview(value: PreviewValue): value is DataFramePreview {
   return (
@@ -156,7 +157,10 @@ function ErrorCard({ error }: { error: ExecutionError }) {
       state.nodes.find((node) => node.id === error.nodeId)?.data.label ?? null,
   );
   return (
-    <div className="rounded-lg border border-red-900/70 bg-red-950/40 p-2.5">
+    <div
+      role="alert"
+      className="rounded-lg border border-red-900/70 bg-red-950/40 p-2.5"
+    >
       <div className="flex items-center gap-1.5 text-xs font-semibold text-red-300">
         <WarningIcon className="h-3.5 w-3.5" />
         {error.errorType}
@@ -196,15 +200,32 @@ export function ExecutionPanel() {
     [nodes],
   );
 
-  const previewEntries = Object.entries(execution.previews);
+  const outputNodeIds = useMemo(() => {
+    const ids = new Set([
+      ...Object.keys(execution.previews),
+      ...Object.keys(execution.richOutputs),
+    ]);
+    const ordered = execution.order.filter((nodeId) => ids.has(nodeId));
+    for (const nodeId of ids) {
+      if (!ordered.includes(nodeId)) {
+        ordered.push(nodeId);
+      }
+    }
+    return ordered;
+  }, [execution.order, execution.previews, execution.richOutputs]);
 
   return (
-    <aside className="flex w-80 shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/40">
+    <aside
+      aria-label="Execution output"
+      className="flex w-80 shrink-0 flex-col border-l border-zinc-800 bg-zinc-900/40"
+    >
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
           Execution
         </span>
         <span
+          role="status"
+          aria-live="polite"
           className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${statusBadge[execution.status]}`}
         >
           {execution.status}
@@ -236,34 +257,70 @@ export function ExecutionPanel() {
           </p>
         )}
 
-        {previewEntries.length === 0 && execution.status !== "running" && (
+        {outputNodeIds.length === 0 && execution.status !== "running" && (
           <p className="text-[11px] leading-relaxed text-zinc-600">
-            Run the workflow to inspect dataset shapes, model parameters and
-            evaluation metrics here.
+            Run the workflow to inspect dataset shapes, model parameters,
+            console output, tables and plots here.
           </p>
         )}
 
-        {previewEntries.map(([nodeId, outputs]) => (
-          <div key={nodeId} className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-2.5">
-            <div className="mb-1.5 flex items-center gap-1.5">
-              <CheckIcon className="h-3 w-3 text-emerald-400" />
-              <span className="text-xs font-semibold text-zinc-200">
-                {nodeLabels[nodeId] ?? nodeId}
-              </span>
-              {execution.cached[nodeId] && (
-                <span className="rounded bg-zinc-800 px-1 py-px text-[9px] text-zinc-400">cached</span>
+        {outputNodeIds.map((nodeId) => {
+          const outputs = execution.previews[nodeId] ?? {};
+          const richOutputs = execution.richOutputs[nodeId] ?? [];
+          const errored = execution.nodeStates[nodeId]?.status === "error";
+          return (
+            <div
+              key={nodeId}
+              className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-2.5"
+            >
+              <div className="mb-1.5 flex items-center gap-1.5">
+                {errored ? (
+                  <WarningIcon className="h-3 w-3 text-red-400" />
+                ) : (
+                  <CheckIcon className="h-3 w-3 text-emerald-400" />
+                )}
+                <span className="text-xs font-semibold text-zinc-200">
+                  {nodeLabels[nodeId] ?? nodeId}
+                </span>
+                {execution.cached[nodeId] && (
+                  <span className="rounded bg-zinc-800 px-1 py-px text-[9px] text-zinc-400">
+                    cached
+                  </span>
+                )}
+              </div>
+              {Object.keys(outputs).length > 0 && (
+                <div className="space-y-2">
+                  {Object.entries(outputs).map(([outputName, value]) => (
+                    <div key={outputName}>
+                      <div className="mb-0.5 font-mono text-[10px] text-cyan-300/80">
+                        {outputName}
+                      </div>
+                      <PreviewView value={value} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {richOutputs.length > 0 && (
+                <div
+                  className={`space-y-2 ${
+                    Object.keys(outputs).length > 0
+                      ? "mt-2 border-t border-zinc-800 pt-2"
+                      : ""
+                  }`}
+                >
+                  {richOutputs.map((output, index) => (
+                    <div key={index}>
+                      <div className="mb-0.5 font-mono text-[9px] uppercase text-zinc-500">
+                        {output.source}
+                      </div>
+                      <RichOutputView output={output} interactive />
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-            <div className="space-y-2">
-              {Object.entries(outputs).map(([outputName, value]) => (
-                <div key={outputName}>
-                  <div className="mb-0.5 font-mono text-[10px] text-cyan-300/80">{outputName}</div>
-                  <PreviewView value={value} />
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </aside>
   );

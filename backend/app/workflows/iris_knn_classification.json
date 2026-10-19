@@ -1,0 +1,18 @@
+{
+  "name": "iris_knn_classification",
+  "title": "Iris KNN Classification",
+  "category": "Getting Started",
+  "description": "Load the iris dataset, split it, train a KNN classifier and score it.",
+  "nodes": [
+    { "id": "load", "template": "load_iris", "position": { "x": 0, "y": 40 } },
+    { "id": "split", "template": "train_test_split", "position": { "x": 280, "y": 40 }, "widget_values": { "test_size": 0.2 } },
+    { "id": "knn", "template": "knn_train", "position": { "x": 560, "y": 40 }, "widget_values": { "n_neighbors": 5 } },
+    { "id": "evaluate", "template": "evaluate_metrics", "position": { "x": 840, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "split", "target_handle": "df" },
+    { "source_node_id": "split", "source_handle": "train", "target_node_id": "knn", "target_handle": "train" },
+    { "source_node_id": "knn", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "split", "source_handle": "test", "target_node_id": "evaluate", "target_handle": "test" }
+  ]
+}

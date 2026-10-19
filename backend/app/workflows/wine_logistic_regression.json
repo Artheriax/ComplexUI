@@ -1,0 +1,20 @@
+{
+  "name": "wine_logistic_regression",
+  "title": "Wine Logistic Regression",
+  "category": "Getting Started",
+  "description": "Standard-scale wine features, split stratified, then fit balanced logistic regression.",
+  "nodes": [
+    { "id": "load", "template": "load_wine", "position": { "x": 0, "y": 40 } },
+    { "id": "scaler", "template": "standard_scaler", "position": { "x": 260, "y": 40 }, "widget_values": { "target_column": "target" } },
+    { "id": "split", "template": "train_test_split", "position": { "x": 520, "y": 40 }, "widget_values": { "stratify": true, "test_size": 0.25 } },
+    { "id": "model", "template": "logistic_regression", "position": { "x": 780, "y": 20 }, "widget_values": { "C": 1.0, "max_iter": 500, "class_weight": "balanced" } },
+    { "id": "evaluate", "template": "evaluate_metrics", "position": { "x": 1040, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "scaler", "target_handle": "df" },
+    { "source_node_id": "scaler", "source_handle": "scaled", "target_node_id": "split", "target_handle": "df" },
+    { "source_node_id": "split", "source_handle": "train", "target_node_id": "model", "target_handle": "train" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "split", "source_handle": "test", "target_node_id": "evaluate", "target_handle": "test" }
+  ]
+}

@@ -17,6 +17,7 @@ import {
   cancelExecution,
   executeGraph,
   fetchTemplates,
+  fetchWorkflowTemplates,
   parseCode,
   syntaxErrorFrom,
   untrustedNodesFrom,
@@ -27,6 +28,7 @@ import type { SavedWorkflow } from "../lib/persistence";
 import type {
   AppEdge,
   AppNode,
+  BackendRunStatus,
   ComplexNodeData,
   ExecuteResponse,
   ExecutionError,
@@ -36,10 +38,12 @@ import type {
   NodeSchema,
   PendingApproval,
   PreviewValue,
+  RichOutput,
   TemplateInfo,
   WorkflowGraphPayload,
+  WorkflowTemplateInfo,
 } from "../types/graph";
-import { defaultWidgetValues } from "../types/graph";
+import { defaultWidgetValues, parseRichOutputs } from "../types/graph";
 
 export interface GraphExecutionState {
   status: ExecutionStatus;
@@ -47,17 +51,62 @@ export interface GraphExecutionState {
   order: string[];
   nodeStates: Record<string, NodeExecutionState>;
   previews: Record<string, Record<string, PreviewValue>>;
+  richOutputs: Record<string, RichOutput[]>;
   cached: Record<string, boolean>;
   error: ExecutionError | null;
 }
+
+function pruneExecution(
+  execution: GraphExecutionState,
+  removed: Set<string>,
+): GraphExecutionState {
+  if (removed.size === 0) {
+    return execution;
+  }
+  const nodeStates = { ...execution.nodeStates };
+  const previews = { ...execution.previews };
+  const richOutputs = { ...execution.richOutputs };
+  const cached = { ...execution.cached };
+  for (const id of removed) {
+    delete nodeStates[id];
+    delete previews[id];
+    delete richOutputs[id];
+    delete cached[id];
+  }
+  return { ...execution, nodeStates, previews, richOutputs, cached };
+}
+
+export interface GraphSnapshot {
+  nodes: AppNode[];
+  edges: AppEdge[];
+}
+
+interface HistoryMeta {
+  coalesceKey: string | null;
+  coalesceAt: number;
+  dragging: boolean;
+}
+
+const HISTORY_LIMIT = 100;
+const HISTORY_COALESCE_MS = 800;
+const PASTE_OFFSET = 40;
 
 interface GraphStore {
   templates: TemplateInfo[];
   templatesLoaded: boolean;
   templatesError: string | null;
 
+  workflows: WorkflowTemplateInfo[];
+  workflowsLoaded: boolean;
+  workflowsError: string | null;
+
   nodes: AppNode[];
   edges: AppEdge[];
+
+  past: GraphSnapshot[];
+  future: GraphSnapshot[];
+  clipboard: GraphSnapshot | null;
+  historyMeta: HistoryMeta;
 
   editingNodeId: string | null;
   pendingApproval: PendingApproval | null;
@@ -69,11 +118,20 @@ interface GraphStore {
   execution: GraphExecutionState;
 
   loadTemplates: () => Promise<void>;
+  loadWorkflowTemplates: () => Promise<void>;
+  loadWorkflowTemplate: (workflow: WorkflowTemplateInfo) => boolean;
   addNodeFromTemplate: (template: TemplateInfo, position: XYPosition) => string;
   addScratchNode: (position: XYPosition) => string;
   duplicateNode: (nodeId: string) => Promise<string | null>;
   deleteNode: (nodeId: string) => void;
   clearCanvas: () => void;
+  checkpoint: () => void;
+  undo: () => void;
+  redo: () => void;
+  copySelection: () => boolean;
+  cutSelection: () => boolean;
+  pasteClipboard: () => Promise<string[]>;
+  duplicateSelection: () => Promise<string[]>;
   onNodesChange: (changes: NodeChange<AppNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -92,6 +150,7 @@ interface GraphStore {
   runGraph: (targets?: string[]) => Promise<void>;
   cancelRun: () => Promise<void>;
   applyExecutionEvent: (event: ExecutionEvent) => void;
+  syncRunStatus: (status: BackendRunStatus) => void;
   setWsConnected: (connected: boolean) => void;
 }
 
@@ -122,9 +181,25 @@ const idleExecution = (): GraphExecutionState => ({
   order: [],
   nodeStates: {},
   previews: {},
+  richOutputs: {},
   cached: {},
   error: null,
 });
+
+function widgetValueAllowed(dataType: string, value: unknown): boolean {
+  switch (dataType) {
+    case "int":
+      return typeof value === "number" && Number.isInteger(value);
+    case "float":
+      return typeof value === "number" && Number.isFinite(value);
+    case "str":
+      return typeof value === "string";
+    case "bool":
+      return typeof value === "boolean";
+    default:
+      return true;
+  }
+}
 
 function mergeWidgetValues(
   schema: NodeSchema,
@@ -132,7 +207,10 @@ function mergeWidgetValues(
 ): Record<string, unknown> {
   const next = defaultWidgetValues(schema);
   for (const widget of schema.widgets) {
-    if (previous[widget.name] !== undefined) {
+    if (
+      previous[widget.name] !== undefined &&
+      widgetValueAllowed(widget.data_type, previous[widget.name])
+    ) {
       next[widget.name] = previous[widget.name];
     }
   }
@@ -204,13 +282,50 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     });
   };
 
+  const snapshotGraph = (): GraphSnapshot => {
+    const { nodes, edges } = get();
+    return { nodes, edges };
+  };
+
+  const pushHistory = (coalesceKey?: string): void => {
+    const now = Date.now();
+    const meta = get().historyMeta;
+    if (
+      coalesceKey !== undefined &&
+      meta.coalesceKey === coalesceKey &&
+      now - meta.coalesceAt < HISTORY_COALESCE_MS
+    ) {
+      set({ historyMeta: { ...meta, coalesceAt: now } });
+      return;
+    }
+    const snapshot = snapshotGraph();
+    set((state) => ({
+      past: [...state.past.slice(-(HISTORY_LIMIT - 1)), snapshot],
+      future: [],
+      historyMeta: {
+        coalesceKey: coalesceKey ?? null,
+        coalesceAt: now,
+        dragging: state.historyMeta.dragging,
+      },
+    }));
+  };
+
   return {
     templates: [],
     templatesLoaded: false,
     templatesError: null,
 
+    workflows: [],
+    workflowsLoaded: false,
+    workflowsError: null,
+
     nodes: [],
     edges: [],
+
+    past: [],
+    future: [],
+    clipboard: null,
+    historyMeta: { coalesceKey: null, coalesceAt: 0, dragging: false },
 
     editingNodeId: null,
     pendingApproval: null,
@@ -233,6 +348,74 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       }
     },
 
+    loadWorkflowTemplates: async () => {
+      try {
+        const workflows = await fetchWorkflowTemplates();
+        set({ workflows, workflowsLoaded: true, workflowsError: null });
+      } catch (error) {
+        set({
+          workflowsError:
+            error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+
+    loadWorkflowTemplate: (workflow) => {
+      const templates = new Map(
+        get().templates.map((template) => [template.name, template]),
+      );
+      const missing = workflow.nodes.filter(
+        (node) => !templates.has(node.template),
+      );
+      if (missing.length > 0) {
+        set({
+          workflowsError: `Missing templates: ${missing
+            .map((node) => node.template)
+            .join(", ")}`,
+        });
+        return false;
+      }
+      const nodes: AppNode[] = workflow.nodes.map((spec) => {
+        const template = templates.get(spec.template) as TemplateInfo;
+        const node: AppNode = {
+          id: spec.id,
+          type: "complex",
+          position: spec.position,
+          data: {
+            label: template.title,
+            templateName: template.name,
+            templateCode: template.code,
+            code: template.code,
+            schema: template.node_schema,
+            widgetValues: {
+              ...defaultWidgetValues(template.node_schema),
+              ...spec.widget_values,
+            },
+            isTrusted: true,
+          },
+        };
+        return node;
+      });
+      const edges: AppEdge[] = workflow.edges.map((edge) => ({
+        id: `${edge.source_node_id}:${edge.source_handle}->${edge.target_node_id}:${edge.target_handle}`,
+        source: edge.source_node_id,
+        target: edge.target_node_id,
+        sourceHandle: edge.source_handle,
+        targetHandle: edge.target_handle,
+      }));
+      pushHistory();
+      set({
+        nodes,
+        edges,
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        workflowsError: null,
+        execution: idleExecution(),
+      });
+      return true;
+    },
+
     addNodeFromTemplate: (template, position) => {
       const id = crypto.randomUUID();
       const node: AppNode = {
@@ -249,6 +432,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           isTrusted: true,
         },
       };
+      pushHistory();
       set((state) => ({ nodes: [...state.nodes, node] }));
       return id;
     },
@@ -270,6 +454,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           isTrusted: false,
         },
       };
+      pushHistory();
       set((state) => ({ nodes: [...state.nodes, node] }));
       void (async () => {
         try {
@@ -304,6 +489,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (!node) {
         return null;
       }
+      pushHistory();
       const id = crypto.randomUUID();
       const hash = await sha256Hex(node.data.code);
       const isOfficial = get().templates.some(
@@ -321,6 +507,10 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     deleteNode: (nodeId) => {
+      if (!get().nodes.some((node) => node.id === nodeId)) {
+        return;
+      }
+      pushHistory();
       set((state) => ({
         nodes: state.nodes.filter((node) => node.id !== nodeId),
         edges: state.edges.filter(
@@ -328,10 +518,15 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         ),
         editingNodeId:
           state.editingNodeId === nodeId ? null : state.editingNodeId,
+        execution: pruneExecution(state.execution, new Set([nodeId])),
       }));
     },
 
     clearCanvas: () => {
+      if (get().nodes.length === 0 && get().edges.length === 0) {
+        return;
+      }
+      pushHistory();
       set({
         nodes: [],
         edges: [],
@@ -342,10 +537,176 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       });
     },
 
+    checkpoint: () => {
+      pushHistory();
+    },
+
+    undo: () => {
+      if (get().execution.status === "running") {
+        return;
+      }
+      const { past, future } = get();
+      if (past.length === 0) {
+        return;
+      }
+      const previous = past[past.length - 1];
+      const snapshot = snapshotGraph();
+      set((state) => ({
+        past: past.slice(0, -1),
+        future: [...future, snapshot],
+        nodes: previous.nodes,
+        edges: previous.edges,
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        historyMeta: { ...state.historyMeta, coalesceKey: null, dragging: false },
+      }));
+    },
+
+    redo: () => {
+      if (get().execution.status === "running") {
+        return;
+      }
+      const { past, future } = get();
+      if (future.length === 0) {
+        return;
+      }
+      const next = future[future.length - 1];
+      const snapshot = snapshotGraph();
+      set((state) => ({
+        past: [...past, snapshot],
+        future: future.slice(0, -1),
+        nodes: next.nodes,
+        edges: next.edges,
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        historyMeta: { ...state.historyMeta, coalesceKey: null, dragging: false },
+      }));
+    },
+
+    copySelection: () => {
+      const { nodes, edges } = get();
+      const selected = nodes.filter((node) => node.selected);
+      if (selected.length === 0) {
+        return false;
+      }
+      const ids = new Set(selected.map((node) => node.id));
+      set({
+        clipboard: {
+          nodes: selected.map((node) => ({
+            ...node,
+            data: { ...node.data },
+          })),
+          edges: edges.filter(
+            (edge) => ids.has(edge.source) && ids.has(edge.target),
+          ),
+        },
+      });
+      return true;
+    },
+
+    cutSelection: () => {
+      const { nodes } = get();
+      const selected = nodes.filter((node) => node.selected);
+      if (selected.length === 0) {
+        return false;
+      }
+      get().copySelection();
+      pushHistory();
+      const removed = new Set(selected.map((node) => node.id));
+      set((state) => ({
+        nodes: state.nodes.filter((node) => !removed.has(node.id)),
+        edges: state.edges.filter(
+          (edge) => !removed.has(edge.source) && !removed.has(edge.target),
+        ),
+        execution: pruneExecution(state.execution, removed),
+      }));
+      return true;
+    },
+
+    pasteClipboard: async () => {
+      const clip = get().clipboard;
+      if (!clip || clip.nodes.length === 0) {
+        return [];
+      }
+      pushHistory();
+      const templates = get().templates;
+      const idMap = new Map<string, string>();
+      for (const node of clip.nodes) {
+        idMap.set(node.id, crypto.randomUUID());
+      }
+      const hashCache = new Map<string, Promise<string>>();
+      const codeHash = (code: string): Promise<string> => {
+        let promise = hashCache.get(code);
+        if (!promise) {
+          promise = sha256Hex(code);
+          hashCache.set(code, promise);
+        }
+        return promise;
+      };
+      const newNodes: AppNode[] = [];
+      for (const node of clip.nodes) {
+        const hash = await codeHash(node.data.code);
+        const isOfficial = templates.some(
+          (template) => template.code_hash === hash,
+        );
+        newNodes.push({
+          ...node,
+          id: idMap.get(node.id) as string,
+          selected: true,
+          position: {
+            x: node.position.x + PASTE_OFFSET,
+            y: node.position.y + PASTE_OFFSET,
+          },
+          data: { ...node.data, isTrusted: isOfficial },
+        });
+      }
+      const newEdges: AppEdge[] = clip.edges.map((edge) => {
+        const source = idMap.get(edge.source) as string;
+        const target = idMap.get(edge.target) as string;
+        return {
+          ...edge,
+          id: `${source}:${edge.sourceHandle}->${target}:${edge.targetHandle}`,
+          source,
+          target,
+        };
+      });
+      set((state) => ({
+        nodes: [
+          ...state.nodes.map((node) =>
+            node.selected ? { ...node, selected: false } : node,
+          ),
+          ...newNodes,
+        ],
+        edges: [...state.edges, ...newEdges],
+      }));
+      return newNodes.map((node) => node.id);
+    },
+
+    duplicateSelection: async () => {
+      if (!get().copySelection()) {
+        return [];
+      }
+      return get().pasteClipboard();
+    },
+
     onNodesChange: (changes) => {
       const removed = changes
         .filter((change) => change.type === "remove")
         .map((change) => change.id);
+      const dragStart = changes.some(
+        (change) => change.type === "position" && change.dragging === true,
+      );
+      const dragEnd = changes.some(
+        (change) => change.type === "position" && change.dragging === false,
+      );
+      if (dragStart && !get().historyMeta.dragging) {
+        pushHistory();
+        set((state) => ({
+          historyMeta: { ...state.historyMeta, dragging: true },
+        }));
+      }
       set((state) => {
         const next: Partial<GraphStore> = {
           nodes: applyNodeChanges<AppNode>(changes, state.nodes),
@@ -355,15 +716,13 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             (edge) =>
               !removed.includes(edge.source) && !removed.includes(edge.target),
           );
-          const nodeStates = { ...state.execution.nodeStates };
-          const previews = { ...state.execution.previews };
-          const cached = { ...state.execution.cached };
-          for (const id of removed) {
-            delete nodeStates[id];
-            delete previews[id];
-            delete cached[id];
-          }
-          next.execution = { ...state.execution, nodeStates, previews, cached };
+          next.execution = pruneExecution(
+            state.execution,
+            new Set(removed),
+          );
+        }
+        if (dragEnd) {
+          next.historyMeta = { ...state.historyMeta, dragging: false };
         }
         return next;
       });
@@ -383,40 +742,40 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (source === target) {
         return;
       }
-      set((state) => {
-        const sourceNode = state.nodes.find((node) => node.id === source);
-        const targetNode = state.nodes.find((node) => node.id === target);
-        if (!sourceNode || !targetNode) {
-          return {};
-        }
-        const sourceSocket = sourceNode.data.schema.outputs.find(
-          (socket) => socket.name === sourceHandle,
-        );
-        const targetSocket = targetNode.data.schema.inputs.find(
-          (socket) => socket.name === targetHandle,
-        );
-        if (!sourceSocket || !targetSocket) {
-          return {};
-        }
-        const compatible =
-          sourceSocket.data_type === targetSocket.data_type ||
-          sourceSocket.data_type === "ANY" ||
-          targetSocket.data_type === "ANY";
-        const inputTaken = state.edges.some(
-          (edge) => edge.target === target && edge.targetHandle === targetHandle,
-        );
-        if (!compatible || inputTaken) {
-          return {};
-        }
-        const edge: AppEdge = {
-          id: `${source}:${sourceHandle}->${target}:${targetHandle}`,
-          source,
-          target,
-          sourceHandle,
-          targetHandle,
-        };
-        return { edges: addEdge(edge, state.edges) };
-      });
+      const state = get();
+      const sourceNode = state.nodes.find((node) => node.id === source);
+      const targetNode = state.nodes.find((node) => node.id === target);
+      if (!sourceNode || !targetNode) {
+        return;
+      }
+      const sourceSocket = sourceNode.data.schema.outputs.find(
+        (socket) => socket.name === sourceHandle,
+      );
+      const targetSocket = targetNode.data.schema.inputs.find(
+        (socket) => socket.name === targetHandle,
+      );
+      if (!sourceSocket || !targetSocket) {
+        return;
+      }
+      const compatible =
+        sourceSocket.data_type === targetSocket.data_type ||
+        sourceSocket.data_type === "ANY" ||
+        targetSocket.data_type === "ANY";
+      const inputTaken = state.edges.some(
+        (edge) => edge.target === target && edge.targetHandle === targetHandle,
+      );
+      if (!compatible || inputTaken) {
+        return;
+      }
+      const edge: AppEdge = {
+        id: `${source}:${sourceHandle}->${target}:${targetHandle}`,
+        source,
+        target,
+        sourceHandle,
+        targetHandle,
+      };
+      pushHistory();
+      set((current) => ({ edges: addEdge(edge, current.edges) }));
     },
 
     openEditor: (nodeId) => set({ editingNodeId: nodeId }),
@@ -424,17 +783,22 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     closeEditor: () => set({ editingNodeId: null }),
 
     updateWidgetValue: (nodeId, name, value) => {
+      const node = get().nodes.find((candidate) => candidate.id === nodeId);
+      if (!node || node.data.widgetValues[name] === value) {
+        return;
+      }
+      pushHistory(`widget:${nodeId}:${name}`);
       set((state) => ({
-        nodes: state.nodes.map((node) =>
-          node.id === nodeId
+        nodes: state.nodes.map((item) =>
+          item.id === nodeId
             ? {
-                ...node,
+                ...item,
                 data: {
-                  ...node.data,
-                  widgetValues: { ...node.data.widgetValues, [name]: value },
+                  ...item.data,
+                  widgetValues: { ...item.data.widgetValues, [name]: value },
                 },
               }
-            : node,
+            : item,
         ),
       }));
     },
@@ -447,6 +811,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       );
       const isSessionApproved = state.approvedHashes.has(`${nodeId}:${hash}`);
       if (isOfficial || isSessionApproved) {
+        pushHistory();
         commitNodeCode(nodeId, code, schema, true);
         set({ editingNodeId: null });
         return;
@@ -470,6 +835,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             `${pending.nodeId}:${pending.codeHash}`,
           ),
         }));
+        pushHistory();
         commitNodeCode(pending.nodeId, pending.code, pending.schema, true);
         set({ pendingApproval: null, approvalBusy: false, editingNodeId: null });
       } catch (error) {
@@ -484,6 +850,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     rejectPending: () => set({ pendingApproval: null, approvalError: null }),
 
     restoreWorkflow: async (saved) => {
+      pushHistory();
       const templates = get().templates;
       const templateByName = new Map(
         templates.map((template) => [template.name, template]),
@@ -565,6 +932,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       const saved = loadLocalWorkflow();
       if (saved && saved.nodes.length > 0) {
         await get().restoreWorkflow(saved);
+        set({ past: [], future: [] });
       }
     },
 
@@ -750,31 +1118,53 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               },
             };
           }
-          case "NODE_COMPLETED":
+          case "NODE_COMPLETED": {
+            const outputs = (event.data.outputs ?? {}) as Record<
+              string,
+              PreviewValue
+            >;
+            const richOutputs = parseRichOutputs(event.data.rich_outputs);
             return {
               execution: {
                 ...execution,
+                previews: {
+                  ...execution.previews,
+                  [event.node_id]: outputs,
+                },
+                richOutputs: {
+                  ...execution.richOutputs,
+                  [event.node_id]: richOutputs,
+                },
+                cached: {
+                  ...execution.cached,
+                  [event.node_id]: event.data.cached === true,
+                },
                 nodeStates: {
                   ...execution.nodeStates,
                   [event.node_id]: {
                     status: "completed",
                     cached: event.data.cached === true,
-                    outputs: (event.data.outputs ?? {}) as Record<
-                      string,
-                      PreviewValue
-                    >,
+                    outputs,
+                    richOutputs,
                   },
                 },
               },
             };
-          case "NODE_ERROR":
+          }
+          case "NODE_ERROR": {
+            const richOutputs = parseRichOutputs(event.data.rich_outputs);
             return {
               execution: {
                 ...execution,
+                richOutputs: {
+                  ...execution.richOutputs,
+                  [event.node_id]: richOutputs,
+                },
                 nodeStates: {
                   ...execution.nodeStates,
                   [event.node_id]: {
                     status: "error",
+                    richOutputs,
                     error: {
                       line:
                         typeof event.data.line === "number"
@@ -788,6 +1178,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
                 },
               },
             };
+          }
           case "EXECUTION_COMPLETED":
             return {
               execution: {
@@ -820,15 +1211,67 @@ export const useGraphStore = create<GraphStore>((set, get) => {
                 },
               },
             };
-          case "EXECUTION_CANCELLED":
+          case "EXECUTION_CANCELLED": {
+            const nodeStates: Record<string, NodeExecutionState> = {};
+            for (const [nodeId, nodeState] of Object.entries(
+              execution.nodeStates,
+            )) {
+              nodeStates[nodeId] =
+                nodeState.status === "running" ? { status: "idle" } : nodeState;
+            }
             return {
               execution: {
                 ...execution,
                 status: "cancelled",
                 error: null,
+                nodeStates,
               },
             };
+          }
         }
+      });
+    },
+
+    syncRunStatus: (status) => {
+      set((state) => {
+        const execution = state.execution;
+        if (status.status === "running") {
+          if (execution.status === "running") {
+            return {};
+          }
+          return {
+            execution: {
+              ...idleExecution(),
+              status: "running",
+              runId: status.run_id,
+            },
+          };
+        }
+        if (execution.status !== "running" || execution.runId === null) {
+          return {};
+        }
+        const nodeStates: Record<string, NodeExecutionState> = {};
+        for (const [nodeId, nodeState] of Object.entries(
+          execution.nodeStates,
+        )) {
+          nodeStates[nodeId] =
+            nodeState.status === "running" ? { status: "idle" } : nodeState;
+        }
+        return {
+          execution: {
+            ...execution,
+            status: "failed",
+            nodeStates,
+            error: {
+              message:
+                "Lost contact with the backend before the run finished. Re-run the workflow to refresh outputs.",
+              errorType: "Disconnected",
+              nodeId: null,
+              line: null,
+              traceback: "",
+            },
+          },
+        };
       });
     },
 

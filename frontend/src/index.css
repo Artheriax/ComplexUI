@@ -71,3 +71,31 @@ body {
   background: #3f3f46;
   border-radius: 4px;
 }
+
+.rich-html {
+  color: #d4d4d8;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.rich-html table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.rich-html th,
+.rich-html td {
+  padding: 2px 6px;
+  border-bottom: 1px solid #27272a;
+  text-align: left;
+}
+
+.rich-html img,
+.rich-html svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.rich-html a {
+  color: #22d3ee;
+}

@@ -1,9 +1,11 @@
 import type {
+  BackendRunStatus,
   ExecuteResponse,
   NodeSchema,
   TemplateInfo,
   UntrustedNodeRef,
   WorkflowGraphPayload,
+  WorkflowTemplateInfo,
 } from "../types/graph";
 
 const API_BASE = "/api";
@@ -59,6 +61,10 @@ export function fetchTemplates(): Promise<TemplateInfo[]> {
   return requestJson<TemplateInfo[]>("/templates");
 }
 
+export function fetchWorkflowTemplates(): Promise<WorkflowTemplateInfo[]> {
+  return requestJson<WorkflowTemplateInfo[]>("/workflows");
+}
+
 export function approveNode(
   nodeId: string,
   codeHash: string,
@@ -81,6 +87,10 @@ export function executeGraph(
 
 export function cancelExecution(): Promise<{ status: string }> {
   return requestJson<{ status: string }>("/cancel", { method: "POST" });
+}
+
+export function fetchRunStatus(): Promise<BackendRunStatus> {
+  return requestJson<BackendRunStatus>("/status");
 }
 
 export function untrustedNodesFrom(error: ApiError): UntrustedNodeRef[] {

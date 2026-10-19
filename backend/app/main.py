@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -20,6 +21,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .executor import (
     ExecutionCancelled,
@@ -31,6 +33,11 @@ from .executor import (
     validate_graph,
 )
 from .logging_setup import configure_logging
+from .network_security import (
+    RequestSizeLimitMiddleware,
+    configured_allowed_hosts,
+    origin_is_allowed,
+)
 from .schemas import (
     ApproveRequest,
     ApproveResponse,
@@ -38,13 +45,20 @@ from .schemas import (
     ExecuteRequest,
     ExecuteResponse,
     ExecutionEvent,
+    ExecutionStatusResponse,
     NodeSchema,
     ParseRequest,
     TemplateInfo,
     WorkflowGraph,
 )
 from .security import UntrustedNodeError, get_security_registry
+from .template_catalog import template_meta
 from .transpiler import TranspileError, parse_node
+from .workflow_catalog import (
+    WORKFLOW_CATEGORIES,
+    WorkflowTemplateInfo,
+    get_workflows,
+)
 
 __all__ = ["app", "coordinator", "manager"]
 
@@ -52,16 +66,6 @@ configure_logging(os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"))
 logger = logging.getLogger("complexui.server")
 
 _SEND_TIMEOUT_SECONDS = 2.0
-
-_TEMPLATE_TITLES = {
-    "load_iris": "Load Iris Dataset",
-    "train_test_split": "Train / Test Split",
-    "knn_train": "KNN Classifier",
-    "evaluate_metrics": "Evaluate Classifier",
-    "tensor_dataset": "Synthetic Tensor Dataset",
-    "mlp_train": "MLP Trainer (Torch)",
-    "evaluate_torch": "Evaluate Torch Model",
-}
 
 
 class ConnectionManager:
@@ -139,77 +143,147 @@ class ExecutionCoordinator:
     """Allows at most one workflow execution at a time."""
 
     def __init__(self) -> None:
+        self._lock = threading.Lock()
         self._run_id: str | None = None
         self._stop_event: threading.Event | None = None
 
     @property
     def running(self) -> bool:
-        return self._run_id is not None
+        with self._lock:
+            return self._run_id is not None
+
+    @property
+    def run_id(self) -> str | None:
+        with self._lock:
+            return self._run_id
 
     def try_begin(self) -> tuple[str, threading.Event] | None:
-        if self._run_id is not None:
-            return None
-        self._run_id = uuid4().hex
-        self._stop_event = threading.Event()
-        return self._run_id, self._stop_event
+        with self._lock:
+            if self._run_id is not None:
+                return None
+            self._run_id = uuid4().hex
+            self._stop_event = threading.Event()
+            return self._run_id, self._stop_event
 
     def cancel(self) -> bool:
         """Request cancellation of the running execution (False if idle)."""
-        if self._stop_event is None:
-            return False
-        self._stop_event.set()
-        return True
+        with self._lock:
+            if self._stop_event is None:
+                return False
+            self._stop_event.set()
+            return True
 
     def finish(self) -> None:
-        self._run_id = None
-        self._stop_event = None
+        with self._lock:
+            self._run_id = None
+            self._stop_event = None
 
 
 def _log_event(event: ExecutionEvent) -> None:
     """Narrate every execution telemetry event on the console."""
     data = event.data
-    short_run = str(data.get("run_id", ""))[:12]
+    run_id = str(data.get("run_id", ""))
+    short_run = run_id[:12]
+    extra: dict[str, Any] = {
+        "run_id": run_id or None,
+        "node_id": event.node_id or None,
+    }
     if event.type is EventType.EXECUTION_STARTED:
-        logger.info("run %s started: order=%s", short_run, data.get("order", []))
+        order = data.get("order")
+        node_count = len(order) if isinstance(order, list) else 0
+        logger.info(
+            "run %s started: %d node(s)", short_run, node_count, extra=extra
+        )
+        logger.debug("run %s order: %s", short_run, order, extra=extra)
     elif event.type is EventType.NODE_STARTED:
-        logger.info("  [start] %s", event.node_id)
+        logger.info("  [start] %s", event.node_id, extra=extra)
     elif event.type is EventType.INSTALLING_DEPS:
         dependencies = data.get("dependencies") or []
+        extra["dependencies"] = dependencies
         logger.info(
             "  [deps ] %s installing: %s",
             event.node_id,
             ", ".join(str(dep) for dep in dependencies),
+            extra=extra,
         )
     elif event.type is EventType.NODE_COMPLETED:
-        if data.get("cached"):
-            logger.info("  [done ] %s (cached)", event.node_id)
+        cached = bool(data.get("cached"))
+        extra["cached"] = cached
+        if cached:
+            logger.info("  [done ] %s (cached)", event.node_id, extra=extra)
         else:
+            duration = data.get("duration_ms")
+            if isinstance(duration, (int, float)):
+                extra["duration_ms"] = duration
             logger.info(
-                "  [done ] %s in %sms", event.node_id, data.get("duration_ms")
+                "  [done ] %s in %sms", event.node_id, duration, extra=extra
             )
     elif event.type is EventType.NODE_ERROR:
+        extra["error_type"] = data.get("error_type")
+        extra["line"] = data.get("line")
         logger.error(
-            "  [error] %s: %s (line %s)",
+            "  [error] %s: %s (line %s): %s",
             event.node_id,
             data.get("error_type"),
             data.get("line"),
+            data.get("message", ""),
+            extra=extra,
         )
     elif event.type is EventType.EXECUTION_COMPLETED:
-        cached_map = data.get("cached") or {}
+        cached_map = data.get("cached")
+        cached_map = cached_map if isinstance(cached_map, dict) else {}
         cached_count = sum(1 for value in cached_map.values() if value)
-        logger.info(
-            "run %s completed: %d node(s), %d cached",
-            short_run,
-            len(cached_map),
-            cached_count,
-        )
+        duration = data.get("duration_ms")
+        extra["cached"] = cached_count
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+            logger.info(
+                "run %s completed in %sms: %d node(s), %d cached",
+                short_run,
+                duration,
+                len(cached_map),
+                cached_count,
+                extra=extra,
+            )
+        else:
+            logger.info(
+                "run %s completed: %d node(s), %d cached",
+                short_run,
+                len(cached_map),
+                cached_count,
+                extra=extra,
+            )
     elif event.type is EventType.EXECUTION_FAILED:
-        logger.error("run %s failed: %s", short_run, data.get("message"))
+        failed_node = data.get("node_id")
+        extra["error_type"] = data.get("error_type")
+        extra["line"] = data.get("line")
+        duration = data.get("duration_ms")
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+        logger.error(
+            "run %s failed%s: %s",
+            short_run,
+            f" at {failed_node}" if failed_node else "",
+            data.get("message"),
+            extra=extra,
+        )
+        traceback_text = data.get("traceback")
+        if isinstance(traceback_text, str) and traceback_text:
+            logger.debug(
+                "run %s traceback:\n%s", short_run, traceback_text, extra=extra
+            )
     elif event.type is EventType.EXECUTION_CANCELLED:
-        logger.warning("run %s cancelled", short_run)
+        duration = data.get("duration_ms")
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+        logger.warning("run %s cancelled", short_run, extra=extra)
     else:
-        logger.debug("event %s node=%s", event.type.value, event.node_id)
+        logger.debug(
+            "event %s node=%s", event.type.value, event.node_id, extra=extra
+        )
 
+
+_ALLOWED_HOSTS = configured_allowed_hosts()
 
 app = FastAPI(title="ComplexUI Backend", version="0.1.0")
 app.add_middleware(
@@ -218,15 +292,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_ALLOWED_HOSTS,
+    www_redirect=False,
+)
+app.add_middleware(RequestSizeLimitMiddleware)
 
 manager = ConnectionManager()
 coordinator = ExecutionCoordinator()
 _background_tasks: set[asyncio.Task[None]] = set()
 
 logger.info(
-    "ComplexUI backend ready: %d official template(s), CORS for localhost:5173",
+    "ComplexUI backend ready: %d official template(s), allowed hosts: %s",
     len(get_security_registry().templates()),
+    ", ".join(_ALLOWED_HOSTS),
 )
+if "*" in _ALLOWED_HOSTS:
+    logger.warning(
+        "network mode is enabled: Host validation accepts any hostname and "
+        "the API has no authentication"
+    )
 
 
 @app.post("/api/parse", response_model=NodeSchema)
@@ -248,18 +334,35 @@ def parse_endpoint(payload: ParseRequest) -> NodeSchema:
 def list_templates() -> list[TemplateInfo]:
     """Return the official templates with code, hashes and socket schemas."""
     registry = get_security_registry()
-    return [
-        TemplateInfo(
-            name=record.name,
-            title=_TEMPLATE_TITLES.get(
-                record.name, record.name.replace("_", " ").title()
-            ),
-            code=record.code,
-            code_hash=record.code_hash,
-            node_schema=parse_node(record.code, record.name),
+    templates: list[TemplateInfo] = []
+    for record in registry.templates():
+        meta = template_meta(record.name)
+        templates.append(
+            TemplateInfo(
+                name=record.name,
+                title=meta.title,
+                category=meta.category,
+                description=meta.description,
+                hidden=meta.hidden,
+                code=record.code,
+                code_hash=record.code_hash,
+                node_schema=parse_node(record.code, record.name),
+            )
         )
-        for record in registry.templates()
-    ]
+    return templates
+
+
+@app.get("/api/workflows", response_model=list[WorkflowTemplateInfo])
+def list_workflows() -> list[WorkflowTemplateInfo]:
+    """Return the bundled example workflows, ordered by category then title."""
+    workflows = get_workflows().values()
+    return sorted(
+        workflows,
+        key=lambda item: (
+            WORKFLOW_CATEGORIES.index(item.category),
+            item.title,
+        ),
+    )
 
 
 @app.get("/api/health")
@@ -269,7 +372,18 @@ def health_endpoint() -> dict[str, object]:
         "status": "ok",
         "version": app.version,
         "templates": len(get_security_registry().templates()),
+        "workflows": len(get_workflows()),
     }
+
+
+@app.get("/api/status", response_model=ExecutionStatusResponse)
+def status_endpoint() -> ExecutionStatusResponse:
+    """Report whether an execution is running (used to resync after reconnects)."""
+    run_id = coordinator.run_id
+    return ExecutionStatusResponse(
+        status="running" if run_id is not None else "idle",
+        run_id=run_id,
+    )
 
 
 @app.post("/api/approve", response_model=ApproveResponse)
@@ -350,7 +464,7 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
 
     manager.ensure_started()
     task = asyncio.create_task(
-        _run_execution(payload.graph, plan, run_id, stop_event, targets)
+        _run_execution(payload.graph, plan, run_id, stop_event)
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -369,6 +483,11 @@ def cancel_endpoint() -> dict[str, str]:
 
 @app.websocket("/ws/execution")
 async def execution_socket(websocket: WebSocket) -> None:
+    origin = websocket.headers.get("origin")
+    if not origin_is_allowed(origin, _ALLOWED_HOSTS):
+        logger.warning("websocket rejected: disallowed origin %s", origin)
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
     await manager.connect(websocket)
     logger.debug("telemetry client connected (%d total)", manager.connection_count)
     try:
@@ -388,8 +507,13 @@ async def _run_execution(
     plan: GraphPlan,
     run_id: str,
     stop_event: threading.Event,
-    targets: list[str] | None = None,
 ) -> None:
+    started = time.perf_counter()
+
+    def emit(event: ExecutionEvent) -> None:
+        event.data.setdefault("run_id", run_id)
+        manager.emit_from_thread(event)
+
     try:
         manager.emit(
             ExecutionEvent(
@@ -401,9 +525,9 @@ async def _run_execution(
         result: ExecutionResult = await asyncio.to_thread(
             execute_graph,
             graph,
-            emit=manager.emit_from_thread,
+            plan=plan,
+            emit=emit,
             should_stop=stop_event.is_set,
-            targets=targets,
         )
         manager.emit(
             ExecutionEvent(
@@ -413,6 +537,7 @@ async def _run_execution(
                     "run_id": run_id,
                     "cached": result.cached,
                     "previews": result.previews,
+                    "duration_ms": _elapsed_ms(started),
                 },
             )
         )
@@ -421,7 +546,7 @@ async def _run_execution(
             ExecutionEvent(
                 type=EventType.EXECUTION_CANCELLED,
                 node_id="",
-                data={"run_id": run_id},
+                data={"run_id": run_id, "duration_ms": _elapsed_ms(started)},
             )
         )
     except Exception as exc:
@@ -429,11 +554,19 @@ async def _run_execution(
             ExecutionEvent(
                 type=EventType.EXECUTION_FAILED,
                 node_id=_failed_node_id(exc),
-                data={"run_id": run_id, **_failure_payload(exc)},
+                data={
+                    "run_id": run_id,
+                    **_failure_payload(exc),
+                    "duration_ms": _elapsed_ms(started),
+                },
             )
         )
     finally:
         coordinator.finish()
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 1)
 
 
 def _failed_node_id(exc: Exception) -> str:

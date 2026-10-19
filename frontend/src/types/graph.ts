@@ -42,9 +42,35 @@ export interface NodeSchema {
 export interface TemplateInfo {
   name: string;
   title: string;
+  category: string;
+  description: string;
+  hidden: boolean;
   code: string;
   code_hash: string;
   node_schema: NodeSchema;
+}
+
+export interface WorkflowNodeSpec {
+  id: string;
+  template: string;
+  position: { x: number; y: number };
+  widget_values: Record<string, unknown>;
+}
+
+export interface WorkflowEdgeSpec {
+  source_node_id: string;
+  source_handle: string;
+  target_node_id: string;
+  target_handle: string;
+}
+
+export interface WorkflowTemplateInfo {
+  name: string;
+  title: string;
+  category: string;
+  description: string;
+  nodes: WorkflowNodeSpec[];
+  edges: WorkflowEdgeSpec[];
 }
 
 export interface GraphNodePayload {
@@ -68,6 +94,11 @@ export interface WorkflowGraphPayload {
 export interface ExecuteResponse {
   status: string;
   run_id: string;
+}
+
+export interface BackendRunStatus {
+  status: "idle" | "running";
+  run_id: string | null;
 }
 
 export type EventType =
@@ -125,6 +156,76 @@ export type PreviewValue =
   | Record<string, unknown>
   | string;
 
+export interface TextRichOutput {
+  kind: "text";
+  source: string;
+  text: string;
+  truncated: boolean;
+}
+
+export interface TableRichOutput {
+  kind: "table";
+  source: string;
+  columns: string[];
+  rows: unknown[][];
+  total_rows: number;
+  total_cols: number;
+  truncated: boolean;
+}
+
+export interface ImageRichOutput {
+  kind: "image";
+  source: string;
+  mime: string;
+  data: string;
+  alt: string;
+}
+
+export interface HtmlRichOutput {
+  kind: "html";
+  source: string;
+  html: string;
+  truncated: boolean;
+}
+
+export interface PlotlyRichOutput {
+  kind: "plotly";
+  source: string;
+  figure: {
+    data?: unknown[];
+    layout?: Record<string, unknown>;
+    frames?: unknown[];
+  };
+}
+
+export type RichOutput =
+  | TextRichOutput
+  | TableRichOutput
+  | ImageRichOutput
+  | HtmlRichOutput
+  | PlotlyRichOutput;
+
+const RICH_OUTPUT_KINDS = new Set<RichOutput["kind"]>([
+  "text",
+  "table",
+  "image",
+  "html",
+  "plotly",
+]);
+
+export function parseRichOutputs(value: unknown): RichOutput[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is RichOutput => {
+    if (typeof item !== "object" || item === null) {
+      return false;
+    }
+    const kind = (item as Record<string, unknown>).kind;
+    return typeof kind === "string" && RICH_OUTPUT_KINDS.has(kind as RichOutput["kind"]);
+  });
+}
+
 export type NodeExecutionStatus = "idle" | "running" | "completed" | "error";
 
 export interface NodeExecutionState {
@@ -132,6 +233,7 @@ export interface NodeExecutionState {
   cached?: boolean;
   installing?: string[];
   outputs?: Record<string, PreviewValue>;
+  richOutputs?: RichOutput[];
   error?: {
     line: number | null;
     message: string;

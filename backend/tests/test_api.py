@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.executor import clear_cache
 from app.main import app, coordinator
 from app.security import code_hash, get_security_registry
+from app.workflow_catalog import get_workflows
 
 
 @pytest.fixture(autouse=True)
@@ -134,22 +135,25 @@ def test_templates_endpoint_lists_official_templates(client: TestClient) -> None
 
     assert response.status_code == 200
     templates = {item["name"]: item for item in response.json()}
-    assert set(templates) == {
-        "load_iris",
-        "train_test_split",
-        "knn_train",
-        "evaluate_metrics",
-        "tensor_dataset",
-        "mlp_train",
-        "evaluate_torch",
-    }
+    official = get_security_registry().templates()
+    assert len(templates) == len(official)
+    assert {"load_iris", "train_test_split", "knn_train", "evaluate_metrics"} <= set(
+        templates
+    )
     load = templates["load_iris"]
     assert load["title"] == "Load Iris Dataset"
+    assert load["category"] == "Data Loaders"
+    assert "150 iris rows" in load["description"]
+    assert load["hidden"] is True
+    assert templates["load_csv"]["hidden"] is False
+    assert templates["knn_train"]["hidden"] is False
     assert load["code_hash"] == code_hash(load["code"])
     assert get_security_registry().is_official(load["code"])
     assert load["node_schema"]["outputs"] == [
         {"name": "df", "data_type": "DATAFRAME"}
     ]
+    assert templates["train_test_split"]["category"] == "Preprocessing"
+    assert templates["tensor_dataset"]["category"] == "PyTorch"
     knn = templates["knn_train"]
     assert [widget["name"] for widget in knn["node_schema"]["widgets"]] == [
         "n_neighbors"
@@ -172,7 +176,33 @@ def test_health_endpoint_reports_readiness(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["version"] == app.version
-    assert body["templates"] == 7
+    assert body["templates"] == len(get_security_registry().templates())
+    assert body["workflows"] == len(get_workflows())
+
+
+def test_status_endpoint_reports_idle_and_running(client: TestClient) -> None:
+    idle = client.get("/api/status")
+    assert idle.status_code == 200
+    assert idle.json() == {"status": "idle", "run_id": None}
+
+    run = coordinator.try_begin()
+    assert run is not None
+    running = client.get("/api/status")
+    assert running.status_code == 200
+    assert running.json() == {"status": "running", "run_id": run[0]}
+
+
+def test_workflows_endpoint_lists_validated_examples(client: TestClient) -> None:
+    response = client.get("/api/workflows")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["name"] for item in body} == set(get_workflows())
+    assert body[0]["category"] == "Getting Started"
+    for item in body:
+        assert item["nodes"]
+        assert item["edges"]
+        assert {"name", "title", "description"} <= set(item)
 
 
 def test_approve_endpoint_records_session_approval(client: TestClient) -> None:
@@ -243,6 +273,40 @@ def test_second_execution_is_served_from_cache(client: TestClient) -> None:
         "knn": True,
         "evaluate": True,
     }
+
+
+def test_execute_streams_rich_outputs_and_replays_cache(client: TestClient) -> None:
+    code = (
+        'print("hello from node")\n'
+        'display("shown value")\n'
+        "value = 1\n"
+        "return value: ANY"
+    )
+    node = {"id": "rich-api", "code": code}
+    approved = client.post(
+        "/api/approve",
+        json={"node_id": "rich-api", "code_hash": code_hash(code)},
+    )
+    assert approved.status_code == 200
+
+    status, events = _run_graph(client, {"nodes": [node], "edges": []})
+    assert status == 202
+    completed = next(event for event in events if event["type"] == "NODE_COMPLETED")
+    assert [item["kind"] for item in completed["data"]["rich_outputs"]] == [
+        "text",
+        "text",
+    ]
+    assert completed["data"]["rich_outputs"][0]["text"] == "hello from node\n"
+    assert completed["data"]["rich_outputs"][1]["text"] == "shown value"
+    assert "rich_outputs" not in events[-1]["data"]
+
+    status, replay_events = _run_graph(client, {"nodes": [node], "edges": []})
+    assert status == 202
+    replay_completed = next(
+        event for event in replay_events if event["type"] == "NODE_COMPLETED"
+    )
+    assert replay_completed["data"]["cached"] is True
+    assert replay_completed["data"]["rich_outputs"] == completed["data"]["rich_outputs"]
 
 
 def test_node_error_streams_raw_line_numbers(client: TestClient) -> None:
@@ -354,6 +418,21 @@ def test_execute_with_targets_scopes_execution(client: TestClient) -> None:
     assert "evaluate" not in events[-1]["data"]["previews"]
 
 
+def test_execute_with_targets_ignores_out_of_scope_broken_node(
+    client: TestClient,
+) -> None:
+    payload = _chain_payload()
+    nodes = payload["nodes"]
+    assert isinstance(nodes, list)
+    nodes.append({"id": "broken", "code": "def broken(:\n"})
+
+    status, events = _run_graph(client, payload, targets=["knn"])
+
+    assert status == 202
+    assert events[0]["data"]["order"] == ["load", "split", "knn"]
+    assert events[-1]["type"] == "EXECUTION_COMPLETED"
+
+
 def test_execute_with_unknown_target_returns_422(client: TestClient) -> None:
     response = client.post(
         "/api/execute", json={"graph": _chain_payload(), "targets": ["ghost"]}
@@ -451,3 +530,30 @@ def test_coordinator_cancel_semantics() -> None:
     local.finish()
     assert local.running is False
     assert local.cancel() is False
+
+
+def test_coordinator_finish_begin_race_keeps_stop_event() -> None:
+    import threading
+
+    from app.main import ExecutionCoordinator
+
+    def race_once() -> None:
+        local = ExecutionCoordinator()
+        assert local.try_begin() is not None
+        barrier = threading.Barrier(2)
+
+        def finish() -> None:
+            barrier.wait()
+            local.finish()
+
+        thread = threading.Thread(target=finish)
+        thread.start()
+        barrier.wait()
+        begun = local.try_begin()
+        thread.join()
+        if begun is not None:
+            assert local.cancel() is True
+            local.finish()
+
+    for _ in range(200):
+        race_once()

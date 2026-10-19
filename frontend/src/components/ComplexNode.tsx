@@ -1,5 +1,6 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { useState } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
 import type {
@@ -7,8 +8,10 @@ import type {
   NodeExecutionState,
   SocketType,
 } from "../types/graph";
+import type { RichOutput } from "../types/graph";
 import { SOCKET_COLORS, SOCKET_LABELS, summarisePreview } from "../types/graph";
 import { PencilIcon, DuplicateIcon, PlayIcon, TrashIcon, WarningIcon } from "./icons";
+import { RichOutputView } from "./RichOutputView";
 import { WidgetField } from "./WidgetField";
 
 const statusBorder: Record<NodeExecutionState["status"] | "idle", string> = {
@@ -50,6 +53,8 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
       <div className="flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
         {!data.isTrusted && (
           <span
+            role="img"
+            aria-label="Untrusted code"
             className="text-amber-400"
             title="Untrusted code — open the editor to review and approve"
           >
@@ -64,6 +69,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
             type="button"
             className="nodrag rounded p-1 text-cyan-300/90 hover:bg-zinc-700 hover:text-cyan-200 disabled:cursor-not-allowed disabled:text-zinc-600"
             title="Run workflow up to this node"
+            aria-label={`Run workflow up to ${data.label}`}
             disabled={running}
             onClick={() => {
               void runGraph([id]);
@@ -75,6 +81,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
             type="button"
             className="nodrag rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
             title="Edit code"
+            aria-label={`Edit code for ${data.label}`}
             onClick={() => openEditor(id)}
           >
             <PencilIcon />
@@ -83,6 +90,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
             type="button"
             className="nodrag rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
             title="Duplicate node"
+            aria-label={`Duplicate ${data.label}`}
             onClick={() => {
               void duplicateNode(id);
             }}
@@ -93,6 +101,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
             type="button"
             className="nodrag rounded p-1 text-zinc-400 hover:bg-red-900/60 hover:text-red-300"
             title="Delete node"
+            aria-label={`Delete ${data.label}`}
             onClick={() => deleteNode(id)}
           >
             <TrashIcon />
@@ -149,7 +158,48 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
         </div>
       )}
 
+      {execution && execution.richOutputs && execution.richOutputs.length > 0 && (
+        <NodeRichOutputs outputs={execution.richOutputs} />
+      )}
+
       {execution && <NodeStatusFooter state={execution} />}
+    </div>
+  );
+}
+
+function NodeRichOutputs({ outputs }: { outputs: RichOutput[] }) {
+  const visible = outputs.slice(0, 2);
+  const hidden = outputs.slice(2);
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div className="space-y-1.5 border-t border-zinc-800 px-2 py-1.5">
+      <div className="flex items-center justify-between text-[9px] uppercase tracking-wide text-zinc-500">
+        <span>Output</span>
+        <span className="normal-case tracking-normal">
+          {outputs.length} item{outputs.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      {visible.map((output, index) => (
+        <RichOutputView key={index} output={output} compact />
+      ))}
+      {hidden.length > 0 && (
+        <details
+          className="nodrag"
+          open={expanded}
+          onToggle={(event) => setExpanded(event.currentTarget.open)}
+        >
+          <summary className="cursor-pointer text-[10px] text-cyan-400/80 hover:text-cyan-300">
+            Show {hidden.length} more output{hidden.length === 1 ? "" : "s"}
+          </summary>
+          {expanded && (
+            <div className="mt-1.5 space-y-1.5">
+              {hidden.map((output, index) => (
+                <RichOutputView key={index + visible.length} output={output} compact />
+              ))}
+            </div>
+          )}
+        </details>
+      )}
     </div>
   );
 }

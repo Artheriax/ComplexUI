@@ -26,9 +26,10 @@ import re
 import token
 import tokenize
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import StringIO
-from typing import Any, Callable
+from typing import Any
 
 from .schemas import (
     InputSocket,

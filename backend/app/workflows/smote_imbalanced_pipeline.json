@@ -1,0 +1,20 @@
+{
+  "name": "smote_imbalanced_pipeline",
+  "title": "SMOTE Imbalanced Pipeline",
+  "category": "Classical ML",
+  "description": "Balance the training split with SMOTE, then fit a random forest.",
+  "nodes": [
+    { "id": "load", "template": "load_breast_cancer", "position": { "x": 0, "y": 40 } },
+    { "id": "split", "template": "train_test_split", "position": { "x": 280, "y": 40 }, "widget_values": { "stratify": true, "test_size": 0.25 } },
+    { "id": "smote", "template": "smote_resample", "position": { "x": 560, "y": 40 }, "widget_values": { "k_neighbors": 5 } },
+    { "id": "model", "template": "random_forest_classifier", "position": { "x": 840, "y": 20 }, "widget_values": { "n_estimators": 150 } },
+    { "id": "evaluate", "template": "evaluate_metrics", "position": { "x": 1120, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "split", "target_handle": "df" },
+    { "source_node_id": "split", "source_handle": "train", "target_node_id": "smote", "target_handle": "train" },
+    { "source_node_id": "smote", "source_handle": "resampled", "target_node_id": "model", "target_handle": "train" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "split", "source_handle": "test", "target_node_id": "evaluate", "target_handle": "test" }
+  ]
+}

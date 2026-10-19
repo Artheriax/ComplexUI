@@ -1,0 +1,18 @@
+{
+  "name": "breast_cancer_random_forest",
+  "title": "Breast Cancer Random Forest",
+  "category": "Classical ML",
+  "description": "Random forest over the breast cancer dataset with a 25 percent hold-out.",
+  "nodes": [
+    { "id": "load", "template": "load_breast_cancer", "position": { "x": 0, "y": 40 } },
+    { "id": "split", "template": "train_test_split", "position": { "x": 280, "y": 40 }, "widget_values": { "stratify": true, "test_size": 0.25 } },
+    { "id": "model", "template": "random_forest_classifier", "position": { "x": 560, "y": 20 }, "widget_values": { "n_estimators": 200, "max_depth": 0 } },
+    { "id": "evaluate", "template": "evaluate_metrics", "position": { "x": 840, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "split", "target_handle": "df" },
+    { "source_node_id": "split", "source_handle": "train", "target_node_id": "model", "target_handle": "train" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "split", "source_handle": "test", "target_node_id": "evaluate", "target_handle": "test" }
+  ]
+}

@@ -6,6 +6,7 @@ import { NodePalette } from "./components/NodePalette";
 import { Toolbar } from "./components/Toolbar";
 import { SpinnerIcon } from "./components/icons";
 import { useExecutionSocket } from "./hooks/useExecutionSocket";
+import { useGraphShortcuts } from "./hooks/useGraphShortcuts";
 import { useWorkflowAutosave } from "./hooks/useWorkflowAutosave";
 import { useGraphStore } from "./store/useGraphStore";
 
@@ -39,20 +40,24 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      await loadTemplates();
+      await Promise.all([
+        loadTemplates(),
+        useGraphStore.getState().loadWorkflowTemplates(),
+      ]);
       await useGraphStore.getState().restoreFromStorage();
     })();
   }, [loadTemplates]);
 
   useExecutionSocket();
   useWorkflowAutosave();
+  useGraphShortcuts();
 
   return (
     <div className="flex h-screen flex-col">
       <Toolbar />
       <div className="flex min-h-0 flex-1">
         <NodePalette />
-        <main className="relative min-w-0 flex-1">
+        <main aria-label="Workflow canvas" className="relative min-w-0 flex-1">
           <Canvas />
         </main>
         <ExecutionPanel />

@@ -1,0 +1,108 @@
+"""Host and browser-origin validation for the local ComplexUI service."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Sequence
+from urllib.parse import urlsplit
+
+from starlette.datastructures import Headers
+from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+__all__ = [
+    "DEFAULT_ALLOWED_HOSTS",
+    "ENV_ALLOWED_HOSTS",
+    "MAX_REQUEST_BYTES",
+    "RequestSizeLimitMiddleware",
+    "configured_allowed_hosts",
+    "origin_is_allowed",
+]
+
+ENV_ALLOWED_HOSTS = "COMPLEXUI_ALLOWED_HOSTS"
+DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "[::1]", "testserver")
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
+
+
+def configured_allowed_hosts() -> list[str]:
+    """Return the configured Host/Origin allowlist.
+
+    The default is loopback plus the in-process test client. Set
+    ``COMPLEXUI_ALLOWED_HOSTS`` to a comma-separated list of additional hosts
+    (``*`` explicitly disables the restriction) when using a custom hostname or
+    a LAN address.
+    """
+    raw = os.environ.get(ENV_ALLOWED_HOSTS)
+    if raw is None:
+        return list(DEFAULT_ALLOWED_HOSTS)
+    hosts = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    return hosts or list(DEFAULT_ALLOWED_HOSTS)
+
+
+def _normalize_host(host: str) -> str:
+    value = host.strip().lower()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1]
+    return value
+
+
+def _host_matches(host: str, pattern: str) -> bool:
+    candidate = _normalize_host(host)
+    normalized_pattern = pattern.strip().lower()
+    if normalized_pattern == "*":
+        return True
+    if normalized_pattern.startswith("*."):
+        return candidate.endswith(normalized_pattern[1:])
+    return candidate == _normalize_host(normalized_pattern)
+
+
+def origin_is_allowed(
+    origin: str | None, allowed_hosts: Sequence[str]
+) -> bool:
+    """Validate a browser Origin header against the Host allowlist.
+
+    Missing Origin is accepted for non-browser clients such as tests and CLI
+    tools. Browsers always send Origin for WebSocket handshakes, so a malicious
+    page cannot omit it to bypass this check.
+    """
+    if origin is None:
+        return True
+    if not origin or origin == "null":
+        return False
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        return False
+    return any(_host_matches(parsed.hostname, pattern) for pattern in allowed_hosts)
+
+
+class RequestSizeLimitMiddleware:
+    """Reject oversized HTTP requests advertised via Content-Length."""
+
+    def __init__(
+        self, app: ASGIApp, *, max_bytes: int = MAX_REQUEST_BYTES
+    ) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] == "http":
+            raw_length = Headers(scope=scope).get("content-length")
+            if raw_length is not None:
+                try:
+                    content_length = int(raw_length)
+                except ValueError:
+                    await PlainTextResponse(
+                        "Invalid Content-Length", status_code=400
+                    )(scope, receive, send)
+                    return
+                if content_length > self.max_bytes:
+                    await PlainTextResponse(
+                        "Request body too large", status_code=413
+                    )(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)

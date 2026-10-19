@@ -2,10 +2,56 @@
 
 from __future__ import annotations
 
-from app.env_manager import build_install_command, install_dependencies
+from collections.abc import Callable
+from typing import Any
+
+import pytest
+
+from app.env_manager import (
+    DependencyInstallError,
+    build_install_command,
+    install_dependencies,
+)
 
 _CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 _PYPI_INDEX = "https://pypi.org/simple"
+
+
+class _FakeProcess:
+    def __init__(self, returncode: int | None) -> None:
+        self.returncode = returncode
+        self.killed = False
+        self.waited = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self) -> int:
+        self.waited = True
+        if self.returncode is None:
+            self.returncode = -9
+        return self.returncode
+
+
+def _fake_popen(
+    process: _FakeProcess,
+    *,
+    captured: list[list[str]] | None = None,
+    output: bytes = b"",
+) -> Callable[..., _FakeProcess]:
+    def popen(command: list[str], stdout: Any, **_kwargs: object) -> _FakeProcess:
+        if captured is not None:
+            captured.append(list(command))
+        if output:
+            stdout.write(output)
+            stdout.flush()
+        return process
+
+    return popen
 
 
 def test_plain_requirements_use_environment_indices() -> None:
@@ -61,12 +107,10 @@ def test_linux_platform_is_routed() -> None:
 
 def test_install_dependencies_uses_cpu_index_for_torch(monkeypatch) -> None:
     captured: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> object:
-        captured.append(list(command))
-        return type("Completed", (), {"returncode": 0})()
-
-    monkeypatch.setattr("app.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "app.env_manager.subprocess.Popen",
+        _fake_popen(_FakeProcess(0), captured=captured),
+    )
 
     install_dependencies(["torch>=2.2"])
 
@@ -76,9 +120,55 @@ def test_install_dependencies_uses_cpu_index_for_torch(monkeypatch) -> None:
 
 
 def test_install_dependencies_noop_for_empty_requirements(monkeypatch) -> None:
-    def fake_run(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("subprocess.run must not be called")
+    def fake_popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("subprocess.Popen must not be called")
 
-    monkeypatch.setattr("app.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", fake_popen)
 
     install_dependencies([])
+
+
+def test_install_dependencies_reports_failure_output(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.env_manager.subprocess.Popen",
+        _fake_popen(_FakeProcess(1), output=b"resolution failed\n"),
+    )
+
+    with pytest.raises(DependencyInstallError, match="resolution failed"):
+        install_dependencies(["tiny-package>=0.1"])
+
+
+def test_install_dependencies_times_out_and_kills_process(monkeypatch) -> None:
+    process = _FakeProcess(None)
+    monkeypatch.setattr(
+        "app.env_manager.subprocess.Popen", _fake_popen(process)
+    )
+
+    with pytest.raises(DependencyInstallError, match="timed out"):
+        install_dependencies(["tiny-package>=0.1"], timeout=0)
+
+    assert process.killed is True
+    assert process.waited is True
+
+
+def test_install_dependencies_cancels_and_kills_process(monkeypatch) -> None:
+    process = _FakeProcess(None)
+    monkeypatch.setattr(
+        "app.env_manager.subprocess.Popen", _fake_popen(process)
+    )
+
+    with pytest.raises(DependencyInstallError, match="cancelled"):
+        install_dependencies(["tiny-package>=0.1"], should_stop=lambda: True)
+
+    assert process.killed is True
+    assert process.waited is True
+
+
+def test_install_dependencies_wraps_spawn_failure(monkeypatch) -> None:
+    def fake_popen(*_args: object, **_kwargs: object) -> object:
+        raise OSError("uv is missing")
+
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", fake_popen)
+
+    with pytest.raises(DependencyInstallError, match="could not start"):
+        install_dependencies(["tiny-package>=0.1"])

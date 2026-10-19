@@ -1,0 +1,23 @@
+{
+  "name": "messy_data_cleaning_pipeline",
+  "title": "Messy Data Cleaning Pipeline",
+  "category": "Data Quality & EDA",
+  "description": "Trim text, drop nulls, impute medians, deduplicate and winsorise outliers.",
+  "nodes": [
+    { "id": "raw", "template": "make_messy_dataset", "position": { "x": 0, "y": 40 }, "widget_values": { "n_rows": 300, "seed": 42 } },
+    { "id": "trim", "template": "trim_strings", "position": { "x": 260, "y": 40 }, "widget_values": { "collapse_whitespace": true, "lowercase": true } },
+    { "id": "clean", "template": "drop_missing", "position": { "x": 520, "y": 40 }, "widget_values": { "columns": "age,score", "how": "any" } },
+    { "id": "fill", "template": "fill_missing", "position": { "x": 780, "y": 40 }, "widget_values": { "columns": "age,score", "strategy": "median" } },
+    { "id": "dedupe", "template": "drop_duplicates", "position": { "x": 1040, "y": 40 }, "widget_values": { "keep": "first" } },
+    { "id": "clip", "template": "clip_outliers", "position": { "x": 1300, "y": 40 }, "widget_values": { "columns": "score", "lower_quantile": 0.05, "upper_quantile": 0.95 } },
+    { "id": "report", "template": "describe_dataframe", "position": { "x": 1560, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "raw", "source_handle": "df", "target_node_id": "trim", "target_handle": "df" },
+    { "source_node_id": "trim", "source_handle": "trimmed", "target_node_id": "clean", "target_handle": "df" },
+    { "source_node_id": "clean", "source_handle": "cleaned", "target_node_id": "fill", "target_handle": "df" },
+    { "source_node_id": "fill", "source_handle": "filled", "target_node_id": "dedupe", "target_handle": "df" },
+    { "source_node_id": "dedupe", "source_handle": "deduped", "target_node_id": "clip", "target_handle": "df" },
+    { "source_node_id": "clip", "source_handle": "clipped", "target_node_id": "report", "target_handle": "df" }
+  ]
+}

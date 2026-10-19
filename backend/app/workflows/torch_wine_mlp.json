@@ -1,0 +1,18 @@
+{
+  "name": "torch_wine_mlp",
+  "title": "Torch MLP On Wine Tensors",
+  "category": "PyTorch",
+  "description": "Convert wine features to tensors and train a small MLP classifier.",
+  "nodes": [
+    { "id": "load", "template": "load_wine", "position": { "x": 0, "y": 40 } },
+    { "id": "tensors", "template": "dataframe_to_tensors", "position": { "x": 300, "y": 40 }, "widget_values": { "target_column": "target", "device": "cpu" } },
+    { "id": "mlp", "template": "mlp_train", "position": { "x": 600, "y": 40 }, "widget_values": { "hidden": 32, "epochs": 80, "lr": 0.01, "seed": 11 } },
+    { "id": "evaluate", "template": "evaluate_torch", "position": { "x": 900, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "tensors", "target_handle": "df" },
+    { "source_node_id": "tensors", "source_handle": "data", "target_node_id": "mlp", "target_handle": "data" },
+    { "source_node_id": "mlp", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "tensors", "source_handle": "data", "target_node_id": "evaluate", "target_handle": "data" }
+  ]
+}

@@ -11,6 +11,7 @@ import type { DragEvent } from "react";
 import { useCallback } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
+import { useViewportShortcuts } from "../hooks/useViewportShortcuts";
 import { ComplexNode } from "./ComplexNode";
 
 export const DRAG_MIME = "application/x-complexui-template";
@@ -24,7 +25,15 @@ function CanvasInner() {
   const onEdgesChange = useGraphStore((state) => state.onEdgesChange);
   const onConnect = useGraphStore((state) => state.onConnect);
   const openEditor = useGraphStore((state) => state.openEditor);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
+  const handleZoomIn = useCallback(() => {
+    void zoomIn({ duration: 150 });
+  }, [zoomIn]);
+  const handleZoomOut = useCallback(() => {
+    void zoomOut({ duration: 150 });
+  }, [zoomOut]);
+
+  useViewportShortcuts(handleZoomIn, handleZoomOut);
 
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -63,6 +72,13 @@ function CanvasInner() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeDoubleClick={(_, node) => openEditor(node.id)}
+        selectionKeyCode={["Control", "Meta"]}
+        multiSelectionKeyCode={["Control", "Meta"]}
+        onBeforeDelete={async () => {
+          useGraphStore.getState().checkpoint();
+          return true;
+        }}
+        deleteKeyCode={["Backspace", "Delete"]}
         fitView
         proOptions={{ hideAttribution: false }}
       >

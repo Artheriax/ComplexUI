@@ -1,0 +1,20 @@
+{
+  "name": "diabetes_ridge_regression",
+  "title": "Diabetes Ridge Regression",
+  "category": "Classical ML",
+  "description": "Scale diabetes features, then evaluate ridge regression with MAE/RMSE/R2.",
+  "nodes": [
+    { "id": "load", "template": "load_diabetes", "position": { "x": 0, "y": 40 } },
+    { "id": "scaler", "template": "standard_scaler", "position": { "x": 260, "y": 40 }, "widget_values": { "target_column": "target" } },
+    { "id": "split", "template": "train_test_split", "position": { "x": 520, "y": 40 }, "widget_values": { "test_size": 0.2 } },
+    { "id": "model", "template": "ridge_regression", "position": { "x": 780, "y": 20 }, "widget_values": { "alpha": 1.0 } },
+    { "id": "evaluate", "template": "evaluate_regression", "position": { "x": 1040, "y": 40 } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "scaler", "target_handle": "df" },
+    { "source_node_id": "scaler", "source_handle": "scaled", "target_node_id": "split", "target_handle": "df" },
+    { "source_node_id": "split", "source_handle": "train", "target_node_id": "model", "target_handle": "train" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "evaluate", "target_handle": "model" },
+    { "source_node_id": "split", "source_handle": "test", "target_node_id": "evaluate", "target_handle": "test" }
+  ]
+}

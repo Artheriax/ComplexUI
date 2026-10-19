@@ -9,6 +9,10 @@ import type { AppEdge, AppNode } from "../types/graph";
 export const WORKFLOW_FORMAT_VERSION = 1;
 export const STORAGE_KEY = "complexui.workflow.v1";
 export const AUTOSAVE_DELAY_MS = 800;
+export const MAX_WORKFLOW_NODES = 200;
+export const MAX_WORKFLOW_EDGES = 1_000;
+export const MAX_NODE_CODE_CHARS = 200_000;
+const MAX_IDENTIFIER_CHARS = 200;
 
 export interface SavedNode {
   id: string;
@@ -82,11 +86,40 @@ function validateWorkflow(value: unknown): SavedWorkflow {
   if (!Array.isArray(record.nodes) || !Array.isArray(record.edges)) {
     throw new Error("Workflow file is missing the nodes/edges arrays.");
   }
+  if (record.nodes.length > MAX_WORKFLOW_NODES) {
+    throw new Error(
+      `Workflow has too many nodes (${record.nodes.length} > ${MAX_WORKFLOW_NODES}).`,
+    );
+  }
+  if (record.edges.length > MAX_WORKFLOW_EDGES) {
+    throw new Error(
+      `Workflow has too many edges (${record.edges.length} > ${MAX_WORKFLOW_EDGES}).`,
+    );
+  }
+
+  const nodes = record.nodes.map(validateNode);
+  const nodeIds = new Set<string>();
+  for (const node of nodes) {
+    if (nodeIds.has(node.id)) {
+      throw new Error(`Workflow contains duplicate node id '${node.id}'.`);
+    }
+    nodeIds.add(node.id);
+  }
+
+  const edges = record.edges.map(validateEdge);
+  const edgeIds = new Set<string>();
+  for (const edge of edges) {
+    if (edgeIds.has(edge.id)) {
+      throw new Error(`Workflow contains duplicate edge id '${edge.id}'.`);
+    }
+    edgeIds.add(edge.id);
+  }
+
   return {
     version: WORKFLOW_FORMAT_VERSION,
     savedAt: typeof record.savedAt === "string" ? record.savedAt : "",
-    nodes: record.nodes.map(validateNode),
-    edges: record.edges.map(validateEdge),
+    nodes,
+    edges,
   };
 }
 
@@ -106,6 +139,19 @@ function validateNode(value: unknown): SavedNode {
     throw new Error(
       `Workflow node entries require id/code/position: ${JSON.stringify(value).slice(0, 80)}`,
     );
+  }
+  if (record.id.length === 0 || record.id.length > MAX_IDENTIFIER_CHARS) {
+    throw new Error(
+      `Workflow node id must be 1-${MAX_IDENTIFIER_CHARS} characters.`,
+    );
+  }
+  if (record.code.length > MAX_NODE_CODE_CHARS) {
+    throw new Error(
+      `Workflow node '${record.id}' exceeds the ${MAX_NODE_CODE_CHARS}-character code limit.`,
+    );
+  }
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+    throw new Error(`Workflow node '${record.id}' has a non-finite position.`);
   }
   return {
     id: record.id,
@@ -139,8 +185,20 @@ function validateEdge(value: unknown): SavedEdge {
   ) {
     throw new Error("Workflow edge entries require string endpoints/handles.");
   }
+  for (const endpoint of [
+    record.source,
+    record.target,
+    record.sourceHandle,
+    record.targetHandle,
+  ]) {
+    if (endpoint.length === 0 || endpoint.length > MAX_IDENTIFIER_CHARS) {
+      throw new Error(
+        `Workflow edge endpoints/handles must be 1-${MAX_IDENTIFIER_CHARS} characters.`,
+      );
+    }
+  }
   const id =
-    typeof record.id === "string"
+    typeof record.id === "string" && record.id.length > 0
       ? record.id
       : `${record.source}:${record.sourceHandle}->${record.target}:${record.targetHandle}`;
   return {
@@ -190,7 +248,16 @@ export function saveLocalWorkflow(saved: SavedWorkflow): void {
 export function loadLocalWorkflow(): SavedWorkflow | null {
   try {
     const raw = storage().getItem(STORAGE_KEY);
-    return raw === null ? null : parseWorkflowJson(raw);
+    if (raw === null) {
+      return null;
+    }
+    try {
+      return parseWorkflowJson(raw);
+    } catch {
+      // Corrupt autosave payloads would otherwise fail on every reload.
+      clearLocalWorkflow();
+      return null;
+    }
   } catch {
     return null;
   }

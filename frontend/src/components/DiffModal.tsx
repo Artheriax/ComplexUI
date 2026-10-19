@@ -1,6 +1,7 @@
 import { DiffEditor } from "@monaco-editor/react";
 
 import "../lib/monaco";
+import { useDialogA11y } from "../hooks/useDialogA11y";
 import { useGraphStore } from "../store/useGraphStore";
 import { CheckIcon, CloseIcon, SpinnerIcon, WarningIcon } from "./icons";
 
@@ -16,6 +17,11 @@ export function DiffModal() {
       state.nodes.find((node) => node.id === pendingApproval?.nodeId)?.data
         .templateCode ?? null,
   );
+  const dialogRef = useDialogA11y<HTMLDivElement>(() => {
+    if (!approvalBusy) {
+      rejectPending();
+    }
+  }, pendingApproval !== null);
 
   if (!pendingApproval) {
     return null;
@@ -23,10 +29,21 @@ export function DiffModal() {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6">
-      <div className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-amber-800/70 bg-zinc-900 shadow-2xl">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="diff-modal-title"
+        aria-busy={approvalBusy}
+        tabIndex={-1}
+        className="flex max-h-full w-full max-w-5xl flex-col overflow-hidden rounded-xl border border-amber-800/70 bg-zinc-900 shadow-2xl outline-none"
+      >
         <div className="flex items-center gap-2 border-b border-zinc-800 bg-amber-950/40 px-3 py-2">
           <WarningIcon className="h-4 w-4 text-amber-400" />
-          <span className="text-sm font-semibold text-amber-200">
+          <span
+            id="diff-modal-title"
+            className="text-sm font-semibold text-amber-200"
+          >
             Security review — modified node code
           </span>
           <span className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
@@ -34,8 +51,10 @@ export function DiffModal() {
           </span>
           <button
             type="button"
-            className="ml-auto rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+            className="ml-auto rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
             title="Reject changes"
+            aria-label="Reject changes and close"
+            disabled={approvalBusy}
             onClick={rejectPending}
           >
             <CloseIcon />
@@ -74,7 +93,10 @@ export function DiffModal() {
             Only approve code you have read and understand.
           </p>
           {approvalError && (
-            <div className="mt-2 rounded border border-red-900/70 bg-red-950/40 p-2 text-[11px] text-red-300">
+            <div
+              role="alert"
+              className="mt-2 rounded border border-red-900/70 bg-red-950/40 p-2 text-[11px] text-red-300"
+            >
               {approvalError}
             </div>
           )}
