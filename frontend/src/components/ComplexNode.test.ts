@@ -26,6 +26,7 @@ const data: AppNode["data"] = {
   },
   widgetValues: {},
   isTrusted: true,
+  color: "default",
 };
 
 function nodeProps(): NodeProps<AppNode> {
@@ -88,4 +89,64 @@ test("renders inline rich outputs from the execution state", () => {
   expect(container.textContent).toContain("Console Node");
   expect(container.textContent).toContain("Output");
   expect(container.textContent).toContain("node console line");
+});
+
+test("renders the persisted node color accent", () => {
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: { ...data, color: "violet" },
+      }),
+    ),
+  );
+
+  const accent = container.querySelector('[data-node-color="violet"]');
+  expect(accent).not.toBeNull();
+  expect((accent as HTMLElement).style.backgroundColor).toBe(
+    "rgb(167, 139, 250)",
+  );
+});
+
+test("renders dataframe previews as a table inside the node", () => {
+  useGraphStore.setState({
+    execution: {
+      status: "completed",
+      runId: "r1",
+      order: ["n1"],
+      nodeStates: {
+        n1: {
+          status: "completed",
+          outputs: {
+            df: {
+              rows: 150,
+              cols: 5,
+              head: [{ sepal_length: 5.1, species: "setosa" }],
+            },
+          },
+        },
+      },
+      previews: {},
+      richOutputs: {},
+      cached: {},
+      error: null,
+    },
+  });
+
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, nodeProps()),
+    ),
+  );
+
+  expect(container.textContent).toContain("Preview");
+  expect(container.textContent).toContain("df");
+  expect(container.textContent).toContain("150 rows x 5 cols");
+  expect(container.textContent).toContain("sepal_length");
+  expect(container.textContent).toContain("setosa");
+  expect(container.querySelector("table")).not.toBeNull();
 });

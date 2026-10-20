@@ -1,16 +1,24 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useState } from "react";
+import type { CSSProperties } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
 import type {
   AppNode,
   NodeExecutionState,
+  PreviewValue,
   SocketType,
 } from "../types/graph";
 import type { RichOutput } from "../types/graph";
-import { SOCKET_COLORS, SOCKET_LABELS, summarisePreview } from "../types/graph";
+import {
+  NODE_COLORS,
+  SOCKET_COLORS,
+  SOCKET_LABELS,
+  summarisePreview,
+} from "../types/graph";
 import { PencilIcon, DuplicateIcon, PlayIcon, TrashIcon, WarningIcon } from "./icons";
+import { PreviewValueView } from "./PreviewValueView";
 import { RichOutputView } from "./RichOutputView";
 import { WidgetField } from "./WidgetField";
 
@@ -20,6 +28,10 @@ const statusBorder: Record<NodeExecutionState["status"] | "idle", string> = {
   completed: "border-emerald-500/70",
   error: "border-red-500",
 };
+
+function socketStyle(type: SocketType): CSSProperties {
+  return { "--cu-handle-color": SOCKET_COLORS[type] } as CSSProperties;
+}
 
 function SocketChip({ type }: { type: SocketType }) {
   return (
@@ -43,6 +55,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
 
   const status = execution?.status ?? "idle";
   const borderClass = statusBorder[status];
+  const accent = NODE_COLORS[data.color]?.accent ?? NODE_COLORS.default.accent;
 
   return (
     <div
@@ -50,7 +63,13 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
         selected ? "ring-2 ring-cyan-400/60" : ""
       }`}
     >
-      <div className="flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
+      <div className="relative flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
+        <span
+          aria-hidden="true"
+          data-node-color={data.color}
+          className="pointer-events-none absolute inset-x-0 top-0 h-0.5 rounded-t-lg"
+          style={{ backgroundColor: accent }}
+        />
         {!data.isTrusted && (
           <span
             role="img"
@@ -117,7 +136,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
                 type="target"
                 position={Position.Left}
                 id={socket.name}
-                style={{ background: SOCKET_COLORS[socket.data_type] }}
+                style={socketStyle(socket.data_type)}
               />
               <span className="text-xs text-zinc-300">{socket.name}</span>
               <span className="ml-auto">
@@ -151,11 +170,15 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
                 type="source"
                 position={Position.Right}
                 id={socket.name}
-                style={{ background: SOCKET_COLORS[socket.data_type] }}
+                style={socketStyle(socket.data_type)}
               />
             </div>
           ))}
         </div>
+      )}
+
+      {execution?.outputs && Object.keys(execution.outputs).length > 0 && (
+        <NodePreviews outputs={execution.outputs} />
       )}
 
       {execution && execution.richOutputs && execution.richOutputs.length > 0 && (
@@ -163,6 +186,20 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
       )}
 
       {execution && <NodeStatusFooter state={execution} />}
+    </div>
+  );
+}
+
+function NodePreviews({ outputs }: { outputs: Record<string, PreviewValue> }) {
+  return (
+    <div className="nodrag nowheel space-y-1.5 border-t border-zinc-800 px-2 py-1.5">
+      <div className="text-[9px] uppercase tracking-wide text-zinc-500">Preview</div>
+      {Object.entries(outputs).map(([name, value]) => (
+        <div key={name}>
+          <div className="mb-0.5 font-mono text-[10px] text-cyan-300/80">{name}</div>
+          <PreviewValueView value={value} compact />
+        </div>
+      ))}
     </div>
   );
 }

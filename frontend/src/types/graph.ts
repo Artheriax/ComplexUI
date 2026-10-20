@@ -8,6 +8,24 @@ export type SocketType =
   | "TENSOR"
   | "ANY";
 
+export type NodeColor =
+  | "default"
+  | "sky"
+  | "emerald"
+  | "amber"
+  | "rose"
+  | "violet"
+  | "zinc";
+
+export type ConnectionHandleType = "source" | "target";
+
+export interface PendingConnection {
+  nodeId: string;
+  handleId: string;
+  handleType: ConnectionHandleType;
+  dataType: SocketType;
+}
+
 export interface InputSocket {
   name: string;
   data_type: SocketType;
@@ -252,6 +270,38 @@ export interface ExecutionError {
 
 export type ExecutionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
 
+export interface NodeColorMeta {
+  label: string;
+  accent: string;
+}
+
+export const NODE_COLOR_ORDER: NodeColor[] = [
+  "default",
+  "sky",
+  "emerald",
+  "amber",
+  "rose",
+  "violet",
+  "zinc",
+];
+
+export const NODE_COLORS: Record<NodeColor, NodeColorMeta> = {
+  default: { label: "Default", accent: "#52525b" },
+  sky: { label: "Sky", accent: "#38bdf8" },
+  emerald: { label: "Emerald", accent: "#34d399" },
+  amber: { label: "Amber", accent: "#fbbf24" },
+  rose: { label: "Rose", accent: "#fb7185" },
+  violet: { label: "Violet", accent: "#a78bfa" },
+  zinc: { label: "Zinc", accent: "#a1a1aa" },
+};
+
+export function isNodeColor(value: unknown): value is NodeColor {
+  return (
+    typeof value === "string" &&
+    (NODE_COLOR_ORDER as readonly string[]).includes(value)
+  );
+}
+
 export type ComplexNodeData = {
   label: string;
   templateName: string | null;
@@ -260,6 +310,7 @@ export type ComplexNodeData = {
   schema: NodeSchema;
   widgetValues: Record<string, unknown>;
   isTrusted: boolean;
+  color: NodeColor;
 };
 
 export type AppNode = Node<ComplexNodeData, "complex">;

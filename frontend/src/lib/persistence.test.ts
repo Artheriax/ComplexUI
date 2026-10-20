@@ -40,6 +40,7 @@ function makeNode(id: string): AppNode {
       schema: makeSchema(),
       widgetValues: { k: 5 },
       isTrusted: true,
+      color: "default",
     },
   };
 }
@@ -62,6 +63,30 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
     expect(reparsed.version).toBe(saved.version);
     expect(reparsed.nodes).toEqual(saved.nodes);
     expect(reparsed.edges).toEqual(saved.edges);
+  });
+
+  it("persists node colors and defaults unknown or missing values", () => {
+    const node = makeNode("a");
+    node.data.color = "amber";
+    const saved = serialiseWorkflow([node], []);
+
+    expect(saved.nodes[0]?.color).toBe("amber");
+    expect(
+      parseWorkflowJson(JSON.stringify(saved)).nodes[0]?.color,
+    ).toBe("amber");
+
+    const invalid = JSON.parse(JSON.stringify(saved)) as {
+      nodes: Array<Record<string, unknown>>;
+    };
+    invalid.nodes[0]!.color = "hotpink";
+    expect(
+      parseWorkflowJson(JSON.stringify(invalid)).nodes[0]?.color,
+    ).toBe("default");
+
+    delete invalid.nodes[0]!.color;
+    expect(
+      parseWorkflowJson(JSON.stringify(invalid)).nodes[0]?.color,
+    ).toBe("default");
   });
 
   it("rejects malformed documents", () => {

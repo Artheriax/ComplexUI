@@ -3,12 +3,14 @@ import { Suspense, lazy, useEffect } from "react";
 import { Canvas } from "./components/Canvas";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { NodePalette } from "./components/NodePalette";
+import { SettingsModal } from "./components/SettingsModal";
 import { Toolbar } from "./components/Toolbar";
 import { SpinnerIcon } from "./components/icons";
 import { useExecutionSocket } from "./hooks/useExecutionSocket";
 import { useGraphShortcuts } from "./hooks/useGraphShortcuts";
 import { useWorkflowAutosave } from "./hooks/useWorkflowAutosave";
 import { useGraphStore } from "./store/useGraphStore";
+import { useSettingsStore } from "./store/useSettingsStore";
 
 const CodeModal = lazy(async () => {
   const module = await import("./components/CodeModal");
@@ -37,6 +39,7 @@ export default function App() {
   const hasPendingApproval = useGraphStore(
     (state) => state.pendingApproval !== null,
   );
+  const settingsOpen = useSettingsStore((state) => state.isOpen);
 
   useEffect(() => {
     void (async () => {
@@ -72,6 +75,7 @@ export default function App() {
           <DiffModal />
         </Suspense>
       )}
+      {settingsOpen && <SettingsModal />}
     </div>
   );
 }

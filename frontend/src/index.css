@@ -48,14 +48,41 @@ body {
 }
 
 .react-flow__handle {
-  width: 10px;
-  height: 10px;
+  width: var(--cu-handle-hit-size, 18px);
+  height: var(--cu-handle-hit-size, 18px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 9999px;
+}
+
+.react-flow__handle::after {
+  content: "";
+  display: block;
+  width: var(--cu-handle-dot-size, 10px);
+  height: var(--cu-handle-dot-size, 10px);
   border: 2px solid #09090b;
+  border-radius: 9999px;
+  box-sizing: content-box;
+  background: var(--cu-handle-color, #a1a1aa);
+  transition: transform 120ms ease;
+}
+
+.react-flow__handle:hover::after,
+.react-flow__handle.connectingfrom::after,
+.react-flow__handle.connectingto::after {
+  transform: scale(1.2);
+}
+
+.react-flow__edge-path {
+  transition: stroke 120ms ease;
 }
 
 .react-flow__edge.selected .react-flow__edge-path,
 .react-flow__edge:focus .react-flow__edge-path {
-  stroke: #22d3ee;
+  stroke: #f4f4f5 !important;
 }
 
 :::-webkit-scrollbar {

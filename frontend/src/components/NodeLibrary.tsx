@@ -1,27 +1,19 @@
 import { useMemo, useState } from "react";
 import type { DragEvent } from "react";
 
+import { groupTemplates } from "../lib/templateSearch";
 import { useGraphStore } from "../store/useGraphStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import { SOCKET_COLORS } from "../types/graph";
 import type { TemplateInfo } from "../types/graph";
 import { DRAG_MIME } from "./Canvas";
-import { ChevronDownIcon, PlusIcon, SpinnerIcon, WarningIcon } from "./icons";
-
-const CATEGORY_ORDER = [
-  "Data Loaders",
-  "Data Cleaning",
-  "EDA",
-  "Preprocessing",
-  "Imbalanced Data",
-  "Models",
-  "Evaluation",
-  "PyTorch",
-];
-
-interface TemplateGroup {
-  category: string;
-  items: TemplateInfo[];
-}
+import {
+  ChevronDownIcon,
+  PlusIcon,
+  SettingsIcon,
+  SpinnerIcon,
+  WarningIcon,
+} from "./icons";
 
 function TemplateCard({ template }: { template: TemplateInfo }) {
   const addNodeFromTemplate = useGraphStore((state) => state.addNodeFromTemplate);
@@ -76,39 +68,11 @@ function TemplateCard({ template }: { template: TemplateInfo }) {
   );
 }
 
-function groupTemplates(templates: TemplateInfo[], query: string): TemplateGroup[] {
-  const needle = query.trim().toLowerCase();
-  const palette = templates.filter((template) => !template.hidden);
-  const visible = needle
-    ? palette.filter((template) =>
-        `${template.title} ${template.name} ${template.description} ${template.category}`
-          .toLowerCase()
-          .includes(needle),
-      )
-    : palette;
-  const buckets = new Map<string, TemplateInfo[]>();
-  for (const template of visible) {
-    const items = buckets.get(template.category);
-    if (items) {
-      items.push(template);
-    } else {
-      buckets.set(template.category, [template]);
-    }
-  }
-  const known = CATEGORY_ORDER.filter((category) => buckets.has(category));
-  const unknown = [...buckets.keys()]
-    .filter((category) => !CATEGORY_ORDER.includes(category))
-    .sort();
-  return [...known, ...unknown].map((category) => ({
-    category,
-    items: buckets.get(category) ?? [],
-  }));
-}
-
 export function NodeLibrary() {
   const templates = useGraphStore((state) => state.templates);
   const templatesLoaded = useGraphStore((state) => state.templatesLoaded);
   const templatesError = useGraphStore((state) => state.templatesError);
+  const openSettings = useSettingsStore((state) => state.openSettings);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -199,9 +163,18 @@ export function NodeLibrary() {
           );
         })}
       </div>
-      <div className="border-t border-zinc-800 p-2.5 text-[10px] leading-relaxed text-zinc-600">
-        Drag a template onto the canvas, connect sockets, then hit Run. Example
-        datasets and synthetic test nodes are reachable through the Workflows tab.
+      <div className="border-t border-zinc-800 p-2.5">
+        <button
+          type="button"
+          onClick={openSettings}
+          className="flex w-full items-center gap-2 rounded-lg border border-zinc-700 px-2.5 py-2 text-xs text-zinc-300 transition-colors hover:border-cyan-700 hover:bg-zinc-800/60 hover:text-cyan-200"
+        >
+          <SettingsIcon className="h-3.5 w-3.5" />
+          <span>Settings</span>
+          <span className="ml-auto text-[10px] text-zinc-600">
+            Canvas &amp; lines
+          </span>
+        </button>
       </div>
     </div>
   );

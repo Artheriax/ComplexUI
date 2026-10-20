@@ -25,6 +25,12 @@ import {
 import { sha256Hex } from "../lib/hash";
 import { loadLocalWorkflow } from "../lib/persistence";
 import type { SavedWorkflow } from "../lib/persistence";
+import {
+  findCompatibleInput,
+  findCompatibleOutput,
+  isInputTaken,
+  socketTypesCompatible,
+} from "../lib/socketCompatibility";
 import type {
   AppEdge,
   AppNode,
@@ -34,9 +40,11 @@ import type {
   ExecutionError,
   ExecutionEvent,
   ExecutionStatus,
+  NodeColor,
   NodeExecutionState,
   NodeSchema,
   PendingApproval,
+  PendingConnection,
   PreviewValue,
   RichOutput,
   TemplateInfo,
@@ -90,6 +98,12 @@ interface HistoryMeta {
 const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 800;
 const PASTE_OFFSET = 40;
+const MAX_NODE_LABEL_CHARS = 80;
+
+export interface ConnectedNodeResult {
+  nodeId: string;
+  edgeId: string;
+}
 
 interface GraphStore {
   templates: TemplateInfo[];
@@ -121,17 +135,27 @@ interface GraphStore {
   loadWorkflowTemplates: () => Promise<void>;
   loadWorkflowTemplate: (workflow: WorkflowTemplateInfo) => boolean;
   addNodeFromTemplate: (template: TemplateInfo, position: XYPosition) => string;
+  addConnectedNodeFromTemplate: (
+    template: TemplateInfo,
+    position: XYPosition,
+    connection: PendingConnection,
+  ) => ConnectedNodeResult | null;
   addScratchNode: (position: XYPosition) => string;
   duplicateNode: (nodeId: string) => Promise<string | null>;
   deleteNode: (nodeId: string) => void;
+  deleteSelection: () => boolean;
   clearCanvas: () => void;
   checkpoint: () => void;
   undo: () => void;
   redo: () => void;
   copySelection: () => boolean;
   cutSelection: () => boolean;
-  pasteClipboard: () => Promise<string[]>;
+  pasteClipboard: (anchor?: XYPosition) => Promise<string[]>;
   duplicateSelection: () => Promise<string[]>;
+  selectOnlyNode: (nodeId: string) => void;
+  renameNode: (nodeId: string, label: string) => boolean;
+  setNodeColor: (nodeIds: string[], color: NodeColor) => boolean;
+  resetNode: (nodeId: string) => boolean;
   onNodesChange: (changes: NodeChange<AppNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
@@ -392,6 +416,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               ...spec.widget_values,
             },
             isTrusted: true,
+            color: "default",
           },
         };
         return node;
@@ -430,11 +455,102 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           schema: template.node_schema,
           widgetValues: defaultWidgetValues(template.node_schema),
           isTrusted: true,
+          color: "default",
         },
       };
       pushHistory();
       set((state) => ({ nodes: [...state.nodes, node] }));
       return id;
+    },
+
+    addConnectedNodeFromTemplate: (template, position, connection) => {
+      const state = get();
+      const existing = state.nodes.find(
+        (node) => node.id === connection.nodeId,
+      );
+      if (!existing) {
+        return null;
+      }
+      const existingSocket =
+        connection.handleType === "source"
+          ? existing.data.schema.outputs.find(
+              (socket) => socket.name === connection.handleId,
+            )
+          : existing.data.schema.inputs.find(
+              (socket) => socket.name === connection.handleId,
+            );
+      if (!existingSocket) {
+        return null;
+      }
+      if (
+        connection.handleType === "target" &&
+        isInputTaken(
+          state.edges,
+          connection.nodeId,
+          connection.handleId,
+        )
+      ) {
+        return null;
+      }
+      const match =
+        connection.handleType === "source"
+          ? findCompatibleInput(
+              template.node_schema,
+              existingSocket.data_type,
+            )
+          : findCompatibleOutput(
+              template.node_schema,
+              existingSocket.data_type,
+            );
+      if (!match) {
+        return null;
+      }
+      const id = crypto.randomUUID();
+      const node: AppNode = {
+        id,
+        type: "complex",
+        position,
+        selected: true,
+        data: {
+          label: template.title,
+          templateName: template.name,
+          templateCode: template.code,
+          code: template.code,
+          schema: template.node_schema,
+          widgetValues: defaultWidgetValues(template.node_schema),
+          isTrusted: true,
+          color: "default",
+        },
+      };
+      const edge: AppEdge =
+        connection.handleType === "source"
+          ? {
+              id: `${connection.nodeId}:${connection.handleId}->${id}:${match.name}`,
+              source: connection.nodeId,
+              sourceHandle: connection.handleId,
+              target: id,
+              targetHandle: match.name,
+            }
+          : {
+              id: `${id}:${match.name}->${connection.nodeId}:${connection.handleId}`,
+              source: id,
+              sourceHandle: match.name,
+              target: connection.nodeId,
+              targetHandle: connection.handleId,
+            };
+      pushHistory();
+      set((current) => ({
+        nodes: [
+          ...current.nodes.map((candidate) =>
+            candidate.selected
+              ? { ...candidate, selected: false }
+              : candidate,
+          ),
+          node,
+        ],
+        edges: [...current.edges, edge],
+      }));
+      return { nodeId: id, edgeId: edge.id };
     },
 
     addScratchNode: (position) => {
@@ -452,6 +568,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           schema,
           widgetValues: defaultWidgetValues(schema),
           isTrusted: false,
+          color: "default",
         },
       };
       pushHistory();
@@ -520,6 +637,155 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           state.editingNodeId === nodeId ? null : state.editingNodeId,
         execution: pruneExecution(state.execution, new Set([nodeId])),
       }));
+    },
+
+    deleteSelection: () => {
+      const selected = get().nodes.filter((node) => node.selected);
+      if (selected.length === 0) {
+        return false;
+      }
+      pushHistory();
+      const removed = new Set(selected.map((node) => node.id));
+      set((state) => ({
+        nodes: state.nodes.filter((node) => !removed.has(node.id)),
+        edges: state.edges.filter(
+          (edge) => !removed.has(edge.source) && !removed.has(edge.target),
+        ),
+        editingNodeId:
+          state.editingNodeId !== null && removed.has(state.editingNodeId)
+            ? null
+            : state.editingNodeId,
+        execution: pruneExecution(state.execution, removed),
+      }));
+      return true;
+    },
+
+    selectOnlyNode: (nodeId) => {
+      if (!get().nodes.some((node) => node.id === nodeId)) {
+        return;
+      }
+      set((state) => ({
+        nodes: state.nodes.map((node) => ({
+          ...node,
+          selected: node.id === nodeId,
+        })),
+      }));
+    },
+
+    renameNode: (nodeId, label) => {
+      const normalized = label.trim();
+      if (
+        normalized.length === 0 ||
+        normalized.length > MAX_NODE_LABEL_CHARS ||
+        !get().nodes.some((node) => node.id === nodeId)
+      ) {
+        return false;
+      }
+      const current = get().nodes.find((node) => node.id === nodeId);
+      if (current?.data.label === normalized) {
+        return true;
+      }
+      pushHistory();
+      set((state) => ({
+        nodes: state.nodes.map((node) =>
+          node.id === nodeId
+            ? { ...node, data: { ...node.data, label: normalized } }
+            : node,
+        ),
+      }));
+      return true;
+    },
+
+    setNodeColor: (nodeIds, color) => {
+      const targets = new Set(nodeIds);
+      const affected = get().nodes.filter(
+        (node) => targets.has(node.id) && node.data.color !== color,
+      );
+      if (affected.length === 0) {
+        return false;
+      }
+      pushHistory();
+      set((state) => ({
+        nodes: state.nodes.map((node) =>
+          targets.has(node.id)
+            ? { ...node, data: { ...node.data, color } }
+            : node,
+        ),
+      }));
+      return true;
+    },
+
+    resetNode: (nodeId) => {
+      const node = get().nodes.find((candidate) => candidate.id === nodeId);
+      if (!node) {
+        return false;
+      }
+      let code = SCRATCH_NODE_CODE;
+      let schema = emptySchema(nodeId);
+      let label = "Scratch node";
+      let templateCode: string | null = null;
+      let isTrusted = false;
+      let shouldParse = true;
+      if (node.data.templateName !== null) {
+        const template = get().templates.find(
+          (candidate) => candidate.name === node.data.templateName,
+        );
+        if (!template) {
+          return false;
+        }
+        code = template.code;
+        schema = template.node_schema;
+        label = template.title;
+        templateCode = template.code;
+        isTrusted = true;
+        shouldParse = false;
+      }
+      pushHistory();
+      set((state) => ({
+        nodes: state.nodes.map((candidate) =>
+          candidate.id === nodeId
+            ? {
+                ...candidate,
+                data: {
+                  ...candidate.data,
+                  label,
+                  templateCode,
+                  code,
+                  schema,
+                  widgetValues: defaultWidgetValues(schema),
+                  isTrusted,
+                  color: "default",
+                },
+              }
+            : candidate,
+        ),
+        edges: reconcileEdges(state.edges, nodeId, schema),
+        execution: pruneExecution(state.execution, new Set([nodeId])),
+      }));
+      if (shouldParse) {
+        void (async () => {
+          try {
+            const parsed = await parseCode(code, nodeId);
+            set((state) => ({
+              nodes: state.nodes.map((candidate) =>
+                candidate.id === nodeId && candidate.data.code === code
+                  ? {
+                      ...candidate,
+                      data: {
+                        ...candidate.data,
+                        schema: parsed,
+                        widgetValues: defaultWidgetValues(parsed),
+                      },
+                    }
+                  : candidate,
+              ),
+            }));
+          } catch {
+            return;
+          }
+        })();
+      }
+      return true;
     },
 
     clearCanvas: () => {
@@ -625,13 +891,23 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       return true;
     },
 
-    pasteClipboard: async () => {
+    pasteClipboard: async (anchor) => {
       const clip = get().clipboard;
       if (!clip || clip.nodes.length === 0) {
         return [];
       }
       pushHistory();
       const templates = get().templates;
+      const offset = anchor
+        ? {
+            x:
+              anchor.x -
+              Math.min(...clip.nodes.map((node) => node.position.x)),
+            y:
+              anchor.y -
+              Math.min(...clip.nodes.map((node) => node.position.y)),
+          }
+        : { x: PASTE_OFFSET, y: PASTE_OFFSET };
       const idMap = new Map<string, string>();
       for (const node of clip.nodes) {
         idMap.set(node.id, crypto.randomUUID());
@@ -656,8 +932,8 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           id: idMap.get(node.id) as string,
           selected: true,
           position: {
-            x: node.position.x + PASTE_OFFSET,
-            y: node.position.y + PASTE_OFFSET,
+            x: node.position.x + offset.x,
+            y: node.position.y + offset.y,
           },
           data: { ...node.data, isTrusted: isOfficial },
         });
@@ -757,13 +1033,11 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (!sourceSocket || !targetSocket) {
         return;
       }
-      const compatible =
-        sourceSocket.data_type === targetSocket.data_type ||
-        sourceSocket.data_type === "ANY" ||
-        targetSocket.data_type === "ANY";
-      const inputTaken = state.edges.some(
-        (edge) => edge.target === target && edge.targetHandle === targetHandle,
+      const compatible = socketTypesCompatible(
+        sourceSocket.data_type,
+        targetSocket.data_type,
       );
+      const inputTaken = isInputTaken(state.edges, target, targetHandle);
       if (!compatible || inputTaken) {
         return;
       }
@@ -894,6 +1168,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               schema,
               widgetValues: mergeWidgetValues(schema, savedNode.widgetValues),
               isTrusted: isOfficial,
+              color: savedNode.color ?? "default",
             },
           };
         }),

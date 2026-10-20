@@ -99,6 +99,7 @@ test("clicking a workflow loads it onto the canvas", () => {
           schema,
           widgetValues: {},
           isTrusted: false,
+          color: "default",
         },
       },
     ],

@@ -4,7 +4,8 @@
  * re-parsed from code on load so a restored graph always matches the current
  * transpiler and trust registry.
  */
-import type { AppEdge, AppNode } from "../types/graph";
+import type { AppEdge, AppNode, NodeColor } from "../types/graph";
+import { isNodeColor } from "../types/graph";
 
 export const WORKFLOW_FORMAT_VERSION = 1;
 export const STORAGE_KEY = "complexui.workflow.v1";
@@ -21,6 +22,7 @@ export interface SavedNode {
   code: string;
   widgetValues: Record<string, unknown>;
   templateName: string | null;
+  color?: NodeColor;
 }
 
 export interface SavedEdge {
@@ -52,6 +54,7 @@ export function serialiseWorkflow(
       code: node.data.code,
       widgetValues: node.data.widgetValues,
       templateName: node.data.templateName,
+      color: node.data.color,
     })),
     edges: edges.map((edge) => ({
       id: edge.id,
@@ -169,6 +172,7 @@ function validateNode(value: unknown): SavedNode {
         : {},
     templateName:
       typeof record.templateName === "string" ? record.templateName : null,
+    color: isNodeColor(record.color) ? record.color : "default",
   };
 }
 

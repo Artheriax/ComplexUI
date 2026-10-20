@@ -31,6 +31,7 @@ function fakeNode(id: string, label: string): AppNode {
       schema: { ...emptySchema, node_id: id },
       widgetValues: {},
       isTrusted: false,
+      color: "default",
     },
   };
 }

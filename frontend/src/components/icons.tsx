@@ -169,3 +169,79 @@ export function RedoIcon({ className = "h-3.5 w-3.5" }: IconProps) {
     </svg>
   );
 }
+
+export function SettingsIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function EyeIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" />
+      <path
+        fillRule="evenodd"
+        d="M.664 10.59a1.651 1.651 0 0 1 0-1.186A10.004 10.004 0 0 1 10 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0 1 10 17c-4.257 0-7.893-2.66-9.336-6.41ZM14 10a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function SearchIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M9 3.5a5.5 5.5 0 1 0 3.474 9.762l3.132 3.132a.75.75 0 1 0 1.06-1.06l-3.132-3.132A5.5 5.5 0 0 0 9 3.5ZM5 9a4 4 0 1 1 8 0 4 4 0 0 1-8 0Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function CopyIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M7 3.5A1.5 1.5 0 0 1 8.5 2h6A1.5 1.5 0 0 1 16 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 7 12.5v-9Z" />
+      <path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H6v7.5A2.5 2.5 0 0 0 8.5 15H12v.5a1.5 1.5 0 0 1-1.5 1.5h-5A1.5 1.5 0 0 1 4 15.5v-9Z" />
+    </svg>
+  );
+}
+
+export function CutIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M7.5 2.75a.75.75 0 0 0-1.5 0v6.09a3.5 3.5 0 1 0 1.5 2.872V9.25l7.72 5.145a.75.75 0 0 0 .83-1.25L8.55 8 16.05 3a.75.75 0 1 0-.83-1.25L7.5 6.61V2.75Zm-2 11.5a2 2 0 1 1 4 0 2 2 0 0 1-4 0Z" />
+      <path d="M13 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" opacity=".65" />
+    </svg>
+  );
+}
+
+export function PasteIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M7 3a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2h1.5A1.5 1.5 0 0 1 16 4.5v12a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 4 16.5v-12A1.5 1.5 0 0 1 5.5 3H7Zm1.5-1a.5.5 0 0 0-.5.5V4h4v-1.5a.5.5 0 0 0-.5-.5h-3Z" />
+    </svg>
+  );
+}
+
+export function EyeOffIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M3.28 2.22a.75.75 0 0 0-1.06 1.06l14.5 14.5a.75.75 0 1 0 1.06-1.06l-1.745-1.745a10.029 10.029 0 0 0 3.3-4.38 1.651 1.651 0 0 0 0-1.185A10.004 10.004 0 0 0 9.999 3a9.956 9.956 0 0 0-4.744 1.194L3.28 2.22ZM7.752 6.69l1.092 1.092a2.5 2.5 0 0 1 3.374 3.373l1.091 1.092a4 4 0 0 0-5.557-5.557Z"
+        clipRule="evenodd"
+      />
+      <path d="m10.748 13.93 2.523 2.523a9.987 9.987 0 0 1-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 0 1 0-1.186A10.007 10.007 0 0 1 2.839 6.02L6.07 9.252a4 4 0 0 0 4.678 4.678Z" />
+    </svg>
+  );
+}

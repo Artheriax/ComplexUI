@@ -1108,6 +1108,7 @@ async function builtNode(template: TemplateInfo): Promise<AppNode> {
       schema: template.node_schema,
       widgetValues: { k: 5 },
       isTrusted: true,
+      color: "default",
     },
   };
 }
@@ -1525,5 +1526,308 @@ describe("clipboard", () => {
     expect(state.nodes).toHaveLength(2);
     const copy = state.nodes.find((node) => node.id === created[0]);
     expect(copy?.position).toEqual({ x: 40, y: 40 });
+  });
+});
+
+describe("addConnectedNodeFromTemplate", () => {
+  it("creates a connected input node and selects it", async () => {
+    const producer = await makeTemplate();
+    const consumer = await makeTemplate({
+      name: "sink",
+      title: "Sink",
+      node_schema: makeSchema({
+        inputs: [{ name: "value", data_type: "ANY" }],
+      }),
+    });
+    useGraphStore.setState({ templates: [producer, consumer] });
+    const sourceId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(producer, { x: 0, y: 0 });
+    useGraphStore.getState().selectOnlyNode(sourceId);
+
+    const created = useGraphStore.getState().addConnectedNodeFromTemplate(
+      consumer,
+      { x: 260, y: 20 },
+      {
+        nodeId: sourceId,
+        handleId: "k",
+        handleType: "source",
+        dataType: "ANY",
+      },
+    );
+
+    expect(created).not.toBeNull();
+    const state = useGraphStore.getState();
+    const added = state.nodes.find((node) => node.id === created?.nodeId);
+    expect(added?.position).toEqual({ x: 260, y: 20 });
+    expect(added?.selected).toBe(true);
+    expect(state.nodes.find((node) => node.id === sourceId)?.selected).toBe(
+      false,
+    );
+    expect(state.edges).toEqual([
+      {
+        id: `${sourceId}:k->${created?.nodeId}:value`,
+        source: sourceId,
+        sourceHandle: "k",
+        target: created?.nodeId,
+        targetHandle: "value",
+      },
+    ]);
+  });
+
+  it("creates a source node when dragging from an input", async () => {
+    const producer = await makeTemplate();
+    const consumer = await makeTemplate({
+      name: "sink",
+      title: "Sink",
+      node_schema: makeSchema({
+        inputs: [{ name: "value", data_type: "ANY" }],
+      }),
+    });
+    useGraphStore.setState({ templates: [producer, consumer] });
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(consumer, { x: 300, y: 0 });
+
+    const created = useGraphStore.getState().addConnectedNodeFromTemplate(
+      producer,
+      { x: 60, y: 0 },
+      {
+        nodeId: targetId,
+        handleId: "value",
+        handleType: "target",
+        dataType: "ANY",
+      },
+    );
+
+    expect(created).not.toBeNull();
+    expect(useGraphStore.getState().edges[0]).toEqual({
+      id: `${created?.nodeId}:k->${targetId}:value`,
+      source: created?.nodeId,
+      sourceHandle: "k",
+      target: targetId,
+      targetHandle: "value",
+    });
+  });
+
+  it("rejects incompatible templates and occupied inputs", async () => {
+    const metricsTemplate = await makeTemplate({
+      node_schema: makeSchema({
+        inputs: [{ name: "df", data_type: "DATAFRAME" }],
+        outputs: [{ name: "metrics", data_type: "METRICS" }],
+      }),
+    });
+    const tensorTemplate = await makeTemplate({
+      name: "tensor",
+      title: "Tensor",
+      node_schema: makeSchema({
+        inputs: [{ name: "tensor", data_type: "TENSOR" }],
+      }),
+    });
+    const flexibleTemplate = await makeTemplate({
+      name: "flexible",
+      title: "Flexible",
+      node_schema: makeSchema({
+        outputs: [{ name: "result", data_type: "ANY" }],
+      }),
+    });
+    const sourceId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(metricsTemplate, { x: 0, y: 0 });
+
+    expect(
+      useGraphStore.getState().addConnectedNodeFromTemplate(
+        tensorTemplate,
+        { x: 200, y: 0 },
+        {
+          nodeId: sourceId,
+          handleId: "metrics",
+          handleType: "source",
+          dataType: "METRICS",
+        },
+      ),
+    ).toBeNull();
+
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(tensorTemplate, { x: 200, y: 0 });
+    useGraphStore.setState((state) => ({
+      edges: [
+        ...state.edges,
+        {
+          id: `${sourceId}:metrics->${targetId}:tensor`,
+          source: sourceId,
+          sourceHandle: "metrics",
+          target: targetId,
+          targetHandle: "tensor",
+        },
+      ],
+    }));
+    expect(
+      useGraphStore.getState().addConnectedNodeFromTemplate(
+        flexibleTemplate,
+        { x: 0, y: 200 },
+        {
+          nodeId: targetId,
+          handleId: "tensor",
+          handleType: "target",
+          dataType: "TENSOR",
+        },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("node selection and appearance", () => {
+  it("renames, colors, selects and deletes nodes", async () => {
+    const template = await makeTemplate();
+    const first = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const second = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 200, y: 0 });
+
+    useGraphStore.getState().selectOnlyNode(first);
+    expect(
+      useGraphStore.getState().nodes.filter((node) => node.selected),
+    ).toHaveLength(1);
+
+    expect(useGraphStore.getState().renameNode(first, "  Tuned  ")).toBe(true);
+    expect(
+      useGraphStore.getState().nodes.find((node) => node.id === first)?.data
+        .label,
+    ).toBe("Tuned");
+    expect(useGraphStore.getState().renameNode(first, "   ")).toBe(false);
+
+    expect(
+      useGraphStore.getState().setNodeColor([first, second], "rose"),
+    ).toBe(true);
+    expect(
+      useGraphStore
+        .getState()
+        .nodes.filter((node) => node.data.color === "rose"),
+    ).toHaveLength(2);
+    useGraphStore.getState().undo();
+    expect(
+      useGraphStore
+        .getState()
+        .nodes.filter((node) => node.data.color === "default"),
+    ).toHaveLength(2);
+
+    useGraphStore.getState().selectOnlyNode(second);
+    expect(useGraphStore.getState().deleteSelection()).toBe(true);
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([
+      first,
+    ]);
+    expect(useGraphStore.getState().deleteSelection()).toBe(false);
+  });
+
+  it("pastes the clipboard at an explicit anchor", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 100, y: 100 });
+    useGraphStore.getState().selectOnlyNode(id);
+    useGraphStore.getState().copySelection();
+
+    const pasted = await useGraphStore
+      .getState()
+      .pasteClipboard({ x: 10, y: 20 });
+
+    const copy = useGraphStore
+      .getState()
+      .nodes.find((node) => node.id === pasted[0]);
+    expect(copy?.position).toEqual({ x: 10, y: 20 });
+  });
+});
+
+describe("resetNode", () => {
+  it("restores template code, metadata, color and widget defaults", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.getState().updateWidgetValue(id, "k", 9);
+    useGraphStore.getState().setNodeColor([id], "rose");
+    useGraphStore.getState().renameNode(id, "Custom name");
+    useGraphStore.setState((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === id
+          ? {
+              ...node,
+              data: { ...node.data, code: "# custom\n" },
+            }
+          : node,
+      ),
+      execution: {
+        ...state.execution,
+        nodeStates: { [id]: { status: "completed" } },
+      },
+    }));
+
+    expect(useGraphStore.getState().resetNode(id)).toBe(true);
+
+    const state = useGraphStore.getState();
+    const node = state.nodes.find((candidate) => candidate.id === id);
+    expect(node?.data.code).toBe(template.code);
+    expect(node?.data.label).toBe(template.title);
+    expect(node?.data.widgetValues).toEqual({ k: 5 });
+    expect(node?.data.color).toBe("default");
+    expect(node?.data.isTrusted).toBe(true);
+    expect(state.execution.nodeStates[id]).toBeUndefined();
+  });
+
+  it("drops edges that no longer match the restored schema", async () => {
+    const template = await makeTemplate();
+    const consumer = await makeTemplate({
+      name: "sink",
+      node_schema: makeSchema({
+        inputs: [{ name: "value", data_type: "ANY" }],
+      }),
+    });
+    useGraphStore.setState({ templates: [template, consumer] });
+    const sourceId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(consumer, { x: 200, y: 0 });
+    useGraphStore.getState().onConnect({
+      source: sourceId,
+      target: targetId,
+      sourceHandle: "k",
+      targetHandle: "value",
+    });
+    useGraphStore.setState((state) => ({
+      edges: [
+        ...state.edges,
+        {
+          id: `${sourceId}:ghost->${targetId}:value`,
+          source: sourceId,
+          sourceHandle: "ghost",
+          target: targetId,
+          targetHandle: "value",
+        },
+      ],
+    }));
+
+    useGraphStore.getState().resetNode(sourceId);
+
+    expect(useGraphStore.getState().edges.map((edge) => edge.id)).toEqual([
+      `${sourceId}:k->${targetId}:value`,
+    ]);
+  });
+
+  it("rejects unknown nodes and missing template metadata", async () => {
+    expect(useGraphStore.getState().resetNode("missing")).toBe(false);
+
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.setState({ templates: [] });
+    expect(useGraphStore.getState().resetNode(id)).toBe(false);
   });
 });
