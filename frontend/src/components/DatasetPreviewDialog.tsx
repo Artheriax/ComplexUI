@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
-import { fetchDatasetPreview } from "../lib/api";
+import { datasetRawUrl, fetchDatasetPreview } from "../lib/api";
 import type { DatasetPreview, DatasetSummary } from "../lib/api";
 import { formatDatasetSize } from "../lib/datasets";
 import { CloseIcon, SpinnerIcon, WarningIcon } from "./icons";
@@ -27,11 +27,15 @@ export function DatasetPreviewDialog({
   onClose,
 }: DatasetPreviewDialogProps) {
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
+  const isTable = dataset.kind === "table";
   const [preview, setPreview] = useState<DatasetPreview | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(isTable);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isTable) {
+      return;
+    }
     let active = true;
     void (async () => {
       try {
@@ -53,7 +57,7 @@ export function DatasetPreviewDialog({
     return () => {
       active = false;
     };
-  }, [dataset.id]);
+  }, [dataset.id, isTable]);
 
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-6">
@@ -71,11 +75,11 @@ export function DatasetPreviewDialog({
               id="dataset-preview-title"
               className="truncate text-sm font-semibold text-zinc-100"
             >
-              Dataset preview — {dataset.name}
+              {isTable ? "Dataset" : "Asset"} preview — {dataset.name}
             </h2>
             <p className="mt-1 text-[11px] text-zinc-500">
-              {dataset.format} · {formatDatasetSize(dataset.size_bytes)} ·{" "}
-              {dataset.path}
+              {dataset.kind === "table" ? dataset.format : dataset.kind} ·{" "}
+              {formatDatasetSize(dataset.size_bytes)} · {dataset.path}
             </p>
           </div>
           <button
@@ -100,6 +104,28 @@ export function DatasetPreviewDialog({
             <div className="flex items-start gap-2 rounded border border-red-900/60 bg-red-950/40 p-2 text-[11px] text-red-300">
               <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>{error}</span>
+            </div>
+          )}
+          {!isTable && !error && (
+            <div className="flex min-h-64 items-center justify-center rounded-lg bg-zinc-950/60 p-3">
+              {dataset.kind === "image" ? (
+                <img
+                  src={datasetRawUrl(dataset.id)}
+                  alt={dataset.name}
+                  className="max-h-[62vh] max-w-full rounded object-contain"
+                  onError={() => setError("Unable to load this image.")}
+                />
+              ) : (
+                <video
+                  src={datasetRawUrl(dataset.id)}
+                  controls
+                  preload="metadata"
+                  className="max-h-[62vh] max-w-full rounded"
+                  onError={() => setError("Unable to load this video.")}
+                >
+                  Your browser does not support video playback.
+                </video>
+              )}
             </div>
           )}
           {preview && !error && (
@@ -153,11 +179,13 @@ export function DatasetPreviewDialog({
         </div>
 
         <div className="border-t border-zinc-800 px-4 py-2 text-[10px] text-zinc-600">
-          {preview
-            ? `Showing up to ${preview.row_limit} rows${
-                preview.truncated ? " (more rows available)" : ""
-              }.`
-            : "Previewing the first 20 rows."}
+          {isTable
+            ? preview
+              ? `Showing up to ${preview.row_limit} rows${
+                  preview.truncated ? " (more rows available)" : ""
+                }.`
+              : "Previewing the first 20 rows."
+            : `${dataset.kind === "image" ? "Image" : "Video"} served inline from the workspace.`}
         </div>
       </div>
     </div>,

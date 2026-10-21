@@ -1,0 +1,36 @@
+{
+  "name": "vision_image_segmentation",
+  "title": "Image Segmentation (Torchvision)",
+  "category": "Computer Vision",
+  "description": "Segment a synthetic image with a randomly initialized DeepLabV3 model and save the overlay.",
+  "nodes": [
+    { "id": "demo", "template": "make_demo_image", "position": { "x": 0, "y": 40 } },
+    {
+      "id": "model",
+      "template": "torchvision_segmenter",
+      "position": { "x": 280, "y": 220 },
+      "widget_values": {
+        "architecture": "deeplabv3_mobilenet_v3_large",
+        "weights": "none",
+        "device": "cpu"
+      }
+    },
+    {
+      "id": "segment",
+      "template": "segment_image",
+      "position": { "x": 560, "y": 40 },
+      "widget_values": { "min_area": 64, "max_masks": 10 }
+    },
+    {
+      "id": "save",
+      "template": "save_media",
+      "position": { "x": 840, "y": 40 },
+      "widget_values": { "path": "vision-segmentation.png" }
+    }
+  ],
+  "edges": [
+    { "source_node_id": "demo", "source_handle": "image", "target_node_id": "segment", "target_handle": "image" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "segment", "target_handle": "model" },
+    { "source_node_id": "segment", "source_handle": "annotated", "target_node_id": "save", "target_handle": "media" }
+  ]
+}

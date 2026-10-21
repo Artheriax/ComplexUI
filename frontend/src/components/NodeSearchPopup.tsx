@@ -66,7 +66,12 @@ function connectionLabel(
   connection: PendingConnection,
 ): string {
   if (!item.match) {
-    return "No connection will be created";
+    return connection.bundleEdgeIds?.length
+      ? "No compatible output"
+      : "No connection will be created";
+  }
+  if (connection.bundleEdgeIds?.length) {
+    return `Re-source to ${item.match.socketName} · ${SOCKET_LABELS[item.match.socketType]}`;
   }
   return connection.handleType === "source"
     ? `Connect to ${item.match.socketName} · ${SOCKET_LABELS[item.match.socketType]}`
@@ -101,11 +106,13 @@ export function NodeSearchPopup({
   const templateItems = useMemo<SearchItem[]>(() => {
     return searchTemplates(templates, query).map((template) => {
       const match = connection
-        ? matchTemplateConnection(
-            template,
-            connection.handleType,
-            connection.dataType,
-          )
+        ? connection.bundleEdgeIds?.length
+          ? matchTemplateConnection(template, "target", connection.dataType)
+          : matchTemplateConnection(
+              template,
+              connection.handleType,
+              connection.dataType,
+            )
         : null;
       return {
         key: template.name,

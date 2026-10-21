@@ -53,6 +53,8 @@ _PEP723_BLOCK = re.compile(
     re.MULTILINE,
 )
 
+_MODEL_TYPE_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
 _RETURN_ITEM_HINT = (
     "Return items must be plain variable names optionally annotated with a "
     "socket type, e.g. `return model: ML_MODEL`"
@@ -490,6 +492,50 @@ def _annotation_text(node: ast.expr) -> str:
     return ast.unparse(node)
 
 
+def _is_model_selector_annotation(annotation: ast.expr) -> bool:
+    text = _annotation_text(annotation).strip().strip("'\"")
+    return text in {"ModelSelector", "complexui.ModelSelector"}
+
+
+def _model_selector_type(value: ast.expr | None) -> str:
+    if not isinstance(value, ast.Call):
+        raise ValueError(
+            "ModelSelector widgets must use "
+            'ModelSelector(type="...") as their default'
+        )
+    target = value.func
+    if isinstance(target, ast.Name):
+        name = target.id
+    elif isinstance(target, ast.Attribute):
+        name = target.attr
+    else:
+        name = ""
+    if name != "ModelSelector":
+        raise ValueError("ModelSelector default must call ModelSelector(type=...)")
+    if value.args:
+        raise ValueError("ModelSelector accepts only a type keyword argument")
+    selected: ast.expr | None = None
+    for keyword_item in value.keywords:
+        if keyword_item.arg == "type":
+            selected = keyword_item.value
+        else:
+            raise ValueError("ModelSelector accepts only a type keyword argument")
+    if selected is None:
+        raise ValueError("ModelSelector requires a type=... argument")
+    try:
+        model_type = ast.literal_eval(selected)
+    except (ValueError, TypeError, SyntaxError) as exc:
+        raise ValueError("ModelSelector type must be a string literal") from exc
+    if not isinstance(model_type, str):
+        raise ValueError("ModelSelector type must be a string literal")
+    cleaned = model_type.strip()
+    if not _MODEL_TYPE_PATTERN.fullmatch(cleaned):
+        raise ValueError(
+            "ModelSelector type must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+        )
+    return cleaned
+
+
 def _literal_subscript(annotation: ast.expr) -> ast.Subscript | None:
     candidate = annotation
     if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
@@ -606,10 +652,45 @@ def _extract_bindings(source: str) -> _Bindings:
             )
             continue
         type_text = _annotation_text(node.annotation)
+        model_selector = _is_model_selector_annotation(node.annotation)
         if node.value is None:
+            if model_selector:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=(
+                            "ModelSelector widgets require "
+                            'ModelSelector(type="...") as their default'
+                        ),
+                    )
+                )
+                continue
             seen[name] = "input socket"
             inputs.append(
                 InputSocket(name=name, data_type=normalize_socket_type(type_text))
+            )
+            continue
+        if model_selector:
+            try:
+                model_type = _model_selector_type(node.value)
+            except ValueError as exc:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=str(exc),
+                    )
+                )
+                continue
+            seen[name] = "widget"
+            widgets.append(
+                WidgetParam(
+                    name=name,
+                    data_type="ModelSelector",
+                    default="",
+                    model_type=model_type,
+                )
             )
             continue
         options: list[Any] = []

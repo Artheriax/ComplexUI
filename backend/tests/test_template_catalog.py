@@ -40,6 +40,8 @@ def test_only_example_dataset_and_synthetic_nodes_are_hidden() -> None:
         "load_digits",
         "make_classification_dataset",
         "make_messy_dataset",
+        "make_demo_image",
+        "make_demo_video",
         "tensor_dataset",
     }
     assert len(hidden) < len(TEMPLATE_META)

@@ -1,0 +1,20 @@
+{
+  "name": "vision_image_classification",
+  "title": "Image Classification (Torchvision)",
+  "category": "Computer Vision",
+  "description": "Generate a synthetic image and classify it with a randomly initialized ResNet-18.",
+  "nodes": [
+    { "id": "demo", "template": "make_demo_image", "position": { "x": 0, "y": 40 } },
+    {
+      "id": "model",
+      "template": "torchvision_classifier",
+      "position": { "x": 280, "y": 220 },
+      "widget_values": { "architecture": "resnet18", "weights": "none", "device": "cpu" }
+    },
+    { "id": "classify", "template": "classify_image", "position": { "x": 560, "y": 40 }, "widget_values": { "top_k": 5 } }
+  ],
+  "edges": [
+    { "source_node_id": "demo", "source_handle": "image", "target_node_id": "classify", "target_handle": "image" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "classify", "target_handle": "model" }
+  ]
+}

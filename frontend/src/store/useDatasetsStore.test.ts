@@ -16,6 +16,7 @@ function makeDataset(overrides: Partial<DatasetSummary> = {}): DatasetSummary {
     name: "iris.csv",
     path: "data/uploads/iris.csv",
     format: "csv",
+    kind: "table",
     size_bytes: 42,
     modified_at: "2026-10-20T12:00:00Z",
     ...overrides,

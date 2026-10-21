@@ -10,6 +10,7 @@ const CATEGORY_ORDER = [
   "Classical ML",
   "Data Quality & EDA",
   "PyTorch",
+  "Computer Vision",
 ];
 
 interface WorkflowGroup {

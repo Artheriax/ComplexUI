@@ -1,9 +1,25 @@
-import { Handle, NodeResizer, Position } from "@xyflow/react";
+import {
+  Handle,
+  NodeResizeControl,
+  NodeResizer,
+  Position,
+  useConnection,
+  useReactFlow,
+} from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { useState } from "react";
-import type { CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
+import type {
+  CSSProperties,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 
+import { classifyHandle, handleGuideClass } from "../lib/connectionGuide";
 import { MAX_FRAME_DIMENSION } from "../lib/persistence";
+import { deriveValueNodeOptions } from "../lib/valueNodeOptions";
+import { useBundleDragStore } from "../store/useBundleDragStore";
+import { useConnectionGuideStore } from "../store/useConnectionGuideStore";
+import { useEdgeDragStore } from "../store/useEdgeDragStore";
 import { useGraphStore } from "../store/useGraphStore";
 import type {
   AppNode,
@@ -48,6 +64,230 @@ function socketStyle(type: SocketType): CSSProperties {
   return { "--cu-handle-color": SOCKET_COLORS[type] } as CSSProperties;
 }
 
+function startEdgeRetarget(
+  event:
+    | ReactMouseEvent<HTMLDivElement>
+    | ReactPointerEvent<HTMLDivElement>,
+  nodeId: string,
+  handleId: string,
+) {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  const graph = useGraphStore.getState();
+  const edge = graph.edges.find(
+    (candidate) =>
+      candidate.target === nodeId && candidate.targetHandle === handleId,
+  );
+  const sourceHandleId = edge?.sourceHandle;
+  if (!edge || !sourceHandleId) {
+    return;
+  }
+  const sourceNode = graph.nodes.find((node) => node.id === edge.source);
+  const socket = sourceNode?.data.schema.outputs.find(
+    (candidate) => candidate.name === sourceHandleId,
+  );
+  const sourceElement = Array.from(
+    document.querySelectorAll<HTMLElement>("[data-cu-output-handle='true']"),
+  ).find(
+    (candidate) =>
+      candidate.dataset.nodeId === edge.source &&
+      candidate.dataset.handleId === sourceHandleId,
+  );
+  if (!socket || !sourceElement) {
+    return;
+  }
+  const rect = sourceElement.getBoundingClientRect();
+  useEdgeDragStore.getState().press({
+    edgeId: edge.id,
+    sourceNodeId: edge.source,
+    sourceHandleId,
+    targetNodeId: nodeId,
+    targetHandleId: handleId,
+    dataType: socket.data_type,
+    sourceScreen: {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    },
+    start: { x: event.clientX, y: event.clientY },
+  });
+}
+
+function SocketHandle({
+  kind,
+  nodeId,
+  id,
+  type,
+  occupied = false,
+  bundleEdgeIds = [],
+}: {
+  kind: "source" | "target";
+  nodeId: string;
+  id: string;
+  type: SocketType;
+  occupied?: boolean;
+  bundleEdgeIds?: string[];
+}) {
+  const guide = useConnectionGuideStore((state) => state.guide);
+  const startBundle = useBundleDragStore((state) => state.start);
+  const state = classifyHandle({
+    guide,
+    kind,
+    dataType: type,
+    nodeId,
+    handleId: id,
+    occupied,
+  });
+  const onMouseDownCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (kind === "target" && occupied) {
+      startEdgeRetarget(event, nodeId, id);
+      return;
+    }
+    if (
+      kind !== "source" ||
+      !event.shiftKey ||
+      bundleEdgeIds.length === 0
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    useConnectionGuideStore.getState().begin({
+      mode: "bundle",
+      direction: "source",
+      dataType: type,
+      originNodeId: nodeId,
+      originHandleId: id,
+    });
+    startBundle({
+      edgeIds: bundleEdgeIds,
+      sourceNodeId: nodeId,
+      sourceHandleId: id,
+      dataType: type,
+      start: { x: event.clientX, y: event.clientY },
+      current: { x: event.clientX, y: event.clientY },
+    });
+  };
+  return (
+    <Handle
+      type={kind}
+      position={kind === "source" ? Position.Right : Position.Left}
+      id={id}
+      style={socketStyle(type)}
+      className={`nokey ${handleGuideClass(state)}`}
+      onPointerDownCapture={
+        kind === "target" && occupied
+          ? (event) => startEdgeRetarget(event, nodeId, id)
+          : undefined
+      }
+      onMouseDownCapture={onMouseDownCapture}
+      onClickCapture={
+        kind === "target" && occupied
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          : undefined
+      }
+      data-cu-handle={kind}
+      data-cu-output-handle={kind === "source" ? "true" : undefined}
+      data-node-id={nodeId}
+      data-handle-id={id}
+      data-socket-type={type}
+      data-bundle-count={bundleEdgeIds.length}
+      data-node-editor-ignore="true"
+    />
+  );
+}
+
+const WIDGET_HANDLE_NEAR_PX = 56;
+const WIDGET_HANDLE_RELEASE_PX = 72;
+
+function WidgetTargetHandle({
+  nodeId,
+  id,
+  type,
+  connected,
+}: {
+  nodeId: string;
+  id: string;
+  type: SocketType;
+  connected: boolean;
+}) {
+  const handleRef = useRef<HTMLDivElement>(null);
+  const [near, setNear] = useState(false);
+  const connectionEnd = useConnection((connection) =>
+    connection.inProgress ? connection.to : null,
+  );
+  const { flowToScreenPosition } = useReactFlow();
+  const guide = useConnectionGuideStore((state) => state.guide);
+  const guideState = classifyHandle({
+    guide,
+    kind: "target",
+    dataType: type,
+    nodeId,
+    handleId: id,
+    occupied: connected,
+  });
+
+  useEffect(() => {
+    const handle = handleRef.current;
+    if (!connectionEnd || !handle) {
+      setNear(false);
+      return;
+    }
+    const rect = handle.getBoundingClientRect();
+    const point = flowToScreenPosition(connectionEnd);
+    const distance = Math.hypot(
+      point.x - (rect.left + rect.width / 2),
+      point.y - (rect.top + rect.height / 2),
+    );
+    setNear((current) =>
+      current
+        ? distance <= WIDGET_HANDLE_RELEASE_PX
+        : distance <= WIDGET_HANDLE_NEAR_PX,
+    );
+  }, [connectionEnd, flowToScreenPosition]);
+
+  return (
+    <Handle
+      ref={handleRef}
+      type="target"
+      position={Position.Left}
+      id={id}
+      style={socketStyle(type)}
+      className={`cu-widget-handle${connected ? " is-connected" : ""}${
+        near ? " is-near" : ""
+      } nokey ${handleGuideClass(guideState)}`}
+      onPointerDownCapture={
+        connected
+          ? (event) => startEdgeRetarget(event, nodeId, id)
+          : undefined
+      }
+      onMouseDownCapture={(event) => {
+        if (connected) {
+          startEdgeRetarget(event, nodeId, id);
+        }
+      }}
+      onClickCapture={
+        connected
+          ? (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          : undefined
+      }
+      data-cu-handle="target"
+      data-node-id={nodeId}
+      data-handle-id={id}
+      data-socket-type={type}
+      data-node-editor-ignore="true"
+    />
+  );
+}
+
 function SocketChip({ type }: { type: SocketType }) {
   return (
     <span
@@ -59,7 +299,7 @@ function SocketChip({ type }: { type: SocketType }) {
   );
 }
 
-export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
+export function ComplexNode({ id, data, selected, width, height }: NodeProps<AppNode>) {
   const execution = useGraphStore((state) => state.execution.nodeStates[id]);
   const running = useGraphStore((state) => state.execution.status === "running");
   const openEditor = useGraphStore((state) => state.openEditor);
@@ -67,10 +307,13 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
   const duplicateNode = useGraphStore((state) => state.duplicateNode);
   const runGraph = useGraphStore((state) => state.runGraph);
   const updateWidgetValue = useGraphStore((state) => state.updateWidgetValue);
+  const checkpoint = useGraphStore((state) => state.checkpoint);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
+  const nodes = useGraphStore((state) => state.nodes);
   const edges = useGraphStore((state) => state.edges);
+  const valueOptions = deriveValueNodeOptions(id, data, nodes, edges);
 
-  const connectedWidgets = new Set(
+  const connectedTargets = new Set(
     edges
       .filter((edge) => edge.target === id)
       .map((edge) => edge.targetHandle)
@@ -92,6 +335,7 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
   if (data.subgraphRole) {
     return (
       <SubgraphManagerShell
+        id={id}
         role={data.subgraphRole}
         label={data.label}
         schema={data.schema}
@@ -105,6 +349,8 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
     return (
       <SubgraphInstanceShell
         id={id}
+        width={width}
+        height={height}
         label={data.label}
         schema={data.schema}
         accent={accent}
@@ -118,11 +364,28 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
 
   return (
     <div
-      className={`min-w-[230px] max-w-[280px] rounded-lg border bg-zinc-900 shadow-xl ${borderClass} ${
-        selected ? "ring-2 ring-cyan-400/60" : ""
-      }`}
+      className={`flex min-w-[230px] flex-col rounded-lg border bg-zinc-900 shadow-xl ${
+        width === undefined ? "max-w-[280px]" : ""
+      } ${borderClass} ${selected ? "ring-2 ring-cyan-400/60" : ""}`}
+      style={{
+        width: width === undefined ? undefined : "100%",
+        height: height === undefined ? undefined : "100%",
+      }}
     >
-      <div className="relative flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
+      {selected && (
+        <NodeResizeControl
+          position="bottom-right"
+          minWidth={230}
+          minHeight={160}
+          maxWidth={MAX_FRAME_DIMENSION}
+          maxHeight={MAX_FRAME_DIMENSION}
+          color={accent}
+          autoScale
+          onResizeStart={() => checkpoint()}
+          className="nodrag"
+        />
+      )}
+      <div className="relative flex shrink-0 items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
         <span
           aria-hidden="true"
           data-node-color={data.color}
@@ -188,14 +451,15 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
       </div>
 
       {data.schema.inputs.length > 0 && (
-        <div className="border-b border-zinc-800 py-0.5">
+        <div className="shrink-0 border-b border-zinc-800 py-0.5">
           {data.schema.inputs.map((socket) => (
             <div key={socket.name} className="relative flex items-center gap-2 py-1 pl-3 pr-2">
-              <Handle
-                type="target"
-                position={Position.Left}
+              <SocketHandle
+                kind="target"
+                nodeId={id}
                 id={socket.name}
-                style={socketStyle(socket.data_type)}
+                type={socket.data_type}
+                occupied={connectedTargets.has(socket.name)}
               />
               <span className="text-xs text-zinc-300">{socket.name}</span>
               <span className="ml-auto">
@@ -207,48 +471,72 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
       )}
 
       {data.schema.widgets.length > 0 && (
-        <div className="space-y-1 border-b border-zinc-800 py-1.5 pr-2">
-          {data.schema.widgets.map((widget) => (
-            <div key={widget.name} className="relative pl-3">
-              <Handle
-                type="target"
-                position={Position.Left}
-                id={widget.name}
-                style={socketStyle(widgetSocketType(widget.data_type))}
-              />
-              <WidgetField
-                widget={widget}
-                value={data.widgetValues[widget.name]}
-                step={widget.name === "value" ? stepValue : undefined}
-                connected={connectedWidgets.has(widget.name)}
-                onChange={(value) =>
-                  updateWidgetValue(id, widget.name, value)
-                }
-              />
-            </div>
-          ))}
+        <div className="shrink-0 space-y-1 border-b border-zinc-800 py-1.5 pr-2">
+          {data.schema.widgets.map((widget) => {
+            const effectiveWidget =
+              widget.name === "value" && valueOptions !== null
+                ? { ...widget, options: valueOptions }
+                : widget;
+            return (
+              <div
+                key={widget.name}
+                className="cu-widget-row relative pl-3"
+                onDoubleClick={(event) => event.stopPropagation()}
+              >
+                <WidgetTargetHandle
+                  nodeId={id}
+                  id={widget.name}
+                  type={widgetSocketType(widget.data_type)}
+                  connected={connectedTargets.has(widget.name)}
+                />
+                <WidgetField
+                  widget={effectiveWidget}
+                  value={data.widgetValues[widget.name]}
+                  step={widget.name === "value" ? stepValue : undefined}
+                  connected={connectedTargets.has(widget.name)}
+                  onChange={(value) =>
+                    updateWidgetValue(id, widget.name, value)
+                  }
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 
       {data.schema.outputs.length > 0 && (
-        <div className="py-0.5">
-          {data.schema.outputs.map((socket) => (
-            <div key={socket.name} className="relative flex items-center gap-2 py-1 pl-2 pr-3">
-              <span className="ml-auto text-xs text-zinc-300">{socket.name}</span>
-              <SocketChip type={socket.data_type} />
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={socket.name}
-                style={socketStyle(socket.data_type)}
-              />
-            </div>
-          ))}
+        <div className="shrink-0 py-0.5">
+          {data.schema.outputs.map((socket) => {
+            const bundleEdgeIds = edges
+              .filter(
+                (edge) =>
+                  edge.source === id && edge.sourceHandle === socket.name,
+              )
+              .map((edge) => edge.id);
+            return (
+              <div
+                key={socket.name}
+                className="relative flex items-center gap-2 py-1 pl-2 pr-3"
+              >
+                <span className="ml-auto text-xs text-zinc-300">
+                  {socket.name}
+                </span>
+                <SocketChip type={socket.data_type} />
+                <SocketHandle
+                  kind="source"
+                  nodeId={id}
+                  id={socket.name}
+                  type={socket.data_type}
+                  bundleEdgeIds={bundleEdgeIds}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 
       {execution?.outputs && Object.keys(execution.outputs).length > 0 && (
-        <NodePreviews outputs={execution.outputs} />
+        <NodePreviews outputs={execution.outputs} fill={height !== undefined} />
       )}
 
       {execution && execution.richOutputs && execution.richOutputs.length > 0 && (
@@ -261,9 +549,11 @@ export function ComplexNode({ id, data, selected }: NodeProps<AppNode>) {
 }
 
 function PortRows({
+  nodeId,
   sockets,
   direction,
 }: {
+  nodeId: string;
   sockets: NodeSchema["inputs"] | NodeSchema["outputs"];
   direction: "input" | "output";
 }) {
@@ -277,11 +567,11 @@ function PortRows({
           }`}
         >
           {direction === "input" && (
-            <Handle
-              type="target"
-              position={Position.Left}
+            <SocketHandle
+              kind="target"
+              nodeId={nodeId}
               id={socket.name}
-              style={socketStyle(socket.data_type)}
+              type={socket.data_type}
             />
           )}
           {direction === "output" && (
@@ -294,11 +584,11 @@ function PortRows({
             <SocketChip type={socket.data_type} />
           </span>
           {direction === "output" && (
-            <Handle
-              type="source"
-              position={Position.Right}
+            <SocketHandle
+              kind="source"
+              nodeId={nodeId}
               id={socket.name}
-              style={socketStyle(socket.data_type)}
+              type={socket.data_type}
             />
           )}
         </div>
@@ -308,12 +598,14 @@ function PortRows({
 }
 
 function SubgraphManagerShell({
+  id,
   role,
   label,
   schema,
   accent,
   selected,
 }: {
+  id: string;
   role: SubgraphRole;
   label: string;
   schema: NodeSchema;
@@ -329,7 +621,7 @@ function SubgraphManagerShell({
       }`}
       style={{ borderColor: accent }}
     >
-      <div className="relative flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
+      <div className="relative flex shrink-0 items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
         <span
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-0 h-0.5 rounded-t-lg"
@@ -343,8 +635,8 @@ function SubgraphManagerShell({
           shared
         </span>
       </div>
-      <PortRows sockets={schema.inputs} direction="input" />
-      <PortRows sockets={schema.outputs} direction="output" />
+      <PortRows nodeId={id} sockets={schema.inputs} direction="input" />
+      <PortRows nodeId={id} sockets={schema.outputs} direction="output" />
       <div className="relative flex items-center gap-1.5 border-t border-dashed border-zinc-700 px-2 py-1.5 text-[10px] text-zinc-500">
         {role === "input" ? (
           <>
@@ -402,6 +694,8 @@ function SubgraphManagerShell({
 
 function SubgraphInstanceShell({
   id,
+  width,
+  height,
   label,
   schema,
   accent,
@@ -409,6 +703,8 @@ function SubgraphInstanceShell({
   onOpen,
 }: {
   id: string;
+  width: number | undefined;
+  height: number | undefined;
   label: string;
   schema: NodeSchema;
   accent: string;
@@ -417,6 +713,7 @@ function SubgraphInstanceShell({
 }) {
   const duplicateNode = useGraphStore((state) => state.duplicateNode);
   const deleteNode = useGraphStore((state) => state.deleteNode);
+  const checkpoint = useGraphStore((state) => state.checkpoint);
   const nodeCount = useGraphStore((state) => {
     const definitionId = state.nodes.find((node) => node.id === id)?.data
       .subgraphId;
@@ -427,12 +724,29 @@ function SubgraphInstanceShell({
 
   return (
     <div
-      className={`min-w-[230px] max-w-[280px] rounded-lg border bg-zinc-900 shadow-xl ${
-        selected ? "ring-2 ring-cyan-400/60" : ""
-      }`}
-      style={{ borderColor: accent }}
+      className={`flex min-w-[230px] flex-col rounded-lg border bg-zinc-900 shadow-xl ${
+        width === undefined ? "max-w-[280px]" : ""
+      } ${selected ? "ring-2 ring-cyan-400/60" : ""}`}
+      style={{
+        borderColor: accent,
+        width: width === undefined ? undefined : "100%",
+        height: height === undefined ? undefined : "100%",
+      }}
     >
-      <div className="relative flex items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
+      {selected && (
+        <NodeResizeControl
+          position="bottom-right"
+          minWidth={230}
+          minHeight={160}
+          maxWidth={MAX_FRAME_DIMENSION}
+          maxHeight={MAX_FRAME_DIMENSION}
+          color={accent}
+          autoScale
+          onResizeStart={() => checkpoint()}
+          className="nodrag"
+        />
+      )}
+      <div className="relative flex shrink-0 items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
         <span
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-0 h-0.5 rounded-t-lg"
@@ -477,8 +791,8 @@ function SubgraphInstanceShell({
           </button>
         </span>
       </div>
-      <PortRows sockets={schema.inputs} direction="input" />
-      <PortRows sockets={schema.outputs} direction="output" />
+      <PortRows nodeId={id} sockets={schema.inputs} direction="input" />
+      <PortRows nodeId={id} sockets={schema.outputs} direction="output" />
       <div className="rounded-b-lg border-t border-zinc-800 px-2 py-1 text-[9px] text-zinc-600">
         Double-click to open · {nodeCount} internal node
         {nodeCount === 1 ? "" : "s"}
@@ -543,14 +857,28 @@ function FrameShell({
   );
 }
 
-function NodePreviews({ outputs }: { outputs: Record<string, PreviewValue> }) {
+function NodePreviews({
+  outputs,
+  fill,
+}: {
+  outputs: Record<string, PreviewValue>;
+  fill: boolean;
+}) {
   return (
-    <div className="nodrag nowheel space-y-1.5 border-t border-zinc-800 px-2 py-1.5">
-      <div className="text-[9px] uppercase tracking-wide text-zinc-500">Preview</div>
+    <div
+      className={`nodrag nowheel space-y-1.5 border-t border-zinc-800 px-2 py-1.5 ${
+        fill ? "flex min-h-0 flex-1 flex-col overflow-hidden" : ""
+      }`}
+    >
+      <div className="shrink-0 text-[9px] uppercase tracking-wide text-zinc-500">
+        Preview
+      </div>
       {Object.entries(outputs).map(([name, value]) => (
-        <div key={name}>
-          <div className="mb-0.5 font-mono text-[10px] text-cyan-300/80">{name}</div>
-          <PreviewValueView value={value} compact />
+        <div key={name} className={fill ? "flex min-h-0 flex-1 flex-col" : ""}>
+          <div className="mb-0.5 shrink-0 font-mono text-[10px] text-cyan-300/80">
+            {name}
+          </div>
+          <PreviewValueView value={value} compact fill={fill} />
         </div>
       ))}
     </div>

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useSettingsStore } from "../store/useSettingsStore";
 import type { SidebarPanel } from "../store/useUiStore";
 import { useUiStore } from "../store/useUiStore";
-import { DatasetLibrary } from "./DatasetLibrary";
+import { AssetLibrary } from "./AssetLibrary";
 import { NodeLibrary } from "./NodeLibrary";
 import { ProjectLibrary } from "./ProjectLibrary";
 import { WorkflowLibrary } from "./WorkflowLibrary";
@@ -37,7 +37,7 @@ const TOP_ITEMS: RailItem[] = [
   },
   {
     id: "datasets",
-    label: "Datasets",
+    label: "Assets",
     icon: <DatabaseIcon className="h-4 w-4" />,
   },
 ];
@@ -131,7 +131,7 @@ export function NodePalette() {
           ) : sidebarPanel === "templates" ? (
             <WorkflowLibrary />
           ) : (
-            <DatasetLibrary />
+            <AssetLibrary />
           )}
         </section>
       )}

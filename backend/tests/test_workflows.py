@@ -29,6 +29,15 @@ EXPECTED_WORKFLOWS = {
     "smote_imbalanced_pipeline",
     "torch_mlp_synthetic",
     "torch_wine_mlp",
+    "vision_image_classification",
+    "vision_image_detection",
+    "vision_image_segmentation",
+    "vision_media_smoke",
+    "vision_video_classification",
+    "vision_video_detection",
+    "vision_video_segmentation",
+    "vision_yolo_detection",
+    "vision_yolo_segmentation",
     "wine_lightgbm_classifier",
     "wine_logistic_regression",
 }
@@ -38,6 +47,14 @@ OPTIONAL_MODULES = {
     "wine_lightgbm_classifier": "lightgbm",
     "torch_mlp_synthetic": "torch",
     "torch_wine_mlp": "torch",
+    "vision_image_classification": "torchvision",
+    "vision_image_detection": "torchvision",
+    "vision_image_segmentation": "torchvision",
+    "vision_video_classification": "torchvision",
+    "vision_video_detection": "ultralytics",
+    "vision_video_segmentation": "ultralytics",
+    "vision_yolo_detection": "ultralytics",
+    "vision_yolo_segmentation": "ultralytics",
 }
 
 ACCURACY_FLOORS = {
@@ -332,6 +349,114 @@ def test_materialized_workflow_executes_with_high_accuracy() -> None:
     assert all(cached is False for cached in result.cached.values())
     metrics = result.outputs_by_name["evaluate"]["metrics"]
     assert metrics["accuracy"] > 0.90
+
+
+def test_torchvision_workflows_emit_typed_vision_outputs() -> None:
+    pytest.importorskip("torchvision")
+    workflows = get_workflows()
+
+    classification = execute_graph(
+        materialize_workflow(workflows["vision_image_classification"])
+    )
+    predictions = classification.outputs_by_name["classify"]["classifications"]
+    assert classification.previews["classify"]["classifications"]["kind"] == "classifications"
+    assert len(predictions["top_k"]) == 5
+    assert all(0.0 <= item["score"] <= 1.0 for item in predictions["top_k"])
+    assert classification.previews["model"]["model"]["kind"] == "vision_model"
+
+    detection = execute_graph(
+        materialize_workflow(workflows["vision_image_detection"])
+    )
+    detections = detection.outputs_by_name["detect"]["detections"]
+    assert detection.previews["detect"]["detections"]["kind"] == "detections"
+    assert detections["count"] == len(detections["detections"])
+    assert detection.previews["detect"]["annotated"]["kind"] == "image"
+    assert detection.previews["save"]["saved"]["kind"] == "image"
+    assert detection.outputs_by_name["save"]["saved_path"] == "outputs/vision-detection.png"
+
+    segmentation = execute_graph(
+        materialize_workflow(workflows["vision_image_segmentation"])
+    )
+    masks = segmentation.outputs_by_name["segment"]["masks"]
+    assert segmentation.previews["segment"]["masks"]["kind"] == "masks"
+    assert len(masks["masks"]) <= 10
+    assert all(item["mask"] for item in masks["masks"])
+    assert segmentation.previews["segment"]["annotated"]["kind"] == "image"
+    assert segmentation.outputs_by_name["save"]["saved_path"] == (
+        "outputs/vision-segmentation.png"
+    )
+
+
+def test_ultralytics_workflows_emit_typed_vision_outputs() -> None:
+    pytest.importorskip("ultralytics")
+    workflows = get_workflows()
+
+    detection = execute_graph(
+        materialize_workflow(workflows["vision_yolo_detection"])
+    )
+    detections = detection.outputs_by_name["detect"]["detections"]
+    assert detection.previews["model"]["model"]["kind"] == "vision_model"
+    assert detection.previews["detect"]["detections"]["kind"] == "detections"
+    assert detections["backend"] == "ultralytics"
+    assert detections["count"] == len(detections["detections"])
+    assert detection.previews["save"]["saved"]["kind"] == "image"
+    assert detection.outputs_by_name["save"]["saved_path"] == (
+        "outputs/vision-yolo-detection.png"
+    )
+
+    segmentation = execute_graph(
+        materialize_workflow(workflows["vision_yolo_segmentation"])
+    )
+    masks = segmentation.outputs_by_name["segment"]["masks"]
+    assert segmentation.previews["segment"]["masks"]["kind"] == "masks"
+    assert masks["backend"] == "ultralytics"
+    assert len(masks["masks"]) <= 10
+    assert segmentation.previews["segment"]["annotated"]["kind"] == "image"
+    assert segmentation.outputs_by_name["save"]["saved_path"] == (
+        "outputs/vision-yolo-segmentation.png"
+    )
+
+
+def test_video_workflows_emit_annotated_media() -> None:
+    pytest.importorskip("torchvision")
+    pytest.importorskip("ultralytics")
+    workflows = get_workflows()
+
+    classification = execute_graph(
+        materialize_workflow(workflows["vision_video_classification"])
+    )
+    predictions = classification.outputs_by_name["classify"]["classifications"]
+    assert predictions["frames"] == 6
+    assert len(predictions["top_k"]) == 5
+    assert classification.previews["demo"]["video"]["kind"] == "video"
+    assert classification.previews["classify"]["classifications"]["kind"] == (
+        "classifications"
+    )
+
+    detection = execute_graph(
+        materialize_workflow(workflows["vision_video_detection"])
+    )
+    detections = detection.outputs_by_name["detect"]["detections"]
+    detection_video = detection.outputs_by_name["detect"]["annotated"]
+    assert detections["frames"] == 24
+    assert detections["backend"] == "ultralytics"
+    assert detection.previews["detect"]["annotated"]["kind"] == "video"
+    assert detection.previews["detect"]["annotated"]["url"] == (
+        "/api/outputs/vision-video-detection.mp4/raw"
+    )
+    assert detection_video["relative_path"] == "outputs/vision-video-detection.mp4"
+    assert Path(detection_video["path"]).is_file()
+
+    segmentation = execute_graph(
+        materialize_workflow(workflows["vision_video_segmentation"])
+    )
+    masks = segmentation.outputs_by_name["segment"]["masks"]
+    segmentation_video = segmentation.outputs_by_name["segment"]["annotated"]
+    assert masks["frames"] == 24
+    assert masks["backend"] == "ultralytics"
+    assert segmentation.previews["segment"]["masks"]["kind"] == "masks"
+    assert segmentation_video["relative_path"] == "outputs/vision-video-segmentation.mp4"
+    assert Path(segmentation_video["path"]).is_file()
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_WORKFLOWS))

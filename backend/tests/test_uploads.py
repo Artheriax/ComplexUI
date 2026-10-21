@@ -24,10 +24,19 @@ from app.transpiler import parse_node
 @pytest.fixture()
 def upload_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("COMPLEXUI_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("COMPLEXUI_INPUT_DIR", str(tmp_path / "inputs"))
     get_dataset_store.cache_clear()
     with TestClient(app) as client:
         yield client
     get_dataset_store.cache_clear()
+
+
+def test_default_input_dir_is_repo_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("COMPLEXUI_INPUT_DIR", raising=False)
+    expected = Path(__file__).resolve().parents[2] / "inputs"
+    assert datasets_module.DatasetStore().uploads_dir == expected
 
 
 def upload_csv(
@@ -50,7 +59,7 @@ def test_upload_list_preview_and_delete(upload_client: TestClient) -> None:
 
     assert dataset["id"] == "iris.csv"
     assert dataset["name"] == "iris.csv"
-    assert dataset["path"] == "data/uploads/iris.csv"
+    assert dataset["path"] == "inputs/iris.csv"
     assert dataset["format"] == "CSV"
     assert dataset["size_bytes"] > 0
 
@@ -126,12 +135,13 @@ def test_invalid_dataset_preview_is_reported(upload_client: TestClient) -> None:
     assert "Could not preview" in preview.json()["detail"]
 
 
-def test_file_widget_is_parsed_and_resolved_in_workspace(
+def test_file_widget_is_parsed_and_resolved_from_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("COMPLEXUI_WORKSPACE", str(tmp_path / "workspace"))
-    upload_dir = tmp_path / "workspace" / "data" / "uploads"
+    upload_dir = tmp_path / "inputs"
     upload_dir.mkdir(parents=True)
+    monkeypatch.setenv("COMPLEXUI_INPUT_DIR", str(upload_dir))
+    get_dataset_store.cache_clear()
     (upload_dir / "sample.csv").write_text("a\n1\n", encoding="utf-8")
 
     code = (
@@ -147,7 +157,7 @@ def test_file_widget_is_parsed_and_resolved_in_workspace(
     node = GraphNode(
         id="load_file_widget",
         code=code,
-        widget_values={"path": "data/uploads/sample.csv"},
+        widget_values={"path": "inputs/sample.csv"},
     )
     registry = SecurityRegistry()
     registry.approve(node.id, code_hash(node.code))

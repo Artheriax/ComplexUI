@@ -23,6 +23,7 @@ CATEGORIES: tuple[str, ...] = (
     "Models",
     "Evaluation",
     "PyTorch",
+    "Computer Vision",
 )
 
 FALLBACK_CATEGORY = "Other"
@@ -364,6 +365,108 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "DataFrame To Tensors",
         "PyTorch",
         "Classification frame to float32/long tensors",
+    ),
+    "torchvision_classifier": TemplateMeta(
+        "Torchvision Classifier",
+        "Computer Vision",
+        "Select a torchvision classification backbone",
+    ),
+    "torchvision_detector": TemplateMeta(
+        "Torchvision Detector",
+        "Computer Vision",
+        "Select a torchvision object detection backbone",
+    ),
+    "torchvision_segmenter": TemplateMeta(
+        "Torchvision Segmenter",
+        "Computer Vision",
+        "Select a torchvision semantic segmentation backbone",
+    ),
+    "classify_image": TemplateMeta(
+        "Classify Image",
+        "Computer Vision",
+        "Top-k ImageNet predictions from a torchvision model",
+    ),
+    "detect_objects": TemplateMeta(
+        "Detect Objects",
+        "Computer Vision",
+        "Bounding boxes plus an annotated image",
+    ),
+    "segment_image": TemplateMeta(
+        "Segment Image",
+        "Computer Vision",
+        "Semantic masks plus a colored overlay",
+    ),
+    "yolo_detector": TemplateMeta(
+        "YOLO Detector",
+        "Computer Vision",
+        "Select an Ultralytics YOLO detection checkpoint",
+    ),
+    "yolo_segmenter": TemplateMeta(
+        "YOLO Segmenter",
+        "Computer Vision",
+        "Select an Ultralytics YOLO segmentation checkpoint",
+    ),
+    "yolo_detect": TemplateMeta(
+        "YOLO Detect Objects",
+        "Computer Vision",
+        "Bounding boxes plus an annotated image (Ultralytics)",
+    ),
+    "yolo_segment": TemplateMeta(
+        "YOLO Segment Image",
+        "Computer Vision",
+        "Instance masks plus a colored overlay (Ultralytics)",
+    ),
+    "yolo_detect_video": TemplateMeta(
+        "YOLO Detect Video",
+        "Computer Vision",
+        "Annotate a video with YOLO boxes and a run summary",
+    ),
+    "yolo_segment_video": TemplateMeta(
+        "YOLO Segment Video",
+        "Computer Vision",
+        "Annotate a video with YOLO masks and a run summary",
+    ),
+    "classify_video": TemplateMeta(
+        "Classify Video",
+        "Computer Vision",
+        "Average torchvision predictions across sampled frames",
+    ),
+    "load_video": TemplateMeta(
+        "Load Video",
+        "Computer Vision",
+        "Read video metadata and a poster frame",
+    ),
+    "extract_video_frame": TemplateMeta(
+        "Extract Video Frame",
+        "Computer Vision",
+        "Read one frame from a video into an image",
+    ),
+    "load_image": TemplateMeta(
+        "Load Image",
+        "Computer Vision",
+        "Read a workspace image into an RGB image",
+    ),
+    "preview_media": TemplateMeta(
+        "Preview Media",
+        "Computer Vision",
+        "Preview an image or video without writing a file",
+    ),
+    "save_media": TemplateMeta(
+        "Save Media",
+        "Computer Vision",
+        "Write an image or video into workspace/outputs",
+    ),
+    "make_demo_image": TemplateMeta(
+        "Synthetic Demo Image",
+        "Computer Vision",
+        "Generated shapes for offline vision workflow tests",
+        hidden=True,
+    ),
+    "make_demo_video": TemplateMeta(
+        "Synthetic Demo Video",
+        "Computer Vision",
+        "Generated moving shapes for offline video workflow tests",
+        hidden=True,
     ),
 }
 

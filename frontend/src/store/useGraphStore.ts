@@ -24,6 +24,7 @@ import {
   fetchTemplates,
   fetchWorkflowTemplates,
   fetchWorkspaceSession,
+  modelSelectionIssuesFrom,
   parseCode,
   syntaxErrorFrom,
   untrustedNodesFrom,
@@ -48,6 +49,11 @@ import {
   socketTypesCompatible,
 } from "../lib/socketCompatibility";
 import type { TemplateConnectionMatch } from "../lib/socketCompatibility";
+import {
+  isOfficialValueNode,
+  normalizeValueChoice,
+  normalizeValueNodeValues,
+} from "../lib/valueNodeOptions";
 import {
   buildSubgraphFromSelection,
   createSubgraphInstanceNode,
@@ -313,6 +319,17 @@ interface GraphStore {
   onNodesChange: (changes: NodeChange<AppNode>[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
+  reassignOutputBundle: (
+    edgeIds: string[],
+    sourceNodeId: string,
+    sourceHandleId: string,
+  ) => boolean;
+  reconnectEdgeTarget: (
+    edgeId: string,
+    targetNodeId: string,
+    targetHandleId: string,
+  ) => boolean;
+  deleteEdge: (edgeId: string) => boolean;
   openEditor: (nodeId: string) => void;
   closeEditor: () => void;
   updateWidgetValue: (nodeId: string, name: string, value: unknown) => void;
@@ -854,7 +871,10 @@ function materialiseWorkflowTemplate(
     sourceHandle: edge.source_handle,
     targetHandle: edge.target_handle,
   }));
-  return { graph: { nodes, edges }, missing: [] };
+  return {
+    graph: { nodes: normalizeValueNodeValues(nodes, edges), edges },
+    missing: [],
+  };
 }
 
 interface BuiltWorkflow {
@@ -909,6 +929,8 @@ async function buildSavedWorkflow(
         id: savedNode.id,
         type: "complex",
         position: savedNode.position,
+        width: savedNode.width,
+        height: savedNode.height,
         parentId: savedNode.parentId,
         extent: savedNode.parentId ? "parent" : undefined,
         data: {
@@ -957,6 +979,8 @@ async function buildSavedWorkflow(
       id: savedNode.id,
       type: "complex",
       position: savedNode.position,
+      width: savedNode.width,
+      height: savedNode.height,
       parentId: savedNode.parentId,
       extent: savedNode.parentId ? "parent" : undefined,
       data: {
@@ -1909,10 +1933,24 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           return null;
         }
         if (connection.handleType === "source") {
-          match = findCompatibleTarget(
-            template.node_schema,
-            existingSocket.data_type,
-          );
+          if (connection.bundleEdgeIds?.length) {
+            const sourceSocket = findCompatibleOutput(
+              template.node_schema,
+              existingSocket.data_type,
+            );
+            match = sourceSocket
+              ? {
+                  socketName: sourceSocket.name,
+                  socketType: sourceSocket.data_type,
+                  targetKind: "output",
+                }
+              : null;
+          } else {
+            match = findCompatibleTarget(
+              template.node_schema,
+              existingSocket.data_type,
+            );
+          }
         } else {
           const sourceSocket = findCompatibleOutput(
             template.node_schema,
@@ -1947,6 +1985,74 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           color: "default",
         },
       };
+      if (
+        connection.handleType === "target" &&
+        isOfficialValueNode(node.data)
+      ) {
+        const targetWidget = existing.data.schema.widgets.find(
+          (widget) => widget.name === connection.handleId,
+        );
+        if ((targetWidget?.options?.length ?? 0) > 0) {
+          node.data.widgetValues.value = normalizeValueChoice(
+            node.data.widgetValues.value,
+            targetWidget?.options ?? [],
+          );
+        }
+      }
+      const bundleIds = connection.bundleEdgeIds;
+      if (bundleIds && bundleIds.length > 0) {
+        if (connection.handleType !== "source" || match.targetKind !== "output") {
+          return null;
+        }
+        const ids = new Set(bundleIds);
+        const bundleEdges = state.edges.filter((edge) => ids.has(edge.id));
+        if (bundleEdges.length !== ids.size) {
+          return null;
+        }
+        pushHistory();
+        set((current) => ({
+          nodes: [
+            ...current.nodes.map((candidate) =>
+              candidate.selected
+                ? { ...candidate, selected: false }
+                : candidate,
+            ),
+            node,
+          ],
+          edges: current.edges.map((edge) =>
+            ids.has(edge.id)
+              ? {
+                  ...edge,
+                  id: `${id}:${match.socketName}->${edge.target}:${edge.targetHandle}`,
+                  source: id,
+                  sourceHandle: match.socketName,
+                }
+              : edge,
+          ),
+        }));
+        return { nodeId: id, edgeId: bundleIds[0] ?? "" };
+      }
+      let normalizeExistingValue = false;
+      let existingValue = existing.data.widgetValues.value;
+      if (
+        connection.handleType === "source" &&
+        match.targetKind === "widget" &&
+        isOfficialValueNode(existing.data)
+      ) {
+        const targetWidget = template.node_schema.widgets.find(
+          (widget) => widget.name === match.socketName,
+        );
+        if ((targetWidget?.options?.length ?? 0) > 0) {
+          existingValue = normalizeValueChoice(
+            existing.data.widgetValues.value,
+            targetWidget?.options ?? [],
+          );
+          normalizeExistingValue = !Object.is(
+            existingValue,
+            existing.data.widgetValues.value,
+          );
+        }
+      }
       const edge: AppEdge =
         connection.handleType === "source"
           ? {
@@ -1968,11 +2074,24 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       }
       set((current) => ({
         nodes: [
-          ...current.nodes.map((candidate) =>
-            candidate.selected
-              ? { ...candidate, selected: false }
-              : candidate,
-          ),
+          ...current.nodes.map((candidate) => {
+            const normalized =
+              normalizeExistingValue && candidate.id === connection.nodeId
+                ? {
+                    ...candidate,
+                    data: {
+                      ...candidate.data,
+                      widgetValues: {
+                        ...candidate.data.widgetValues,
+                        value: existingValue,
+                      },
+                    },
+                  }
+                : candidate;
+            return normalized.selected
+              ? { ...normalized, selected: false }
+              : normalized;
+          }),
           node,
         ],
         edges: [...current.edges, edge],
@@ -3114,6 +3233,104 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       }));
     },
 
+    reassignOutputBundle: (edgeIds, sourceNodeId, sourceHandleId) => {
+      const state = get();
+      const sourceNode = state.nodes.find((node) => node.id === sourceNodeId);
+      if (!sourceNode) {
+        return false;
+      }
+      const sourceSocket = sourceNode.data.schema.outputs.find(
+        (socket) => socket.name === sourceHandleId,
+      );
+      if (!sourceSocket) {
+        return false;
+      }
+      const ids = new Set(edgeIds);
+      const selected = state.edges.filter((edge) => ids.has(edge.id));
+      if (selected.length !== ids.size) {
+        return false;
+      }
+      pushHistory();
+      set((current) => ({
+        edges: current.edges.map((edge) => {
+          if (!ids.has(edge.id)) {
+            return edge;
+          }
+          return {
+            ...edge,
+            id: `${sourceNodeId}:${sourceHandleId}->${edge.target}:${edge.targetHandle}`,
+            source: sourceNodeId,
+            sourceHandle: sourceHandleId,
+          };
+        }),
+      }));
+      return true;
+    },
+
+    reconnectEdgeTarget: (edgeId, targetNodeId, targetHandleId) => {
+      const state = get();
+      const edge = state.edges.find((candidate) => candidate.id === edgeId);
+      const targetNode = state.nodes.find((node) => node.id === targetNodeId);
+      if (!edge || !targetNode || targetNodeId === edge.source) {
+        return false;
+      }
+      const sourceNode = state.nodes.find((node) => node.id === edge.source);
+      const sourceSocket = sourceNode?.data.schema.outputs.find(
+        (socket) => socket.name === edge.sourceHandle,
+      );
+      const targetSocket = resolveTargetSocket(
+        targetNode.data.schema,
+        targetHandleId,
+      );
+      if (
+        !sourceSocket ||
+        !targetSocket ||
+        !socketTypesCompatible(sourceSocket.data_type, targetSocket.data_type)
+      ) {
+        return false;
+      }
+      if (
+        edge.target === targetNodeId &&
+        edge.targetHandle === targetHandleId
+      ) {
+        return true;
+      }
+      const occupied = state.edges.some(
+        (candidate) =>
+          candidate.id !== edge.id &&
+          candidate.target === targetNodeId &&
+          candidate.targetHandle === targetHandleId,
+      );
+      if (occupied) {
+        return false;
+      }
+      pushHistory();
+      set((current) => ({
+        edges: current.edges.map((candidate) =>
+          candidate.id === edge.id
+            ? {
+                ...candidate,
+                id: `${candidate.source}:${candidate.sourceHandle}->${targetNodeId}:${targetHandleId}`,
+                target: targetNodeId,
+                targetHandle: targetHandleId,
+              }
+            : candidate,
+        ),
+      }));
+      return true;
+    },
+
+    deleteEdge: (edgeId) => {
+      if (!get().edges.some((edge) => edge.id === edgeId)) {
+        return false;
+      }
+      pushHistory();
+      set((state) => ({
+        edges: state.edges.filter((edge) => edge.id !== edgeId),
+      }));
+      return true;
+    },
+
     onConnect: (connection) => {
       const { source, target } = connection;
       let { sourceHandle, targetHandle } = connection;
@@ -3214,6 +3431,18 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (!compatible || inputTaken) {
         return;
       }
+      const targetWidget = targetNode.data.schema.widgets.find(
+        (widget) => widget.name === targetHandle,
+      );
+      const inheritedValue =
+        isOfficialValueNode(sourceNode.data) &&
+        targetWidget &&
+        (targetWidget.options?.length ?? 0) > 0
+          ? normalizeValueChoice(
+              sourceNode.data.widgetValues.value,
+              targetWidget.options ?? [],
+            )
+          : sourceNode.data.widgetValues.value;
       const edge: AppEdge = {
         id: `${source}:${sourceHandle}->${target}:${targetHandle}`,
         source,
@@ -3224,7 +3453,25 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (!createdPort) {
         pushHistory();
       }
-      set((current) => ({ edges: addEdge(edge, current.edges) }));
+      set((current) => ({
+        nodes: Object.is(inheritedValue, sourceNode.data.widgetValues.value)
+          ? current.nodes
+          : current.nodes.map((node) =>
+              node.id === source
+                ? {
+                    ...node,
+                    data: {
+                      ...node.data,
+                      widgetValues: {
+                        ...node.data.widgetValues,
+                        value: inheritedValue,
+                      },
+                    },
+                  }
+                : node,
+            ),
+        edges: addEdge(edge, current.edges),
+      }));
     },
 
     openEditor: (nodeId) => {
@@ -3354,6 +3601,8 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             id: savedNode.id,
             type: "complex",
             position: savedNode.position,
+            width: savedNode.width,
+            height: savedNode.height,
             parentId: savedNode.parentId,
             extent: savedNode.parentId ? "parent" : undefined,
             data: {
@@ -3402,6 +3651,8 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           id: savedNode.id,
           type: "complex",
           position: savedNode.position,
+          width: savedNode.width,
+          height: savedNode.height,
           parentId: savedNode.parentId,
           extent: savedNode.parentId ? "parent" : undefined,
           data: {
@@ -3450,7 +3701,10 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             node.data.schema,
           );
         }
-        return { nodes: built, edges: builtEdges };
+        return {
+          nodes: normalizeValueNodeValues(built, builtEdges),
+          edges: builtEdges,
+        };
       };
 
       const subgraphs: SubgraphMap = {};
@@ -3784,6 +4038,27 @@ export const useGraphStore = create<GraphStore>((set, get) => {
                   message: `${untrusted.length} node(s) contain untrusted code — open and approve them before running.`,
                   errorType: "UntrustedCode",
                   nodeId: untrusted[0]?.node_id ?? null,
+                  line: null,
+                  traceback: "",
+                },
+              },
+            }));
+            return;
+          }
+          const modelIssues = modelSelectionIssuesFrom(error);
+          if (modelIssues.length > 0) {
+            const first = modelIssues[0];
+            set((state) => ({
+              execution: {
+                ...state.execution,
+                status: "idle",
+                error: {
+                  message:
+                    modelIssues.length === 1
+                      ? `Local model unavailable for ${first.node_id}.${first.widget}: ${first.message}`
+                      : `${modelIssues.length} local model selections are unavailable. Fix them before running.`,
+                  errorType: "ModelSelection",
+                  nodeId: first.node_id,
                   line: null,
                   traceback: "",
                 },

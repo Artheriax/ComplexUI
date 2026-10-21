@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { expect, test } from "@playwright/test";
 
@@ -13,8 +14,30 @@ async function openWorkflow(
   title: RegExp,
 ) {
   await page.getByRole("button", { name: "Templates" }).click();
-  await page.getByPlaceholder("Search templates…").fill(title.source);
+  await page
+    .getByPlaceholder("Search templates…")
+    .fill(title.source.replace(/\\(.)/g, "$1"));
   await page.getByRole("button", { name: title }).click();
+}
+
+async function edgeDragPoint(
+  page: import("@playwright/test").Page,
+  edgeTestId: string,
+) {
+  return page
+    .locator(`[data-testid="${edgeTestId}"] .react-flow__edge-interaction`)
+    .evaluate((element) => {
+      const path = element as SVGPathElement;
+      const point = path.getPointAtLength(path.getTotalLength() / 2);
+      const matrix = path.getScreenCTM();
+      if (!matrix) {
+        throw new Error("Edge path is not rendered");
+      }
+      return {
+        x: matrix.a * point.x + matrix.c * point.y + matrix.e,
+        y: matrix.b * point.x + matrix.d * point.y + matrix.f,
+      };
+    });
 }
 
 async function openFileMenu(page: import("@playwright/test").Page) {
@@ -70,6 +93,369 @@ test("loads a bundled workflow, updates settings, and runs it", async ({
   await expect(history.getByText(/4\/4 nodes completed/)).toBeVisible();
   await history.getByRole("button", { name: "Close run history" }).click();
   await expect(history).toBeHidden();
+});
+
+test("runs an offline image-classification workflow", async ({ page }) => {
+  await openWorkflow(page, /Image Classification \(Torchvision\)/);
+  await expect(
+    canvasStatus(page).getByText("3 nodes", { exact: true }),
+  ).toBeVisible();
+
+  await canvasStatus(page).getByRole("button", { name: "Run workflow" }).click();
+  await expect(executionPanel(page).getByRole("status")).toHaveText(
+    "completed",
+    { timeout: 120_000 },
+  );
+  await expect(
+    executionPanel(page).getByText("5 classifications"),
+  ).toBeVisible();
+
+  const demo = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Synthetic Demo Image" });
+  await demo.click({ force: true, position: { x: 40, y: 10 } });
+  const initialBox = await demo.boundingBox();
+  expect(initialBox).not.toBeNull();
+  await page.mouse.move(initialBox!.x + 40, initialBox!.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(initialBox!.x - 180, initialBox!.y + 10, {
+    steps: 12,
+  });
+  await page.mouse.up();
+  const image = demo.getByAltText("Node output");
+  await expect(image).toBeVisible();
+  const imageBefore = await image.boundingBox();
+  const demoBefore = await demo.boundingBox();
+  expect(imageBefore).not.toBeNull();
+  const resizeHandle = demo.locator(
+    ".react-flow__resize-control.bottom.right",
+  );
+  const resizeBox = await resizeHandle.boundingBox();
+  expect(resizeBox).not.toBeNull();
+  await page.mouse.move(
+    resizeBox!.x + resizeBox!.width / 2,
+    resizeBox!.y + resizeBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    resizeBox!.x + resizeBox!.width / 2 + 160,
+    resizeBox!.y + resizeBox!.height / 2 + 100,
+    { steps: 12 },
+  );
+  await page.mouse.up();
+
+  const demoAfter = await demo.boundingBox();
+  expect(demoAfter!.width).toBeGreaterThan(demoBefore!.width + 100);
+  await expect
+    .poll(async () => (await image.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(imageBefore!.width + 20);
+});
+
+test("resizes a node without scaling parameter controls", async ({ page }) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const split = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Train / Test Split" });
+  await split.click();
+  const parameter = split.getByRole("spinbutton").first();
+  const parameterBefore = await parameter.evaluate(
+    (element) => getComputedStyle(element).width,
+  );
+
+  const resizeHandle = split.locator(
+    ".react-flow__resize-control.bottom.right",
+  );
+  const resizeBox = await resizeHandle.boundingBox();
+  expect(resizeBox).not.toBeNull();
+  const before = await split.boundingBox();
+  expect(before).not.toBeNull();
+  await page.mouse.move(
+    resizeBox!.x + resizeBox!.width / 2,
+    resizeBox!.y + resizeBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    resizeBox!.x + resizeBox!.width / 2 + 140,
+    resizeBox!.y + resizeBox!.height / 2 + 100,
+    { steps: 12 },
+  );
+  await page.mouse.up();
+
+  await expect
+    .poll(async () => (await split.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(before!.width + 80);
+  const parameterAfter = await parameter.evaluate(
+    (element) => getComputedStyle(element).width,
+  );
+  expect(parameterAfter).toBe(parameterBefore);
+
+  await page.waitForFunction(() =>
+    localStorage
+      .getItem("complexui.workspace.v1")
+      ?.includes('"width"'),
+  );
+  await page.reload();
+  await expect(page.getByTitle("Backend streaming connected")).toBeVisible();
+  const restored = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Train / Test Split" });
+  await expect
+    .poll(async () => (await restored.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(before!.width + 80);
+});
+
+test("runs an offline video-detection workflow", async ({ page }) => {
+  await openWorkflow(page, /Video Detection \(YOLO\)/);
+  await expect(
+    canvasStatus(page).getByText("3 nodes", { exact: true }),
+  ).toBeVisible();
+
+  await canvasStatus(page).getByRole("button", { name: "Run workflow" }).click();
+  await expect(executionPanel(page).getByRole("status")).toHaveText(
+    "completed",
+    { timeout: 120_000 },
+  );
+  await expect(
+    executionPanel(page).getByText(/\d+ detections/),
+  ).toBeVisible();
+  const video = page
+    .locator('video[src="/api/outputs/vision-video-detection.mp4/raw"]')
+    .first();
+  await expect(video).toBeVisible();
+  await expect
+    .poll(() =>
+      video.evaluate(
+        (element) => (element as HTMLVideoElement).readyState,
+      ),
+    )
+    .toBeGreaterThanOrEqual(2);
+});
+
+test("does not drag an edge by grabbing its line", async ({ page }) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const sourcePoint = await edgeDragPoint(
+    page,
+    "rf__edge-split:train->knn:train",
+  );
+
+  await page.mouse.move(sourcePoint.x, sourcePoint.y);
+  await page.mouse.down();
+  await page.mouse.move(520, 700, { steps: 16 });
+  await page.mouse.up();
+
+  await expect(page.locator("[data-node-search-popup]")).toHaveCount(0);
+  await expect(page.locator(".react-flow__edge")).toHaveCount(4);
+  await expect
+    .poll(() =>
+      page
+        .locator(".react-flow__edge")
+        .evaluateAll((edges) =>
+          edges.map((edge) => edge.getAttribute("data-testid")),
+        ),
+    )
+    .toContain("rf__edge-split:train->knn:train");
+});
+
+test("drags a connected input to another compatible input", async ({
+  page,
+}) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const knn = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "KNN Classifier" });
+  await knn.click({ position: { x: 40, y: 10 } });
+  await page.keyboard.press("Control+d");
+  await expect(page.locator(".react-flow__node")).toHaveCount(5);
+  await page.getByRole("button", { name: "Fit View" }).click();
+
+  const duplicate = page
+    .locator(".react-flow__node.selected")
+    .filter({ hasText: "KNN Classifier" });
+  await expect(duplicate).toHaveCount(1);
+  const duplicateId = await duplicate.getAttribute("data-id");
+  expect(duplicateId).not.toBeNull();
+  const targetHandle = duplicate.locator(
+    '.react-flow__handle-left[data-handleid="train"]',
+  );
+  await expect(targetHandle).toBeInViewport();
+  const targetBox = await targetHandle.boundingBox();
+  expect(targetBox).not.toBeNull();
+  const sourceHandle = page.locator(
+    '.react-flow__node[data-id="knn"] .react-flow__handle-left[data-handleid="train"]',
+  );
+  await expect(sourceHandle).toBeInViewport();
+  const sourceBox = await sourceHandle.boundingBox();
+  expect(sourceBox).not.toBeNull();
+
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 16 },
+  );
+  await expect
+    .poll(() => page.locator(".cu-handle-compatible").count())
+    .toBeGreaterThan(0);
+  const previewLine = page.locator(".cu-edge-retarget-line");
+  await expect(previewLine).toBeVisible();
+  expect(await previewLine.getAttribute("stroke-dasharray")).toBeNull();
+  expect(
+    await page.locator(".cu-handle-incompatible").count(),
+  ).toBeGreaterThan(0);
+  await page.mouse.up();
+
+  const edgeIds = await page
+    .locator(".react-flow__edge")
+    .evaluateAll((edges) =>
+      edges.map((edge) => edge.getAttribute("data-testid")),
+    );
+  expect(edgeIds).toContain(
+    `rf__edge-split:train->${duplicateId}:train`,
+  );
+  expect(edgeIds).not.toContain("rf__edge-split:train->knn:train");
+  await expect(page.locator(".react-flow__edge")).toHaveCount(4);
+});
+
+test("drags a connected input to empty canvas and moves it to a new node", async ({
+  page,
+}) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const knn = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "KNN Classifier" });
+  const sourceHandle = knn.locator(
+    '.react-flow__handle-left[data-handleid="train"]',
+  );
+  const sourceBox = await sourceHandle.boundingBox();
+  expect(sourceBox).not.toBeNull();
+
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(520, 700, { steps: 16 });
+  await expect
+    .poll(() => page.locator(".cu-handle-compatible").count())
+    .toBeGreaterThan(0);
+  await page.mouse.up();
+
+  const search = page.getByRole("combobox", { name: "Search nodes" });
+  await expect(search).toBeVisible();
+  await expect(page.locator(".react-flow__edge")).toHaveCount(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".react-flow__edge")
+        .evaluateAll((edges) =>
+          edges.map((edge) => edge.getAttribute("data-testid")),
+        ),
+    )
+    .not.toContain("rf__edge-split:train->knn:train");
+  await search.fill("KNN Classifier");
+  await page.getByRole("option", { name: /KNN Classifier/ }).click();
+
+  await expect(page.locator(".react-flow__node")).toHaveCount(5);
+  const created = page
+    .locator(".react-flow__node.selected")
+    .filter({ hasText: "KNN Classifier" });
+  await expect(created).toHaveCount(1);
+  const createdId = await created.getAttribute("data-id");
+  expect(createdId).not.toBeNull();
+  await expect(page.locator(".react-flow__edge")).toHaveCount(4);
+  await expect
+    .poll(() =>
+      page
+        .locator(".react-flow__edge")
+        .evaluateAll((edges) =>
+          edges.map((edge) => edge.getAttribute("data-testid")),
+        ),
+    )
+    .toContain(`rf__edge-split:train->${createdId}:train`);
+});
+
+test("shift-drags an output bundle to another output", async ({ page }) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const split = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Train / Test Split" });
+  const source = split.locator(
+    '.react-flow__handle-right[data-handleid="test"]',
+  );
+  const target = split.locator(
+    '.react-flow__handle-right[data-handleid="train"]',
+  );
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+
+  await page.keyboard.down("Shift");
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 16 },
+  );
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+
+  await expect
+    .poll(() =>
+      page
+        .locator(".react-flow__edge")
+        .evaluateAll((edges) =>
+          edges.map((edge) => edge.getAttribute("data-testid")),
+        ),
+    )
+    .toContain("rf__edge-split:train->evaluate:test");
+  await expect(page.locator(".react-flow__edge")).toHaveCount(4);
+});
+
+test("opens node search when an output bundle is dropped on empty canvas", async ({
+  page,
+}) => {
+  await openWorkflow(page, /Iris KNN Classification/);
+  const split = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Train / Test Split" });
+  const source = split.locator(
+    '.react-flow__handle-right[data-handleid="test"]',
+  );
+  const sourceBox = await source.boundingBox();
+  expect(sourceBox).not.toBeNull();
+
+  await page.keyboard.down("Shift");
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(520, 700, { steps: 16 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+
+  await expect(page.locator("[data-node-search-popup]")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[data-node-search-popup]")).toHaveCount(0);
+  await expect(page.locator(".react-flow__edge")).toHaveCount(4);
+  await expect
+    .poll(() =>
+      page
+        .locator(".react-flow__edge")
+        .evaluateAll((edges) =>
+          edges.map((edge) => edge.getAttribute("data-testid")),
+        ),
+    )
+    .toContain("rf__edge-split:test->evaluate:test");
 });
 
 test("aligns selected nodes with the selection toolbar", async ({ page }) => {
@@ -174,6 +560,12 @@ test("steps a value node and wires it into a widget parameter", async ({
     targetBox!.y + targetBox!.height / 2,
     { steps: 12 },
   );
+  await expect
+    .poll(() => page.locator(".cu-handle-compatible").count())
+    .toBeGreaterThan(0);
+  expect(
+    await page.locator(".cu-handle-incompatible").count(),
+  ).toBeGreaterThan(0);
   await page.mouse.up();
 
   await expect(split.getByText("linked", { exact: true })).toBeVisible();
@@ -478,6 +870,53 @@ test("saves, reloads and reopens a named project", async ({
   }
 });
 
+test("auto-refreshes the model library and selects a local fallback", async ({
+  page,
+}) => {
+  const modelsDir = path.resolve(
+    process.cwd(),
+    "..",
+    "models",
+    "classification",
+  );
+  const modelName = `e2e-model-${Date.now()}.onnx`;
+  const modelPath = path.join(modelsDir, modelName);
+  await mkdir(modelsDir, { recursive: true });
+
+  try {
+    await page.getByRole("button", { name: "Assets" }).click();
+    await page.getByRole("tab", { name: "Models" }).click();
+    await expect(page.getByLabel("Search models")).toBeVisible();
+
+    await writeFile(modelPath, "e2e model placeholder");
+    await expect(page.getByText(modelName, { exact: true })).toBeVisible({
+      timeout: 10_000,
+    });
+
+    await page.keyboard.press("r");
+    await expect(page.getByText(modelName, { exact: true })).toBeVisible();
+
+    await openWorkflow(page, /Image Classification \(Torchvision\)/);
+    const field = page.getByLabel("Choose model for local_model");
+    await expect(field).toContainText("Built-in fallback");
+    await field.click();
+
+    const picker = page.getByRole("dialog", { name: "Choose local model" });
+    await expect(picker.getByText(modelName, { exact: true })).toBeVisible();
+    await picker.getByText(modelName, { exact: true }).click();
+    await expect(field).toContainText(modelName);
+
+    await field.click();
+    await page
+      .getByRole("dialog", { name: "Choose local model" })
+      .getByText("Built-in fallback", { exact: true })
+      .click();
+    await expect(field).toContainText("Built-in fallback");
+  } finally {
+    await unlink(modelPath).catch(() => undefined);
+  }
+});
+
 test("uploads, previews, and deletes a workspace dataset", async ({
   page,
   request,
@@ -485,8 +924,8 @@ test("uploads, previews, and deletes a workspace dataset", async ({
   const datasetName = `e2e-iris-${Date.now()}.csv`;
 
   try {
-    await page.getByRole("button", { name: "Datasets" }).click();
-    await page.getByLabel("Upload dataset files").setInputFiles({
+    await page.getByRole("button", { name: "Assets" }).click();
+    await page.getByLabel("Upload asset files").setInputFiles({
       name: datasetName,
       mimeType: "text/csv",
       buffer: Buffer.from("sepal_length,species\n5.1,setosa\n6.3,virginica\n"),

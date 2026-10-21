@@ -122,6 +122,46 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "load_parquet": ([], ["df"], ["path"]),
     "load_excel": ([], ["df"], ["path", "sheet_id"]),
     "load_json": ([], ["df"], ["path"]),
+    "load_image": ([], ["image"], ["path", "max_pixels"]),
+    "preview_media": (["media"], ["media"], []),
+    "save_media": (["media"], ["saved_path", "saved"], ["path"]),
+    "make_demo_image": ([], ["image"], ["width", "height", "seed"]),
+    "torchvision_classifier": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
+    "torchvision_detector": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
+    "torchvision_segmenter": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
+    "classify_image": (["image", "model"], ["classifications"], ["top_k"]),
+    "detect_objects": (
+        ["image", "model"],
+        ["detections", "annotated"],
+        ["score_threshold", "max_detections"],
+    ),
+    "segment_image": (["image", "model"], ["masks", "annotated"], ["min_area", "max_masks"]),
+    "yolo_detector": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
+    "yolo_segmenter": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
+    "yolo_detect": (
+        ["image", "model"],
+        ["detections", "annotated"],
+        ["score_threshold", "max_detections"],
+    ),
+    "yolo_segment": (["image", "model"], ["masks", "annotated"], ["min_area", "max_masks"]),
+    "yolo_detect_video": (
+        ["video", "model"],
+        ["detections", "annotated"],
+        ["output_path", "score_threshold", "max_detections", "max_frames", "frame_step"],
+    ),
+    "yolo_segment_video": (
+        ["video", "model"],
+        ["masks", "annotated"],
+        ["output_path", "min_area", "max_masks", "max_frames", "frame_step"],
+    ),
+    "classify_video": (
+        ["video", "model"],
+        ["classifications"],
+        ["sample_frames", "top_k"],
+    ),
+    "load_video": ([], ["video"], ["path", "max_pixels"]),
+    "extract_video_frame": (["video"], ["image"], ["frame_index"]),
+    "make_demo_video": ([], ["video"], ["path", "width", "height", "fps", "frames", "seed"]),
     "drop_missing": (["df"], ["cleaned"], ["columns", "how"]),
     "fill_missing": (["df"], ["filled"], ["columns", "strategy", "value"]),
     "drop_duplicates": (["df"], ["deduped"], ["subset", "keep"]),
@@ -721,6 +761,12 @@ def test_template_socket_types() -> None:
     ]
     assert evaluate.outputs[0].data_type is SocketType.METRICS
 
+    load_image = parse_node(registry.get_template("load_image").code)
+    assert load_image.outputs[0].data_type is SocketType.IMAGE
+    save_media = parse_node(registry.get_template("save_media").code)
+    assert save_media.inputs[0].data_type is SocketType.MEDIA
+    assert save_media.outputs[1].data_type is SocketType.MEDIA
+
     expected_values = {
         "int_value": SocketType.INT,
         "float_value": SocketType.FLOAT,
@@ -747,6 +793,10 @@ def test_widget_socket_types_match_python_scalars() -> None:
     assert socket_types_compatible(SocketType.INT, SocketType.FLOAT)
     assert not socket_types_compatible(SocketType.FLOAT, SocketType.INT)
     assert not socket_types_compatible(SocketType.STRING, SocketType.FLOAT)
+    assert socket_types_compatible(SocketType.IMAGE, SocketType.MEDIA)
+    assert socket_types_compatible(SocketType.VIDEO, SocketType.MEDIA)
+    assert not socket_types_compatible(SocketType.MEDIA, SocketType.IMAGE)
+    assert not socket_types_compatible(SocketType.IMAGE, SocketType.VIDEO)
 
 
 def test_value_nodes_execute_and_preview_primitive_values() -> None:

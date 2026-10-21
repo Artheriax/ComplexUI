@@ -1,9 +1,15 @@
 import type {
+  ClassificationsPreview,
   DataFramePreview,
   DatasetPreview,
+  DetectionsPreview,
+  ImagePreview,
+  MasksPreview,
   ModelPreview,
   PreviewValue,
   TensorPreview,
+  VideoPreview,
+  VisionModelPreview,
 } from "../types/graph";
 
 function isDataFramePreview(value: PreviewValue): value is DataFramePreview {
@@ -32,6 +38,44 @@ function isTensorPreview(value: PreviewValue): value is TensorPreview {
 
 function isModelPreview(value: PreviewValue): value is ModelPreview {
   return typeof value === "object" && value !== null && "class" in value;
+}
+
+function isImagePreview(value: PreviewValue): value is ImagePreview {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "image";
+}
+
+function isVideoPreview(value: PreviewValue): value is VideoPreview {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "video";
+}
+
+function isVisionModelPreview(value: PreviewValue): value is VisionModelPreview {
+  return (
+    typeof value === "object" && value !== null && "kind" in value && value.kind === "vision_model"
+  );
+}
+
+function isDetectionsPreview(value: PreviewValue): value is DetectionsPreview {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "detections";
+}
+
+function isMasksPreview(value: PreviewValue): value is MasksPreview {
+  return typeof value === "object" && value !== null && "kind" in value && value.kind === "masks";
+}
+
+function isClassificationsPreview(
+  value: PreviewValue,
+): value is ClassificationsPreview {
+  return (
+    typeof value === "object" && value !== null && "kind" in value && value.kind === "classifications"
+  );
+}
+
+function ItemList({ items }: { items: unknown[] }) {
+  return (
+    <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-[10px] text-zinc-400">
+      {JSON.stringify(items, null, 2)}
+    </pre>
+  );
 }
 
 function formatNumber(value: number): string {
@@ -95,9 +139,11 @@ function DataFrameView({
 export function PreviewValueView({
   value,
   compact = false,
+  fill = false,
 }: {
   value: PreviewValue;
   compact?: boolean;
+  fill?: boolean;
 }) {
   if (isDataFramePreview(value)) {
     return <DataFrameView preview={value} compact={compact} />;
@@ -125,6 +171,160 @@ export function PreviewValueView({
             {value.sample.length >= 5 ? ", …" : ""}]
           </div>
         )}
+      </div>
+    );
+  }
+  if (isImagePreview(value)) {
+    return (
+      <div
+        className={
+          fill
+            ? "flex h-full min-h-0 items-center gap-2 overflow-hidden"
+            : `flex items-center gap-2 ${compact ? "max-h-40" : ""}`
+        }
+      >
+        {value.thumbnail ? (
+          <img
+            src={value.thumbnail}
+            alt="Node output"
+            className={
+              fill
+                ? "h-full min-h-0 w-full flex-1 rounded border border-zinc-800 object-contain"
+                : "max-h-40 max-w-full rounded border border-zinc-800 object-contain"
+            }
+          />
+        ) : (
+          <div className="rounded border border-dashed border-zinc-700 px-3 py-4 text-[10px] text-zinc-500">
+            Image preview unavailable
+          </div>
+        )}
+        <div className="shrink-0 text-[10px] text-zinc-400">
+          <div>
+            {value.width}x{value.height}
+          </div>
+          <div className="text-zinc-500">{value.mode}</div>
+        </div>
+      </div>
+    );
+  }
+  if (isVideoPreview(value)) {
+    return (
+      <div
+        className={
+          fill
+            ? "flex h-full min-h-0 flex-1 flex-col overflow-hidden text-[10px] text-zinc-300"
+            : "text-[10px] text-zinc-300"
+        }
+      >
+        {value.url ? (
+          <video
+            src={value.url}
+            poster={value.poster ?? undefined}
+            controls
+            preload="metadata"
+            className={
+              fill
+                ? "h-full min-h-0 w-full flex-1 rounded border border-zinc-800 object-contain"
+                : "max-h-40 max-w-full rounded border border-zinc-800"
+            }
+          >
+            Your browser does not support video playback.
+          </video>
+        ) : (
+          <div className="rounded border border-dashed border-zinc-700 px-3 py-4 text-zinc-500">
+            Video preview unavailable
+          </div>
+        )}
+        <div className="mt-1 flex shrink-0 flex-wrap gap-x-3 text-zinc-500">
+          {value.width !== null && value.height !== null && (
+            <span>
+              {value.width}x{value.height}
+            </span>
+          )}
+          {value.fps !== null && <span>{formatNumber(value.fps)} fps</span>}
+          {value.frames !== null && <span>{value.frames} frames</span>}
+          {value.duration !== null && (
+            <span>{formatNumber(value.duration)} s</span>
+          )}
+        </div>
+        {value.path && <div className="truncate text-zinc-600">{value.path}</div>}
+      </div>
+    );
+  }
+  if (isVisionModelPreview(value)) {
+    const isLocal = value.source === "local";
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span
+            className={`rounded px-1 py-px text-[9px] font-medium ${
+              isLocal
+                ? "bg-emerald-950/60 text-emerald-300"
+                : "bg-zinc-800 text-zinc-400"
+            }`}
+          >
+            {isLocal ? "local" : "built-in"}
+          </span>
+          <span className="text-amber-300">{value.backend}</span>
+          <span className="text-zinc-500">{value.task}</span>
+          {value.format && (
+            <span className="text-zinc-600">{value.format}</span>
+          )}
+        </div>
+        <div className="truncate text-zinc-400">{value.model}</div>
+        {isLocal && value.path ? (
+          <div className="mt-0.5 truncate font-mono text-zinc-500" title={value.path}>
+            {value.path}
+          </div>
+        ) : (
+          <div className="text-zinc-600">
+            weights {JSON.stringify(value.weights)} · device{" "}
+            {JSON.stringify(value.device)}
+          </div>
+        )}
+        {isLocal && value.fingerprint && (
+          <div className="truncate font-mono text-[9px] text-zinc-700">
+            fingerprint {value.fingerprint}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (isMasksPreview(value)) {
+    return (
+      <div className="flex items-center gap-2">
+        {value.thumbnail ? (
+          <img
+            src={value.thumbnail}
+            alt="Segmentation masks"
+            className="max-h-32 max-w-full rounded border border-zinc-800 object-contain"
+          />
+        ) : (
+          <span className="text-[10px] text-zinc-500">{value.count} masks</span>
+        )}
+        {value.thumbnail && (
+          <span className="text-[10px] text-zinc-400">{value.count} masks</span>
+        )}
+      </div>
+    );
+  }
+  if (isDetectionsPreview(value)) {
+    return (
+      <div>
+        <div className="mb-1 text-[10px] text-zinc-400">
+          {value.count} detections
+        </div>
+        {value.items.length > 0 && <ItemList items={value.items} />}
+      </div>
+    );
+  }
+  if (isClassificationsPreview(value)) {
+    return (
+      <div>
+        <div className="mb-1 text-[10px] text-zinc-400">
+          {value.items.length} classifications
+        </div>
+        {value.items.length > 0 && <ItemList items={value.items} />}
       </div>
     );
   }

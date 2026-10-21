@@ -1,0 +1,32 @@
+{
+  "name": "vision_yolo_detection",
+  "title": "Object Detection (YOLO)",
+  "category": "Computer Vision",
+  "description": "Run offline YOLO11 detection on a synthetic image and save the annotation.",
+  "nodes": [
+    { "id": "demo", "template": "make_demo_image", "position": { "x": 0, "y": 40 } },
+    {
+      "id": "model",
+      "template": "yolo_detector",
+      "position": { "x": 280, "y": 220 },
+      "widget_values": { "architecture": "yolo11n", "weights": "none", "device": "cpu" }
+    },
+    {
+      "id": "detect",
+      "template": "yolo_detect",
+      "position": { "x": 560, "y": 40 },
+      "widget_values": { "score_threshold": 0.25, "max_detections": 20 }
+    },
+    {
+      "id": "save",
+      "template": "save_media",
+      "position": { "x": 840, "y": 40 },
+      "widget_values": { "path": "vision-yolo-detection.png" }
+    }
+  ],
+  "edges": [
+    { "source_node_id": "demo", "source_handle": "image", "target_node_id": "detect", "target_handle": "image" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "detect", "target_handle": "model" },
+    { "source_node_id": "detect", "source_handle": "annotated", "target_node_id": "save", "target_handle": "media" }
+  ]
+}

@@ -95,13 +95,45 @@ export interface RunDetail extends RunSummary {
   error: RunErrorRecord | null;
 }
 
+export type AssetKind = "table" | "image" | "video";
+
 export interface DatasetSummary {
   id: string;
   name: string;
   path: string;
   format: string;
+  kind: AssetKind;
   size_bytes: number;
   modified_at: string;
+}
+
+export function datasetRawUrl(datasetId: string): string {
+  return `${API_BASE}/uploads/${encodeURIComponent(datasetId)}/raw`;
+}
+
+export function outputRawUrl(path: string): string {
+  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  return `${API_BASE}/outputs/${encodeURIComponent(name)}/raw`;
+}
+
+export interface ModelSummary {
+  id: string;
+  name: string;
+  path: string;
+  model_type: string;
+  format: string;
+  size_bytes: number;
+  modified_at: string;
+  mtime_ns: number;
+  fingerprint: string;
+  executable: boolean;
+}
+
+export interface ModelTypeSummary {
+  name: string;
+  path: string;
+  count: number;
+  default: boolean;
 }
 
 export interface DatasetPreview {
@@ -297,6 +329,15 @@ export function fetchDatasets(): Promise<DatasetSummary[]> {
   return requestJson<DatasetSummary[]>("/uploads");
 }
 
+export function fetchModelTypes(): Promise<ModelTypeSummary[]> {
+  return requestJson<ModelTypeSummary[]>("/models/types");
+}
+
+export function fetchModels(modelType?: string | null): Promise<ModelSummary[]> {
+  const query = modelType ? `?type=${encodeURIComponent(modelType)}` : "";
+  return requestJson<ModelSummary[]>(`/models${query}`);
+}
+
 export function fetchDatasetPreview(
   datasetId: string,
   limit = 20,
@@ -363,6 +404,30 @@ export function untrustedNodesFrom(error: ApiError): UntrustedNodeRef[] {
     if (Array.isArray(nodes)) {
       return nodes as UntrustedNodeRef[];
     }
+  }
+  return [];
+}
+
+export interface ModelSelectionIssue {
+  node_id: string;
+  widget: string;
+  model_type: string;
+  path: string;
+  message: string;
+}
+
+export function modelSelectionIssuesFrom(error: ApiError): ModelSelectionIssue[] {
+  const outer = error.detail as { detail?: unknown } | null;
+  const inner = outer?.detail;
+  if (
+    inner &&
+    typeof inner === "object" &&
+    "type" in inner &&
+    (inner as { type?: unknown }).type === "ModelSelection" &&
+    "models" in inner &&
+    Array.isArray((inner as { models?: unknown }).models)
+  ) {
+    return (inner as { models: ModelSelectionIssue[] }).models;
   }
   return [];
 }

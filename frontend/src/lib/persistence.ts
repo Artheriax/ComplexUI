@@ -42,6 +42,15 @@ const SOCKET_TYPES = new Set<SocketType>([
   "ML_MODEL",
   "METRICS",
   "TENSOR",
+  "IMAGE",
+  "VIDEO",
+  "MEDIA",
+  "DETECTION_MODEL",
+  "SEGMENTATION_MODEL",
+  "CLASSIFICATION_MODEL",
+  "DETECTIONS",
+  "MASKS",
+  "CLASSIFICATIONS",
   "ANY",
 ]);
 
@@ -122,6 +131,13 @@ function serialiseNode(node: AppNode): SavedNode {
     saved.isFrame = true;
     saved.width = node.width ?? node.measured?.width;
     saved.height = node.height ?? node.measured?.height;
+  } else if (!isSubgraphManagerNode(node)) {
+    if (node.width !== undefined) {
+      saved.width = node.width;
+    }
+    if (node.height !== undefined) {
+      saved.height = node.height;
+    }
   }
   if (isSubgraphInstanceNode(node) && node.data.subgraphId) {
     saved.isSubgraph = true;

@@ -1,0 +1,25 @@
+{
+  "name": "vision_video_classification",
+  "title": "Video Classification (Torchvision)",
+  "category": "Computer Vision",
+  "description": "Classify sampled frames from a synthetic video and average their predictions.",
+  "nodes": [
+    { "id": "demo", "template": "make_demo_video", "position": { "x": 0, "y": 40 } },
+    {
+      "id": "model",
+      "template": "torchvision_classifier",
+      "position": { "x": 280, "y": 220 },
+      "widget_values": { "architecture": "resnet18", "weights": "none", "device": "cpu" }
+    },
+    {
+      "id": "classify",
+      "template": "classify_video",
+      "position": { "x": 560, "y": 40 },
+      "widget_values": { "sample_frames": 6, "top_k": 5 }
+    }
+  ],
+  "edges": [
+    { "source_node_id": "demo", "source_handle": "video", "target_node_id": "classify", "target_handle": "video" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "classify", "target_handle": "model" }
+  ]
+}

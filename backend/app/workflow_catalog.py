@@ -45,6 +45,7 @@ WORKFLOW_CATEGORIES: tuple[str, ...] = (
     "Classical ML",
     "Data Quality & EDA",
     "PyTorch",
+    "Computer Vision",
 )
 
 _WORKFLOW_DIR = Path(__file__).resolve().parent / "workflows"

@@ -14,7 +14,9 @@ cached rich-output payloads such as base64 images and Plotly figures.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import pickle
 import re
@@ -25,14 +27,23 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import numpy as np
 
+from .datasets import (
+    DatasetNotFound,
+    InvalidAssetPath,
+    InvalidDataset,
+    get_dataset_store,
+    get_output_store,
+)
 from .env_manager import (
     DependencyInstallError,
     install_dependencies,
     missing_dependencies,
 )
+from .models import ModelError, get_model_store
 from .output_capture import OutputCapture, rich_output_size
 from .schemas import (
     EventType,
@@ -58,6 +69,8 @@ __all__ = [
     "ExecutionResult",
     "FileAccessError",
     "GraphCycleError",
+    "ModelAccessError",
+    "ModelSelectionError",
     "WidgetChoiceError",
     "GraphError",
     "GraphPlan",
@@ -138,6 +151,18 @@ class GraphValidationError(GraphError):
     """Raised when the workflow graph is malformed (wiring, references)."""
 
 
+class ModelSelectionError(GraphValidationError):
+    """Raised when a selected local model is stale or invalid."""
+
+    def __init__(self, issues: list[dict[str, str]]) -> None:
+        summary = "; ".join(
+            f"{issue['node_id']}.{issue['widget']}: {issue['message']}"
+            for issue in issues
+        )
+        super().__init__("Invalid local model selection(s): " + summary)
+        self.issues = issues
+
+
 class GraphCycleError(GraphError):
     """Raised when the workflow graph contains a cycle."""
 
@@ -172,6 +197,10 @@ class _OutputContractError(Exception):
 
 class FileAccessError(Exception):
     """Raised when a File widget points outside the workspace."""
+
+
+class ModelAccessError(Exception):
+    """Raised when a local model selection is missing or invalid."""
 
 
 class WidgetChoiceError(Exception):
@@ -214,12 +243,65 @@ def validate_graph(
     nodes, edges = _scoped_graph(graph, allowed)
     order = _topological_order({node.id: node for node in nodes}, edges)
     schemas = _plan(nodes, edges)
+    _validate_model_selections(nodes, schemas)
     untrusted = [
         (node.id, code_hash(node.code))
         for node in nodes
         if not registry.is_trusted(node.approval_id or node.id, node.code)
     ]
     return GraphPlan(order=order, schemas=schemas, untrusted=untrusted)
+
+
+def _validate_model_selections(
+    nodes: Sequence[GraphNode],
+    schemas: dict[str, NodeSchema],
+) -> None:
+    """Fail pre-flight when a selected local model is stale or invalid."""
+    issues: list[dict[str, str]] = []
+    for node in nodes:
+        schema = schemas[node.id]
+        for widget in schema.widgets:
+            if widget.data_type.strip().lower() != "modelselector":
+                continue
+            selected = node.widget_values.get(widget.name, widget.default)
+            if not isinstance(selected, str) or not selected.strip():
+                continue
+            try:
+                get_model_store().resolve(widget.model_type or "", selected)
+            except ModelError as exc:
+                issues.append(
+                    {
+                        "node_id": node.id,
+                        "widget": widget.name,
+                        "model_type": widget.model_type or "",
+                        "path": selected,
+                        "message": str(exc),
+                    }
+                )
+    if issues:
+        raise ModelSelectionError(issues)
+
+
+def _model_widget_fingerprints(
+    node: GraphNode,
+    schema: NodeSchema,
+) -> dict[str, str]:
+    """Return model file fingerprints for cache invalidation."""
+    fingerprints: dict[str, str] = {}
+    for widget in schema.widgets:
+        if widget.data_type.strip().lower() != "modelselector":
+            continue
+        selected = node.widget_values.get(widget.name, widget.default)
+        if not isinstance(selected, str) or not selected.strip():
+            fingerprints[widget.name] = "builtin"
+            continue
+        try:
+            summary = get_model_store().describe(widget.model_type or "", selected)
+        except ModelError:
+            fingerprints[widget.name] = f"missing:{selected}"
+        else:
+            fingerprints[widget.name] = summary.fingerprint
+    return fingerprints
 
 
 def _scoped_graph(
@@ -320,7 +402,12 @@ def execute_graph(
             f"{handle}:{state_hashes[incoming[node_id][handle].source_node_id]}"
             for handle in sorted(incoming[node_id])
         ]
-        state_hash = _node_state_hash(node.code, node.widget_values, upstream_hashes)
+        state_hash = _node_state_hash(
+            node.code,
+            node.widget_values,
+            upstream_hashes,
+            _model_widget_fingerprints(node, schema),
+        )
 
         if not registry.is_trusted(node.approval_id or node_id, node.code):
             raise UntrustedNodeError(node_id, code_hash(node.code))
@@ -388,8 +475,16 @@ def execute_graph(
             kwargs[handle] = result.outputs_by_name[edge.source_node_id][edge.source_handle]
         try:
             for widget in schema.widgets:
-                if widget.data_type.strip().lower() == "file":
+                widget_kind = widget.data_type.strip().lower()
+                if widget_kind in {"file", "imagefile", "videofile"}:
                     kwargs[widget.name] = _resolve_widget_file(kwargs.get(widget.name))
+                elif widget_kind == "outputfile":
+                    kwargs[widget.name] = _resolve_output_file(kwargs.get(widget.name))
+                elif widget_kind == "modelselector":
+                    kwargs[widget.name] = _resolve_model_selection(
+                        widget.model_type,
+                        kwargs.get(widget.name),
+                    )
                 if widget.options and not widget_choice_allowed(
                     kwargs.get(widget.name), widget.options
                 ):
@@ -397,7 +492,7 @@ def execute_graph(
                         f"Widget '{widget.name}' on node '{node_id}' must be "
                         f"one of {widget.options!r}"
                     )
-        except (FileAccessError, WidgetChoiceError) as exc:
+        except (FileAccessError, ModelAccessError, WidgetChoiceError) as exc:
             sink(
                 ExecutionEvent(
                     type=EventType.NODE_ERROR,
@@ -521,6 +616,24 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
             )
         if data_type is SocketType.METRICS:
             return _jsonable(value)
+        if data_type is SocketType.IMAGE:
+            return _image_preview(value)
+        if data_type is SocketType.VIDEO:
+            return _video_preview(value)
+        if data_type is SocketType.MEDIA:
+            return _media_preview(value)
+        if data_type in {
+            SocketType.DETECTION_MODEL,
+            SocketType.SEGMENTATION_MODEL,
+            SocketType.CLASSIFICATION_MODEL,
+        }:
+            return _vision_model_preview(value)
+        if data_type is SocketType.DETECTIONS:
+            return _detections_preview(value)
+        if data_type is SocketType.MASKS:
+            return _masks_preview(value)
+        if data_type is SocketType.CLASSIFICATIONS:
+            return _classifications_preview(value)
         if data_type in {
             SocketType.INT,
             SocketType.FLOAT,
@@ -531,6 +644,165 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
     except Exception:
         return repr(value)[:200]
     return repr(value)[:200]
+
+
+def _image_preview(value: Any, max_side: int = 512) -> dict[str, Any]:
+    """Return image metadata plus a bounded JPEG data-URL thumbnail."""
+    width = int(getattr(value, "width", 0))
+    height = int(getattr(value, "height", 0))
+    preview: dict[str, Any] = {
+        "kind": "image",
+        "width": width,
+        "height": height,
+        "mode": str(getattr(value, "mode", "")),
+    }
+    try:
+        from PIL import Image
+
+        if not isinstance(value, Image.Image):
+            raise TypeError("Not a PIL image")
+        thumbnail = value.convert("RGB")
+        thumbnail.thumbnail((max_side, max_side))
+        buffer = io.BytesIO()
+        thumbnail.save(buffer, format="JPEG", quality=82)
+        preview["thumbnail"] = (
+            "data:image/jpeg;base64,"
+            + base64.b64encode(buffer.getvalue()).decode("ascii")
+        )
+    except Exception:
+        preview["thumbnail"] = None
+    return preview
+
+
+def _video_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "video", "path": None, "error": "Unsupported video value"}
+    path = value.get("path")
+    return {
+        "kind": "video",
+        "path": path if isinstance(path, str) else None,
+        "url": _media_url(path),
+        "fps": _optional_number(value.get("fps")),
+        "frames": _optional_number(value.get("frames")),
+        "width": _optional_number(value.get("width")),
+        "height": _optional_number(value.get("height")),
+        "duration": _optional_number(value.get("duration")),
+        "poster": value.get("poster") if isinstance(value.get("poster"), str) else None,
+    }
+
+
+def _media_preview(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and str(value.get("media_type", "")).lower() == "video":
+        return _video_preview(value)
+    try:
+        from PIL import Image
+
+        if isinstance(value, Image.Image):
+            return _image_preview(value)
+    except ImportError:
+        pass
+    if isinstance(value, dict):
+        return {"kind": "media", **_jsonable(value)}
+    return {"kind": "media", "value": repr(value)[:200]}
+
+
+def _media_url(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    output_relative = get_output_store().relative_path(value)
+    if output_relative:
+        output_parts = Path(output_relative).parts
+        if len(output_parts) == 2 and output_parts[0] == "outputs":
+            return f"/api/outputs/{quote(output_parts[1])}/raw"
+    raw = value.strip().replace("\\", "/")
+    if raw.startswith("inputs/"):
+        input_parts = Path(raw).parts
+        if len(input_parts) == 2:
+            return f"/api/uploads/{quote(input_parts[1])}/raw"
+    inputs_root = get_dataset_store().uploads_dir.resolve()
+    root = workspace_root().expanduser().resolve()
+    path = Path(value).expanduser()
+    try:
+        resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+        input_relative = resolved.relative_to(inputs_root)
+    except (OSError, ValueError):
+        input_relative = None
+    if input_relative is not None and len(input_relative.parts) == 1:
+        return f"/api/uploads/{quote(input_relative.parts[0])}/raw"
+    try:
+        relative = (
+            path.resolve().relative_to(root)
+            if path.is_absolute()
+            else (root / path).resolve().relative_to(root)
+        )
+    except (OSError, ValueError):
+        return None
+    parts = relative.parts
+    if len(parts) == 3 and parts[0] == "data" and parts[1] == "uploads":
+        return f"/api/uploads/{quote(parts[2])}/raw"
+    return None
+
+
+def _vision_model_preview(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "kind": "vision_model",
+            "backend": str(value.get("backend", "")),
+            "task": str(value.get("task", "")),
+            "model": str(value.get("model", value.get("architecture", ""))),
+            "weights": value.get("weights"),
+            "device": value.get("device"),
+            "classes": _jsonable(value.get("classes") or [])[:12],
+            "source": str(value.get("source", "builtin")),
+            "model_type": value.get("model_type"),
+            "path": value.get("path"),
+            "format": value.get("format"),
+            "fingerprint": value.get("fingerprint"),
+        }
+    return {"kind": "vision_model", "model": type(value).__name__}
+
+
+def _detections_preview(value: Any) -> dict[str, Any]:
+    items = value.get("detections", value.get("items", [])) if isinstance(value, dict) else value
+    if not isinstance(items, list):
+        items = []
+    return {
+        "kind": "detections",
+        "count": len(items),
+        "items": _jsonable(items[:20]),
+    }
+
+
+def _masks_preview(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        masks = value.get("masks", [])
+        return {
+            "kind": "masks",
+            "count": len(masks) if isinstance(masks, list) else 0,
+            "thumbnail": value.get("thumbnail"),
+        }
+    return {"kind": "masks", "count": 0, "thumbnail": None}
+
+
+def _classifications_preview(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        items = value.get("top_k", value.get("classifications", []))
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    if not isinstance(items, list):
+        items = []
+    return {
+        "kind": "classifications",
+        "items": _jsonable(items[:10]),
+    }
+
+
+def _optional_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _tensor_sample(value: Any, count: int = 5) -> list[float]:
@@ -710,20 +982,81 @@ def _plan(nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]) -> dict[str, N
 
 
 def _resolve_widget_file(value: Any) -> Any:
-    """Resolve workspace-relative ``File`` widget paths inside the workspace."""
+    """Resolve uploads, generated outputs, and legacy workspace files."""
     if not isinstance(value, str) or not value.strip():
         return value
     root = workspace_root().expanduser().resolve()
+    inputs_root = get_dataset_store().uploads_dir.resolve()
     path = Path(value).expanduser()
-    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    if path.is_absolute():
+        resolved = path.resolve()
+        if resolved.is_relative_to(root):
+            return str(resolved)
+        if resolved.is_relative_to(inputs_root) and resolved.is_file():
+            return str(resolved)
+        try:
+            return str(get_output_store().resolve_path(str(resolved)))
+        except (InvalidAssetPath, OSError) as exc:
+            raise FileAccessError(
+                "File widgets may only access files inside the workspace, inputs, "
+                "or generated outputs."
+            ) from exc
+    raw = value.strip().replace("\\", "/")
+    if raw.startswith("inputs/"):
+        try:
+            return str(get_dataset_store().resolve_path(raw))
+        except (InvalidDataset, DatasetNotFound, OSError) as exc:
+            raise FileAccessError(
+                "File widgets may only access files inside the workspace, inputs, "
+                "or generated outputs."
+            ) from exc
+    if raw.startswith("outputs/"):
+        try:
+            return str(get_output_store().resolve_path(raw))
+        except (InvalidAssetPath, OSError) as exc:
+            raise FileAccessError(
+                "File widgets may only access files inside the workspace, inputs, "
+                "or generated outputs."
+            ) from exc
+    resolved = (root / path).resolve()
     if not resolved.is_relative_to(root):
-        raise FileAccessError("File widgets may only access files inside the workspace.")
+        raise FileAccessError(
+            "File widgets may only access files inside the workspace, inputs, "
+            "or generated outputs."
+        )
     return str(resolved)
 
 
-def _node_state_hash(code: str, widget_values: dict[str, Any], upstream_hashes: list[str]) -> str:
+def _resolve_output_file(value: Any) -> str:
+    """Resolve an ``OutputFile`` widget under the generated-output directory."""
+    if not isinstance(value, str) or not value.strip():
+        raise FileAccessError("OutputFile widgets require a file name.")
+    try:
+        return str(get_output_store().resolve_path(value))
+    except Exception as exc:
+        raise FileAccessError(str(exc)) from exc
+
+
+def _resolve_model_selection(model_type: str | None, value: Any) -> str:
+    """Resolve an empty or repo-relative ``ModelSelector`` value."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        return str(get_model_store().resolve(model_type or "", value))
+    except ModelError as exc:
+        raise ModelAccessError(str(exc)) from exc
+
+
+def _node_state_hash(
+    code: str,
+    widget_values: dict[str, Any],
+    upstream_hashes: list[str],
+    model_fingerprints: dict[str, str] | None = None,
+) -> str:
     payload = (
-        f"{code}{json.dumps(widget_values, sort_keys=True, default=str)}{''.join(upstream_hashes)}"
+        f"{code}{json.dumps(widget_values, sort_keys=True, default=str)}"
+        f"{json.dumps(model_fingerprints or {}, sort_keys=True)}"
+        f"{''.join(upstream_hashes)}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

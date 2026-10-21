@@ -1,5 +1,6 @@
 import type { WidgetChoice, WidgetParam } from "../types/graph";
 import { FileWidgetField } from "./FileWidgetField";
+import { ModelSelectorField } from "./ModelSelectorField";
 
 interface WidgetFieldProps {
   widget: WidgetParam;
@@ -10,13 +11,13 @@ interface WidgetFieldProps {
 }
 
 const inputClass =
-  "nodrag w-28 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+  "nodrag w-28 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 const stepperInputClass =
-  "nodrag w-16 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+  "nodrag w-16 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 const stepButtonClass =
   "nodrag flex h-5 w-5 items-center justify-center rounded border border-zinc-700 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700";
 const selectClass =
-  "nodrag w-28 rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+  "nodrag w-28 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 
 function choiceLabel(option: WidgetChoice): string {
   return typeof option === "boolean" ? String(option).toLowerCase() : String(option);
@@ -50,13 +51,27 @@ export function WidgetField({
       ? step
       : undefined;
 
-  if (kind === "file") {
+  if (kind === "modelselector") {
+    return (
+      <ModelSelectorField
+        widget={widget}
+        value={value}
+        onChange={onChange}
+        disabled={connected}
+      />
+    );
+  }
+
+  if (kind === "file" || kind === "imagefile" || kind === "videofile") {
+    const assetKind =
+      kind === "imagefile" ? "image" : kind === "videofile" ? "video" : "table";
     return (
       <FileWidgetField
         widget={widget}
         value={value}
         onChange={onChange}
         disabled={connected}
+        assetKind={assetKind}
       />
     );
   }
@@ -106,7 +121,7 @@ export function WidgetField({
       const jump = Math.max(1, Math.round(numericStep ?? 1));
       if (numericStep !== undefined) {
         return (
-          <div className="nodrag flex items-center gap-1">
+          <div className="nodrag flex shrink-0 items-center gap-1">
             <button
               type="button"
               className={stepButtonClass}
@@ -160,7 +175,7 @@ export function WidgetField({
     if (kind.includes("float")) {
       if (numericStep !== undefined) {
         return (
-          <div className="nodrag flex items-center gap-1">
+          <div className="nodrag flex shrink-0 items-center gap-1">
             <button
               type="button"
               className={stepButtonClass}

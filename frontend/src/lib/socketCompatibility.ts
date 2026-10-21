@@ -24,7 +24,8 @@ export function socketTypesCompatible(
     source === target ||
     source === "ANY" ||
     target === "ANY" ||
-    (source === "INT" && target === "FLOAT")
+    (source === "INT" && target === "FLOAT") ||
+    ((source === "IMAGE" || source === "VIDEO") && target === "MEDIA")
   );
 }
 

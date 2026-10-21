@@ -2,10 +2,8 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
-import {
-  DATASET_ACCEPT,
-  formatDatasetSize,
-} from "../lib/datasets";
+import type { AssetKind } from "../lib/api";
+import { assetAccept, formatDatasetSize } from "../lib/datasets";
 import { useDatasetsStore } from "../store/useDatasetsStore";
 import { CloseIcon, SpinnerIcon, UploadIcon, WarningIcon } from "./icons";
 
@@ -13,12 +11,20 @@ interface DatasetPickerDialogProps {
   currentPath: string;
   onSelect: (path: string) => void;
   onClose: () => void;
+  assetKind?: AssetKind;
 }
+
+const KIND_LABELS: Record<AssetKind, string> = {
+  table: "table",
+  image: "image",
+  video: "video",
+};
 
 export function DatasetPickerDialog({
   currentPath,
   onSelect,
   onClose,
+  assetKind = "table",
 }: DatasetPickerDialogProps) {
   const datasets = useDatasetsStore((state) => state.datasets);
   const datasetsLoaded = useDatasetsStore((state) => state.datasetsLoaded);
@@ -29,6 +35,7 @@ export function DatasetPickerDialog({
   const uploadFiles = useDatasetsStore((state) => state.uploadFiles);
   const [path, setPath] = useState(currentPath);
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
+  const visible = datasets.filter((dataset) => dataset.kind === assetKind);
 
   useEffect(() => {
     void loadDatasets();
@@ -55,7 +62,7 @@ export function DatasetPickerDialog({
               id="dataset-picker-title"
               className="text-sm font-semibold text-zinc-100"
             >
-              Choose dataset
+              Choose {KIND_LABELS[assetKind]} asset
             </h2>
             <p className="mt-1 text-[11px] text-zinc-500">
               Pick a workspace upload or enter a workspace-relative path.
@@ -81,7 +88,13 @@ export function DatasetPickerDialog({
               type="text"
               aria-label="File path"
               value={path}
-              placeholder="data/uploads/data.csv"
+              placeholder={
+                assetKind === "image"
+                  ? "data/uploads/photo.png"
+                  : assetKind === "video"
+                    ? "data/uploads/clip.mp4"
+                    : "data/uploads/data.csv"
+              }
               onChange={(event) => setPath(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -111,12 +124,12 @@ export function DatasetPickerDialog({
             ) : (
               <UploadIcon className="h-3 w-3" />
             )}
-            {uploading ? "Uploading…" : "Upload a dataset"}
+            {uploading ? "Uploading…" : `Upload ${KIND_LABELS[assetKind]}`}
             <input
               type="file"
               multiple
-              accept={DATASET_ACCEPT}
-              aria-label="Upload dataset files"
+              accept={assetAccept(assetKind)}
+              aria-label="Upload asset files"
               disabled={uploading}
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? []);
@@ -139,13 +152,14 @@ export function DatasetPickerDialog({
               datasets…
             </div>
           )}
-          {!datasetsLoading && datasets.length === 0 && (
+          {!datasetsLoading && visible.length === 0 && (
             <p className="p-2 text-[11px] text-zinc-600">
-              No uploaded datasets. Upload a file above or enter a path.
+              No uploaded {KIND_LABELS[assetKind]} assets. Upload a file above or
+              enter a path.
             </p>
           )}
           <div className="space-y-1.5">
-            {datasets.map((dataset) => (
+            {visible.map((dataset) => (
               <button
                 key={dataset.id}
                 type="button"

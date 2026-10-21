@@ -150,6 +150,19 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
     expect(reparsed.nodes[1]?.parentId).toBe("frame");
   });
 
+  it("round-trips explicit dimensions for regular nodes", () => {
+    const resized = makeNode("resized");
+    resized.width = 420;
+    resized.height = 300;
+    const saved = serialiseWorkflow([resized], []);
+
+    expect(saved.nodes[0]?.width).toBe(420);
+    expect(saved.nodes[0]?.height).toBe(300);
+    const reparsed = parseWorkflowJson(JSON.stringify(saved));
+    expect(reparsed.nodes[0]?.width).toBe(420);
+    expect(reparsed.nodes[0]?.height).toBe(300);
+  });
+
   it("round-trips reusable subgraphs and strips implicit manager nodes", () => {
     const definition: SubgraphDefinition = {
       id: "def-1",

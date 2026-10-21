@@ -5,8 +5,8 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - `src/types/graph.ts` — TypeScript mirrors of the backend Pydantic contracts.
 - `src/lib/api.ts` — REST client (`/api/*` via the Vite dev proxy), including
   export, dataset upload/list/preview/delete (multipart uploads use a dedicated
-  FormData request), named-project/version, run-history, and recovery-session
-  requests.
+  FormData request), repo model-library listing, named-project/version,
+  run-history, and recovery-session requests.
 - `src/lib/hash.ts` — SHA-256 code hashing with the same line-ending
   normalization as `backend/app/security.py`.
 - `src/lib/persistence.ts` — `.cuigraph.json` save format, size/shape
@@ -24,6 +24,12 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   dialog visibility.
 - `src/store/useDatasetsStore.ts` — workspace dataset list, uploads, deletion,
   loading/error state.
+- `src/store/useModelsStore.ts` — repo model library cache by type, refresh
+  coalescing, stale-selection lookup and load state.
+- `src/store/useEdgeDragStore.ts` / `useConnectionGuideStore.ts` — transient
+  connected-input retarget drag state and compatible-handle highlighting.
+- `src/hooks/useModelsAutoRefresh.ts` — visibility-aware polling and the R
+  refresh shortcut for open model views.
 - `src/hooks/useExecutionSocket.ts` — `/ws/execution` streaming with
   exponential-backoff reconnect and `/api/status` resync on every open.
 - `src/hooks/useGraphShortcuts.ts` — undo/redo, clipboard, duplicate,
@@ -40,9 +46,12 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   frames, subgraph instances and shared interface managers), `CanvasContextMenu`
   (pane actions with a File submenu), `CodeModal` (Monaco editor with debounced
   live parsing), `DiffModal` (security review of modified code), `NodePalette`
-  (square icon rail plus Nodes / Workflows / Templates / Datasets drawers),
+  (square icon rail plus Nodes / Workflows / Templates / Assets drawers),
   `NodeLibrary` (searchable templates plus reusable
-  subgraphs), `WorkflowLibrary` (collapsible example-workflow categories),
+  subgraphs), `AssetLibrary` (Files / Models tabs), `ModelsLibrary` (read-only
+  repo model browser with search, type filtering, refresh and auto-refresh),
+  `ModelSelectorField` / `ModelPickerDialog` (type-scoped local model picker),
+  `WorkflowLibrary` (collapsible example-workflow categories),
   `ProjectLibrary`, `DatasetLibrary` (upload, search, preview, delete),
   `DatasetPickerDialog`, `DatasetPreviewDialog`, `WidgetField` (typed
   parameters, fixed choices, step buttons and linked state),
@@ -51,34 +60,46 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   frame grouping/ungrouping and reusable subgraph creation),
   `SaveProjectDialog`, `ProjectHistoryDialog`, `ShortcutsDialog`,
   `ExecutionPanel`, `RunHistoryDialog` (retained terminal runs with per-node
-  timings and outputs), `RichOutputView` (text, tables, images, sanitized HTML
-  and static/interactive Plotly).
+  timings and outputs), `PreviewValueView` (dataset, tensor, image, video,
+  vision-model, detection, mask and classification previews), and
+  `RichOutputView` (text, tables, images, sanitized HTML and
+  static/interactive Plotly).
 
 ## Features
 
-- A compact square-button rail expands **Nodes**, **Workflows**, **Templates**, and **Datasets** drawers on demand, keeping the canvas
+- A compact square-button rail expands **Nodes**, **Workflows**, **Templates**, and **Assets** drawers on demand, keeping the canvas
   wide. The same rail toggles the Execution (Console) drawer, opens the
   keyboard-shortcut reference and Settings.
 - Categorized node library with search and collapsible sections that start
   collapsed (production templates across values, data loaders, cleaning, EDA,
-  preprocessing, imbalanced data, models, evaluation and PyTorch). Example
-  dataset loaders and synthetic test nodes are hidden from the palette — they
-  power the bundled workflows.
+  preprocessing, imbalanced data, models, evaluation, PyTorch and Computer
+  Vision). Example dataset loaders and synthetic test nodes are hidden from the
+  palette — they power the bundled workflows.
 - **Workflow windows**: the top bar is a tab strip of open workflows. The `+`
   button creates a blank window; opening a saved workflow or bundled template
   adds a new window, and opening a project already in a tab focuses it. Each
   window keeps its own graph, viewport, undo history, execution state and
   project identity. Open windows are restored from localStorage, and only one
   backend run is allowed at a time (the running tab shows a spinner).
-- **Templates drawer**: 12 ready-to-run examples with collapsible categories;
+- **Templates drawer**: 21 ready-to-run examples with collapsible categories;
   opening one adds a fully wired graph (nodes, widgets and positions) in a new
   window.
-- **Datasets drawer**: upload CSV, TSV, Parquet, Excel or NDJSON files (100 MiB
-  each) into `workspace/data/uploads`, search the library, preview up to 20
-  rows, and delete files. Loader nodes expose a **File** widget that picks a
-  dataset or accepts a workspace-relative path; uploads can also be made from
-  the picker. Execution rejects absolute paths and symlink escapes outside the
-  workspace.
+- **Assets drawer**: **Files** tab uploads CSV, TSV, Parquet, Excel, NDJSON,
+  images or videos into repo-root `inputs/` (100 MiB table cap; 500 MiB media
+  cap), with search, inline previews and deletion. Loader nodes expose
+  kind-filtered **File** widgets that pick an asset or accept an `inputs/...`
+  path; uploads can also be made from the picker. Execution rejects absolute
+  paths and symlink escapes outside the workspace, inputs, and outputs roots.
+- **Models tab**: read-only browser for the repo-root `models/<type>` library.
+  It shows format, size, modified time, type and fingerprint, with search, type
+  filtering, a refresh button, **R** refresh, and automatic polling while open.
+  Custom model folders appear automatically.
+- **Local model selector**: nodes can declare
+  `local_model: ModelSelector = ModelSelector(type="yolo")`. The widget opens a
+  type-scoped picker, stores a relative `models/<type>/<file>` path, warns when
+  a saved file disappears, and can clear back to the predefined built-in
+  fallback. Vision-model previews show a `local`/`built-in` badge, path, format
+  and fingerprint in both live output and run history.
 - **Undo/redo** with a 100-step history (node/edge/widget edits, drags,
   arrangement and code commits), plus a **multi-node clipboard**: select several
   nodes and copy/cut/paste/duplicate them with the edges between them preserved.
@@ -120,7 +141,12 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   Their outputs can be wired either into typed input sockets or directly into
   compatible widget parameters (for example `test_size`). A linked widget is
   read-only and marked **linked** on the node; the incoming value overrides the
-  stored widget value at run time.
+  stored widget value at run time. When a value node is connected to a
+  `Literal` parameter, its value field inherits the same fixed-choice dropdown
+  and normalizes to a valid option.
+- Widget parameter connection dots are hidden until the parameter row is
+  hovered/focused, the parameter is already wired, or an active connection line
+  approaches the dot. Input/output socket dots remain visible.
 - **Fixed choices**: a widget declared as
   `level: Literal["low", "medium", "high"] = "low"` renders as a dropdown.
   Stored defaults, workflow overrides, and values arriving over a wire are
@@ -130,6 +156,24 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   empty canvas opens a searchable node picker filtered to compatible sockets or
   widget parameters and creates the new node already wired (toggleable in
   Settings).
+- Drag a connected input dot to move its wire to another compatible input.
+  The source output stays fixed, the preview line uses the normal connection
+  style, and the wire body itself is not draggable. Dropping on empty canvas
+  deletes the wire and opens node search; choosing a node creates a new target
+  and wire, while an invalid drop restores the wire. Outputs can fan out to
+  multiple inputs.
+- `Shift`-drag an output to move its whole outgoing wire bundle together onto
+  another same-typed output. Compatible targets stay colored, ghost lines show
+  the affected wires, and an invalid/cancelled drop restores the original
+  bundle. Dropping the bundle on empty canvas opens the compatible node search
+  and re-sources all wires to the new node.
+- While a wire is being dragged, handles that cannot accept it (incompatible
+  type, occupied input, wrong direction, or self) are greyed out; only colored
+  handles are valid drop targets.
+- Runnable nodes and subgraph instances expose a bottom-right resize handle.
+  Explicit dimensions persist through autosave/projects, undo, duplicate and
+  paste. Parameter controls keep their fixed sizes, while image and video
+  previews grow to fill the available node body.
 - **Trust workflow**: modified/scratch code is diffed against its template in
   a Monaco diff editor and must be approved before it can run.
 - **Export**: the right-click **File** submenu downloads workflow JSON, a
@@ -154,8 +198,9 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   contract.
 - Live execution telemetry: per-node status, cached badges and typed previews
   (DataFrame head, dataset shapes, model params, tensor shape/dtype/sample,
-  metrics). After a socket reconnect the client asks `/api/status` and marks a
-  run interrupted if the backend is no longer executing it.
+  metrics, images, videos, vision-model descriptors, detections, masks and
+  classifications). After a socket reconnect the client asks `/api/status` and
+  marks a run interrupted if the backend is no longer executing it.
 - **Run history**: terminal runs (completed, failed or cancelled) persist in
   the workspace and open from the Execution (Console) drawer. Each record keeps per-node
   statuses, timings, cache badges, previews, bounded rich outputs and error
@@ -166,9 +211,14 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   DOMPurify; Plotly is code-split and only loaded when a figure appears.
   Outputs are runtime-only, so exports still contain graph structure and code
   only.
-- Two template tracks: classical ML (scikit-learn/polars) and a **tensor path**
+- Three template tracks: classical ML (scikit-learn/polars), a **tensor path**
   (`Tensor` sockets; torch templates auto-install `torch` via PEP 723 on first
-  run).
+  run), and a **vision path** (`IMAGE`, `VIDEO`, `MEDIA`, model, detection,
+  mask and classification sockets). Torchvision and Ultralytics dependencies
+  are installed on demand per node; Ultralytics is AGPL-3.0. Local model
+  selectors support `.pt`, `.pth`, `.onnx` and `.safetensors` subject to each
+  template's backend; only trusted model files should be added because `.pt`
+  loading can execute code.
 - **Accessibility**: dialogs trap focus, close on Escape and restore focus;
   ARIA roles/live regions announce parsing errors, execution status and backend
   connectivity, and icon-only controls carry accessible labels.
@@ -187,6 +237,7 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 | `Ctrl`+`+` / `Ctrl`+`-` | Zoom in / out |
 | `Delete` / `Backspace` | Delete selected nodes and edges |
 | `Ctrl`+drag | Box-select nodes (hold `Ctrl` and drag on empty canvas) |
+| `Shift`+drag output | Move all wires from that output to another same-typed output |
 | Double-click empty canvas | Open the node search |
 | Right-click empty canvas | Open the canvas/File menu |
 | Double-click node | Edit code, enter a subgraph or rename a frame |
@@ -236,6 +287,6 @@ multi-selection with undo, grouping/ungrouping a frame with undo/redo, creating,
 reopening and running a reusable nested subgraph, inspecting a completed run in
 run history, and approving modified scratch code. CI
 (`.github/workflows/ci.yml`) runs backend checks, frontend checks, and
-Playwright; the optional ML overlay workflow also exercises torch, xgboost, and
-lightgbm.
+Playwright; the optional ML overlay workflow also exercises torch, torchvision,
+Ultralytics, xgboost, and lightgbm.
 

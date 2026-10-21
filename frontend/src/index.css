@@ -76,6 +76,39 @@ body {
   transform: scale(1.2);
 }
 
+.react-flow__handle.cu-widget-handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.react-flow__handle.cu-handle-incompatible {
+  opacity: 0.35;
+}
+
+.react-flow__handle.cu-handle-incompatible::after {
+  background: #52525b;
+  transform: scale(0.82);
+  box-shadow: none;
+}
+
+.react-flow__handle.cu-handle-compatible::after {
+  transform: scale(1.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cu-handle-color, #a1a1aa) 25%, transparent);
+}
+
+.react-flow__handle.cu-handle-active::after {
+  transform: scale(1.25);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cu-handle-color, #a1a1aa) 35%, transparent);
+}
+
+
+.cu-widget-row:hover .react-flow__handle.cu-widget-handle,
+.cu-widget-row:focus-within .react-flow__handle.cu-widget-handle,
+.react-flow__handle.cu-widget-handle.is-connected,
+.react-flow__handle.cu-widget-handle.is-near {
+  opacity: 1;
+}
+
 .react-flow__edge-path {
   transition: stroke 120ms ease;
 }

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from .executor import GraphPlan, validate_graph
+from .models import ModelError, get_model_store
 from .schemas import GraphEdge, GraphNode, NodeSchema, WorkflowGraph
 from .transpiler import transpile_node
 
@@ -258,8 +259,20 @@ def _call_args(
             args.append(f"{widget.name}={_source_expression(edge)}")
             continue
         value = node.widget_values.get(widget.name, widget.default)
+        if widget.data_type.strip().lower() == "modelselector":
+            value = _export_model_value(widget.model_type, value)
         args.append(f"{widget.name}={_literal(value)}")
     return tuple(args)
+
+
+def _export_model_value(model_type: str | None, value: object) -> object:
+    """Export local models as absolute paths, since the root is outside the workspace."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        return str(get_model_store().resolve(model_type or "", value))
+    except ModelError as exc:
+        raise ExportError(str(exc)) from exc
 
 
 def _source_expression(edge: GraphEdge) -> str:

@@ -6,11 +6,42 @@ export type SocketType =
   | "ML_MODEL"
   | "METRICS"
   | "TENSOR"
+  | "IMAGE"
+  | "VIDEO"
+  | "MEDIA"
+  | "DETECTION_MODEL"
+  | "SEGMENTATION_MODEL"
+  | "CLASSIFICATION_MODEL"
+  | "DETECTIONS"
+  | "MASKS"
+  | "CLASSIFICATIONS"
   | "INT"
   | "FLOAT"
   | "BOOL"
   | "STRING"
   | "ANY";
+
+const SOCKET_TYPE_NAMES = new Set<SocketType>([
+  "DATAFRAME",
+  "DATASET",
+  "ML_MODEL",
+  "METRICS",
+  "TENSOR",
+  "IMAGE",
+  "VIDEO",
+  "MEDIA",
+  "DETECTION_MODEL",
+  "SEGMENTATION_MODEL",
+  "CLASSIFICATION_MODEL",
+  "DETECTIONS",
+  "MASKS",
+  "CLASSIFICATIONS",
+  "INT",
+  "FLOAT",
+  "BOOL",
+  "STRING",
+  "ANY",
+]);
 
 export function widgetSocketType(dataType: string): SocketType {
   const kind = dataType.trim().toLowerCase();
@@ -27,19 +58,18 @@ export function widgetSocketType(dataType: string): SocketType {
     kind === "str" ||
     kind === "string" ||
     kind === "file" ||
-    kind === "path"
+    kind === "path" ||
+    kind === "imagefile" ||
+    kind === "videofile" ||
+    kind === "outputfile"
   ) {
     return "STRING";
   }
   const normalized = dataType
     .trim()
     .replace(/^['"]|['"]$/g, "")
-    .toUpperCase();
-  return ["DATAFRAME", "DATASET", "ML_MODEL", "METRICS", "TENSOR"].includes(
-    normalized,
-  )
-    ? (normalized as SocketType)
-    : "ANY";
+    .toUpperCase() as SocketType;
+  return SOCKET_TYPE_NAMES.has(normalized) ? normalized : "ANY";
 }
 
 export function isPrimitiveSocketType(type: SocketType): boolean {
@@ -62,6 +92,7 @@ export interface PendingConnection {
   handleId: string;
   handleType: ConnectionHandleType;
   dataType: SocketType;
+  bundleEdgeIds?: string[];
 }
 
 export interface InputSocket {
@@ -81,6 +112,7 @@ export interface WidgetParam {
   data_type: string;
   default: unknown;
   options?: WidgetChoice[];
+  model_type?: string | null;
 }
 
 export interface SyntaxErrorInfo {
@@ -216,11 +248,69 @@ export interface TensorPreview {
   sample: number[];
 }
 
+export interface ImagePreview {
+  kind: "image";
+  width: number;
+  height: number;
+  mode: string;
+  thumbnail: string | null;
+}
+
+export interface VideoPreview {
+  kind: "video";
+  path: string | null;
+  url: string | null;
+  fps: number | null;
+  frames: number | null;
+  width: number | null;
+  height: number | null;
+  duration: number | null;
+  poster: string | null;
+}
+
+export interface VisionModelPreview {
+  kind: "vision_model";
+  backend: string;
+  task: string;
+  model: string;
+  weights: unknown;
+  device: unknown;
+  classes: unknown[];
+  source?: "builtin" | "local" | string;
+  model_type?: string | null;
+  path?: string | null;
+  format?: string | null;
+  fingerprint?: string | null;
+}
+
+export interface DetectionsPreview {
+  kind: "detections";
+  count: number;
+  items: unknown[];
+}
+
+export interface MasksPreview {
+  kind: "masks";
+  count: number;
+  thumbnail: string | null;
+}
+
+export interface ClassificationsPreview {
+  kind: "classifications";
+  items: unknown[];
+}
+
 export type PreviewValue =
   | DataFramePreview
   | DatasetPreview
   | ModelPreview
   | TensorPreview
+  | ImagePreview
+  | VideoPreview
+  | VisionModelPreview
+  | DetectionsPreview
+  | MasksPreview
+  | ClassificationsPreview
   | Record<string, unknown>
   | string
   | number
@@ -440,6 +530,15 @@ export const SOCKET_COLORS: Record<SocketType, string> = {
   ML_MODEL: "#fbbf24",
   METRICS: "#34d399",
   TENSOR: "#fb7185",
+  IMAGE: "#f472b6",
+  VIDEO: "#fb7185",
+  MEDIA: "#c084fc",
+  DETECTION_MODEL: "#f59e0b",
+  SEGMENTATION_MODEL: "#10b981",
+  CLASSIFICATION_MODEL: "#60a5fa",
+  DETECTIONS: "#f97316",
+  MASKS: "#2dd4bf",
+  CLASSIFICATIONS: "#818cf8",
   INT: "#fb923c",
   FLOAT: "#60a5fa",
   BOOL: "#f472b6",
@@ -453,6 +552,15 @@ export const SOCKET_LABELS: Record<SocketType, string> = {
   ML_MODEL: "Model",
   METRICS: "Metrics",
   TENSOR: "Tensor",
+  IMAGE: "Image",
+  VIDEO: "Video",
+  MEDIA: "Media",
+  DETECTION_MODEL: "Detection Model",
+  SEGMENTATION_MODEL: "Segmentation Model",
+  CLASSIFICATION_MODEL: "Classification Model",
+  DETECTIONS: "Detections",
+  MASKS: "Masks",
+  CLASSIFICATIONS: "Classifications",
   INT: "Integer",
   FLOAT: "Float",
   BOOL: "Boolean",
@@ -469,6 +577,24 @@ export function summarisePreview(value: PreviewValue): string {
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
+    if (record.kind === "image") {
+      return `image ${String(record.width)}x${String(record.height)}`;
+    }
+    if (record.kind === "video") {
+      return `video ${String(record.width ?? "?")}x${String(record.height ?? "?")}`;
+    }
+    if (record.kind === "vision_model") {
+      return `${String(record.task)} ${String(record.model)}`;
+    }
+    if (record.kind === "detections") {
+      return `${String(record.count)} detections`;
+    }
+    if (record.kind === "masks") {
+      return `${String(record.count)} masks`;
+    }
+    if (record.kind === "classifications") {
+      return `${Array.isArray(record.items) ? record.items.length : 0} classes`;
+    }
     if ("rows" in record && "cols" in record) {
       return `${record.rows as number} rows x ${record.cols as number} cols`;
     }

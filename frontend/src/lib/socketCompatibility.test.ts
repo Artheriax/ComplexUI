@@ -43,7 +43,11 @@ test("maps widget python types onto socket types", () => {
   expect(widgetSocketType("str")).toBe("STRING");
   expect(widgetSocketType("file")).toBe("STRING");
   expect(widgetSocketType("path")).toBe("STRING");
+  expect(widgetSocketType("ImageFile")).toBe("STRING");
+  expect(widgetSocketType("VideoFile")).toBe("STRING");
+  expect(widgetSocketType("OutputFile")).toBe("STRING");
   expect(widgetSocketType("DATAFRAME")).toBe("DATAFRAME");
+  expect(widgetSocketType("IMAGE")).toBe("IMAGE");
   expect(widgetSocketType("unknown")).toBe("ANY");
 });
 
@@ -54,6 +58,10 @@ test("matches exact and ANY socket types", () => {
   expect(socketTypesCompatible("INT", "FLOAT")).toBe(true);
   expect(socketTypesCompatible("FLOAT", "INT")).toBe(false);
   expect(socketTypesCompatible("METRICS", "TENSOR")).toBe(false);
+  expect(socketTypesCompatible("IMAGE", "MEDIA")).toBe(true);
+  expect(socketTypesCompatible("VIDEO", "MEDIA")).toBe(true);
+  expect(socketTypesCompatible("MEDIA", "IMAGE")).toBe(false);
+  expect(socketTypesCompatible("IMAGE", "VIDEO")).toBe(false);
 });
 
 test("finds compatible free inputs and compatible outputs", () => {

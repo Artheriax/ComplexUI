@@ -14,6 +14,7 @@ const iris: DatasetSummary = {
   name: "iris.csv",
   path: "data/uploads/iris.csv",
   format: "csv",
+  kind: "table",
   size_bytes: 2_048,
   modified_at: "2026-10-20T12:00:00Z",
 };
@@ -72,6 +73,32 @@ test("lists datasets and opens a read-only preview", async () => {
   );
 });
 
+test("previews image assets inline without a table preview request", async () => {
+  const photo: DatasetSummary = {
+    ...iris,
+    id: "photo.png",
+    name: "photo.png",
+    path: "data/uploads/photo.png",
+    format: "png",
+    kind: "image",
+  };
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL) =>
+    jsonResponse([photo]),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(createElement(DatasetLibrary));
+
+  expect(await screen.findByText("photo.png")).toBeTruthy();
+  fireEvent.click(screen.getByText("Preview"));
+
+  const image = await screen.findByAltText("photo.png");
+  expect(image.getAttribute("src")).toBe("/api/uploads/photo.png/raw");
+  expect(
+    fetchMock.mock.calls.some((call) => String(call[0]).includes("/preview")),
+  ).toBe(false);
+});
+
 test("uploads a selected file into the library", async () => {
   const uploaded: DatasetSummary = {
     ...iris,
@@ -88,10 +115,10 @@ test("uploads a selected file into the library", async () => {
   vi.stubGlobal("fetch", fetchMock);
 
   render(createElement(DatasetLibrary));
-  expect(await screen.findByText(/No datasets yet/)).toBeTruthy();
+  expect(await screen.findByText(/No assets yet/)).toBeTruthy();
 
   const file = new File(["a,b\n1,2\n"], "wine.csv", { type: "text/csv" });
-  fireEvent.change(screen.getByLabelText("Upload dataset files"), {
+  fireEvent.change(screen.getByLabelText("Upload asset files"), {
     target: { files: [file] },
   });
 

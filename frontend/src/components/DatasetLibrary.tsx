@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { DatasetSummary } from "../lib/api";
 import {
-  DATASET_ACCEPT,
+  ASSET_ACCEPT,
   formatDatasetDate,
   formatDatasetSize,
 } from "../lib/datasets";
@@ -47,7 +47,7 @@ function DatasetCard({
           </p>
         </div>
         <span className="shrink-0 rounded bg-zinc-800/80 px-1 py-px text-[9px] text-zinc-500">
-          {dataset.format}
+          {dataset.kind === "table" ? dataset.format : dataset.kind}
         </span>
       </div>
       <p className="mt-1 text-[10px] text-zinc-600">
@@ -100,7 +100,7 @@ export function DatasetLibrary() {
       return datasets;
     }
     return datasets.filter((dataset) =>
-      `${dataset.name} ${dataset.path} ${dataset.format}`
+      `${dataset.name} ${dataset.path} ${dataset.format} ${dataset.kind}`
         .toLowerCase()
         .includes(needle),
     );
@@ -113,7 +113,7 @@ export function DatasetLibrary() {
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search datasets…"
+          placeholder="Search assets…"
           className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-cyan-600"
         />
         <label
@@ -128,12 +128,12 @@ export function DatasetLibrary() {
           ) : (
             <UploadIcon className="h-3 w-3" />
           )}
-          {uploading ? "Uploading…" : "Upload dataset"}
+          {uploading ? "Uploading…" : "Upload assets"}
           <input
             type="file"
             multiple
-            accept={DATASET_ACCEPT}
-            aria-label="Upload dataset files"
+            accept={ASSET_ACCEPT}
+            aria-label="Upload asset files"
             disabled={uploading}
             onChange={(event) => {
               const files = Array.from(event.target.files ?? []);
@@ -159,13 +159,13 @@ export function DatasetLibrary() {
         )}
         {datasetsLoaded && !datasetsError && datasets.length === 0 && (
           <p className="px-1 py-2 text-[11px] leading-relaxed text-zinc-600">
-            No datasets yet. Upload CSV, TSV, Parquet, Excel, or NDJSON files,
-            then choose one from a File widget.
+            No assets yet. Upload tables, images, or videos, then choose one
+            from a file widget.
           </p>
         )}
         {datasetsLoaded && datasets.length > 0 && visible.length === 0 && (
           <p className="px-1 py-2 text-[11px] text-zinc-600">
-            No datasets match “{query.trim()}”.
+            No assets match “{query.trim()}”.
           </p>
         )}
         {visible.map((dataset) => (
@@ -178,7 +178,7 @@ export function DatasetLibrary() {
       </div>
       <div className="border-t border-zinc-800 p-2.5 text-[10px] leading-relaxed text-zinc-600">
         Files live in <span className="font-mono">workspace/data/uploads</span>.
-        Uploads are capped at 100 MiB.
+        Tables are capped at 100 MiB; images and videos at 500 MiB.
       </div>
       {previewDataset && (
         <DatasetPreviewDialog

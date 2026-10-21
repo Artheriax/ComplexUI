@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import type { AssetKind } from "../lib/api";
 import { datasetFileName } from "../lib/datasets";
 import type { WidgetParam } from "../types/graph";
 import { DatasetPickerDialog } from "./DatasetPickerDialog";
@@ -10,6 +11,7 @@ interface FileWidgetFieldProps {
   value: unknown;
   onChange: (value: unknown) => void;
   disabled?: boolean;
+  assetKind?: AssetKind;
 }
 
 export function FileWidgetField({
@@ -17,6 +19,7 @@ export function FileWidgetField({
   value,
   onChange,
   disabled = false,
+  assetKind = "table",
 }: FileWidgetFieldProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const path = value === undefined || value === null ? "" : String(value);
@@ -49,6 +52,7 @@ export function FileWidgetField({
       {pickerOpen && (
         <DatasetPickerDialog
           currentPath={path}
+          assetKind={assetKind}
           onClose={() => setPickerOpen(false)}
           onSelect={onChange}
         />

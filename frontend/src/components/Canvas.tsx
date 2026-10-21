@@ -2,15 +2,21 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  getBezierPath,
+  getSmoothStepPath,
+  getStraightPath,
   MiniMap,
   Panel,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
 } from "@xyflow/react";
 import type {
+  Connection,
   FinalConnectionState,
   NodeMouseHandler,
+  OnConnectStart,
   XYPosition,
 } from "@xyflow/react";
 import type {
@@ -26,7 +32,11 @@ import {
   buildDisplayEdges,
   CONNECTION_LINE_TYPE_BY_STYLE,
 } from "../lib/edgePresentation";
+import { isInteractiveControlTarget } from "../lib/interactiveTarget";
 import { resolveTargetSocket } from "../lib/socketCompatibility";
+import { useBundleDragStore } from "../store/useBundleDragStore";
+import { useConnectionGuideStore } from "../store/useConnectionGuideStore";
+import { useEdgeDragStore } from "../store/useEdgeDragStore";
 import { useGraphStore } from "../store/useGraphStore";
 import { HANDLE_SIZE_VALUES, useSettingsStore } from "../store/useSettingsStore";
 import type { AppNode, PendingConnection } from "../types/graph";
@@ -85,12 +95,134 @@ function pointerPosition(event: MouseEvent | TouchEvent): {
   };
 }
 
+const EMPTY_EDGE_IDS: string[] = [];
+
+function BundleDragOverlay() {
+  const drag = useBundleDragStore((state) => state.drag);
+  const edges = useGraphStore((state) => state.edges);
+  if (!drag) {
+    return null;
+  }
+  const handles = Array.from(
+    document.querySelectorAll<HTMLElement>("[data-cu-handle='target']"),
+  );
+  const lines = drag.edgeIds.flatMap((edgeId) => {
+    const edge = edges.find((candidate) => candidate.id === edgeId);
+    if (!edge) {
+      return [];
+    }
+    const handle = handles.find(
+      (candidate) =>
+        candidate.dataset.nodeId === edge.target &&
+        candidate.dataset.handleId === edge.targetHandle,
+    );
+    if (!handle) {
+      return [];
+    }
+    const rect = handle.getBoundingClientRect();
+    return [
+      {
+        id: edge.id,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+      },
+    ];
+  });
+  return (
+    <svg className="pointer-events-none fixed inset-0 z-[55] h-full w-full">
+      {lines.map((line) => (
+        <line
+          key={line.id}
+          x1={drag.current.x}
+          y1={drag.current.y}
+          x2={line.x}
+          y2={line.y}
+          stroke="#22d3ee"
+          strokeWidth={2}
+          strokeOpacity={0.85}
+          strokeDasharray="5 4"
+        />
+      ))}
+      <circle
+        cx={drag.current.x}
+        cy={drag.current.y}
+        r={4}
+        fill="#22d3ee"
+      />
+    </svg>
+  );
+}
+
+function EdgeDragOverlay() {
+  const drag = useEdgeDragStore((state) => state.drag);
+  const edgeStyle = useSettingsStore((state) => state.settings.edgeStyle);
+  const accentColor = useSettingsStore(
+    (state) => state.settings.accentColor,
+  );
+  const edgeWidth = useSettingsStore((state) => state.settings.edgeWidth);
+  const path = useMemo(() => {
+    if (!drag) {
+      return "";
+    }
+    const sourceX = drag.sourceScreen.x;
+    const sourceY = drag.sourceScreen.y;
+    const targetX = drag.current.x;
+    const targetY = drag.current.y;
+    if (edgeStyle === "straight") {
+      return getStraightPath({ sourceX, sourceY, targetX, targetY })[0];
+    }
+    if (edgeStyle === "smoothstep") {
+      return getSmoothStepPath({
+        sourceX,
+        sourceY,
+        sourcePosition: Position.Right,
+        targetX,
+        targetY,
+        targetPosition: Position.Left,
+      })[0];
+    }
+    if (edgeStyle === "step") {
+      return getSmoothStepPath({
+        sourceX,
+        sourceY,
+        sourcePosition: Position.Right,
+        targetX,
+        targetY,
+        targetPosition: Position.Left,
+        borderRadius: 0,
+      })[0];
+    }
+    return getBezierPath({
+      sourceX,
+      sourceY,
+      sourcePosition: Position.Right,
+      targetX,
+      targetY,
+      targetPosition: Position.Left,
+    })[0];
+  }, [drag, edgeStyle]);
+  if (!drag) {
+    return null;
+  }
+  return (
+    <svg className="pointer-events-none fixed inset-0 z-[55] h-full w-full">
+      <path
+        className="cu-edge-retarget-line"
+        d={path}
+        fill="none"
+        stroke={accentColor}
+        strokeWidth={edgeWidth}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function CanvasInner() {
   const nodes = useGraphStore((state) => state.nodes);
   const edges = useGraphStore((state) => state.edges);
   const onNodesChange = useGraphStore((state) => state.onNodesChange);
   const onEdgesChange = useGraphStore((state) => state.onEdgesChange);
-  const onConnect = useGraphStore((state) => state.onConnect);
   const openEditor = useGraphStore((state) => state.openEditor);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const navigateToScope = useGraphStore((state) => state.navigateToScope);
@@ -107,13 +239,237 @@ function CanvasInner() {
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenuOverlay | null>(null);
   const [renameNodeId, setRenameNodeId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const suppressPaneClickRef = useRef(false);
+  const suppressNextPaneClick = useCallback(() => {
+    suppressPaneClickRef.current = true;
+    window.setTimeout(() => {
+      suppressPaneClickRef.current = false;
+    }, 0);
+  }, []);
+  const bundleEdgeIds = useBundleDragStore(
+    (state) => state.drag?.edgeIds ?? EMPTY_EDGE_IDS,
+  );
+  const bundleActive = useBundleDragStore((state) => state.drag !== null);
+  const edgeDragArmed = useEdgeDragStore(
+    (state) => state.pending !== null || state.drag !== null,
+  );
   const closeMenu = useCallback(() => setMenuOverlay(null), []);
   const closeCanvasMenu = useCallback(() => setCanvasMenu(null), []);
   const closeOverlays = useCallback(() => {
+    useBundleDragStore.getState().clear();
+    useEdgeDragStore.getState().clear();
+    useConnectionGuideStore.getState().clear();
     setSearchOverlay(null);
     setMenuOverlay(null);
     setCanvasMenu(null);
   }, []);
+  const handlePaneClick = useCallback(() => {
+    if (suppressPaneClickRef.current) {
+      return;
+    }
+    closeOverlays();
+  }, [closeOverlays]);
+  useEffect(
+    () => () => {
+      useBundleDragStore.getState().clear();
+      useEdgeDragStore.getState().clear();
+      useConnectionGuideStore.getState().clear();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!bundleActive) {
+      return;
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      useBundleDragStore.getState().move(event.clientX, event.clientY);
+    };
+    const finish = (event: PointerEvent) => {
+      const drag = useBundleDragStore.getState().drag;
+      if (!drag) {
+        return;
+      }
+      event.preventDefault();
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const outputElement =
+        element instanceof Element
+          ? element.closest<HTMLElement>("[data-cu-output-handle='true']")
+          : null;
+      if (outputElement) {
+        const nodeId = outputElement.dataset.nodeId ?? "";
+        const handleId = outputElement.dataset.handleId ?? "";
+        const socketType = outputElement.dataset.socketType ?? "";
+        if (
+          nodeId &&
+          handleId &&
+          socketType === drag.dataType &&
+          !(nodeId === drag.sourceNodeId && handleId === drag.sourceHandleId)
+        ) {
+          useGraphStore
+            .getState()
+            .reassignOutputBundle(drag.edgeIds, nodeId, handleId);
+          useBundleDragStore.getState().clear();
+          useConnectionGuideStore.getState().clear();
+          return;
+        }
+      }
+      const anyHandle =
+        element instanceof Element
+          ? element.closest<HTMLElement>("[data-cu-handle]")
+          : null;
+      useBundleDragStore.getState().clear();
+      useConnectionGuideStore.getState().clear();
+      if (anyHandle) {
+        return;
+      }
+      const point = { x: event.clientX, y: event.clientY };
+      suppressNextPaneClick();
+      setMenuOverlay(null);
+      setCanvasMenu(null);
+      setSearchOverlay({
+        anchor: point,
+        flowPosition: screenToFlowPosition(point),
+        connection: {
+          nodeId: drag.sourceNodeId,
+          handleId: drag.sourceHandleId,
+          handleType: "source",
+          dataType: drag.dataType,
+          bundleEdgeIds: drag.edgeIds,
+        },
+      });
+    };
+    const cancel = () => {
+      useBundleDragStore.getState().clear();
+      useConnectionGuideStore.getState().clear();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        cancel();
+      }
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [bundleActive, screenToFlowPosition, suppressNextPaneClick]);
+
+  useEffect(() => {
+    if (!edgeDragArmed) {
+      return;
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      const state = useEdgeDragStore.getState();
+      if (state.drag) {
+        state.move(event.clientX, event.clientY);
+        return;
+      }
+      const pending = state.pending;
+      if (!pending) {
+        return;
+      }
+      const distance = Math.hypot(
+        event.clientX - pending.start.x,
+        event.clientY - pending.start.y,
+      );
+      if (distance < 4) {
+        return;
+      }
+      state.activate({ x: event.clientX, y: event.clientY });
+      useConnectionGuideStore.getState().begin({
+        mode: "connect",
+        direction: "source",
+        dataType: pending.dataType,
+        originNodeId: pending.sourceNodeId,
+        originHandleId: pending.sourceHandleId,
+        ignoredTargetNodeId: pending.targetNodeId,
+        ignoredTargetHandleId: pending.targetHandleId,
+      });
+    };
+    const finish = (event: PointerEvent) => {
+      const state = useEdgeDragStore.getState();
+      const drag = state.drag;
+      if (!drag) {
+        state.clear();
+        return;
+      }
+      event.preventDefault();
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const targetElement =
+        element instanceof Element
+          ? element.closest<HTMLElement>("[data-cu-handle='target']")
+          : null;
+      if (targetElement) {
+        const targetNodeId = targetElement.dataset.nodeId ?? "";
+        const targetHandleId = targetElement.dataset.handleId ?? "";
+        if (targetNodeId && targetHandleId) {
+          useGraphStore
+            .getState()
+            .reconnectEdgeTarget(
+              drag.edgeId,
+              targetNodeId,
+              targetHandleId,
+            );
+        }
+        state.clear();
+        useConnectionGuideStore.getState().clear();
+        return;
+      }
+      const anyHandle =
+        element instanceof Element
+          ? element.closest<HTMLElement>("[data-cu-handle]")
+          : null;
+      state.clear();
+      useConnectionGuideStore.getState().clear();
+      if (anyHandle) {
+        return;
+      }
+      useGraphStore.getState().deleteEdge(drag.edgeId);
+      if (!useSettingsStore.getState().settings.connectionDropSearch) {
+        return;
+      }
+      const point = { x: event.clientX, y: event.clientY };
+      suppressNextPaneClick();
+      setMenuOverlay(null);
+      setCanvasMenu(null);
+      setSearchOverlay({
+        anchor: point,
+        flowPosition: screenToFlowPosition(point),
+        connection: {
+          nodeId: drag.sourceNodeId,
+          handleId: drag.sourceHandleId,
+          handleType: "source",
+          dataType: drag.dataType,
+        },
+      });
+    };
+    const cancel = () => {
+      useEdgeDragStore.getState().clear();
+      useConnectionGuideStore.getState().clear();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        cancel();
+      }
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [edgeDragArmed, screenToFlowPosition, suppressNextPaneClick]);
+
   const handleZoomIn = useCallback(() => {
     void zoomIn({ duration: 150 });
   }, [zoomIn]);
@@ -214,12 +570,51 @@ function CanvasInner() {
     }
   }, []);
 
+  const handleConnectStart = useCallback<OnConnectStart>((_event, params) => {
+    const graph = useGraphStore.getState();
+    const nodeId = params.nodeId ?? "";
+    const node = graph.nodes.find((candidate) => candidate.id === nodeId);
+    const handleType = params.handleType;
+    const handleId = params.handleId ?? "";
+    if (
+      !node ||
+      !handleId ||
+      (handleType !== "source" && handleType !== "target")
+    ) {
+      useConnectionGuideStore.getState().clear();
+      return;
+    }
+    const socket =
+      handleType === "source"
+        ? node.data.schema.outputs.find(
+            (candidate) => candidate.name === handleId,
+          )
+        : resolveTargetSocket(node.data.schema, handleId);
+    if (!socket) {
+      useConnectionGuideStore.getState().clear();
+      return;
+    }
+    useConnectionGuideStore.getState().begin({
+      mode: "connect",
+      direction: handleType,
+      dataType: socket.data_type,
+      originNodeId: nodeId,
+      originHandleId: handleId,
+    });
+  }, []);
+
+  const handleConnect = useCallback((connection: Connection) => {
+    useConnectionGuideStore.getState().clear();
+    useGraphStore.getState().onConnect(connection);
+  }, []);
+
   const handleConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
       const fromHandle = connectionState.fromHandle;
       if (!fromHandle?.id) {
         return;
       }
+      useConnectionGuideStore.getState().clear();
       const graph = useGraphStore.getState();
       const sourceNode = graph.nodes.find(
         (candidate) => candidate.id === fromHandle.nodeId,
@@ -349,10 +744,12 @@ function CanvasInner() {
     [closeOverlays, screenToFlowPosition],
   );
 
-  const displayEdges = useMemo(
-    () => buildDisplayEdges(edges, nodes, settings),
-    [edges, nodes, settings],
-  );
+  const displayEdges = useMemo(() => {
+    const hidden = new Set(bundleEdgeIds);
+    return buildDisplayEdges(edges, nodes, settings).filter(
+      (edge) => !hidden.has(edge.id),
+    );
+  }, [bundleEdgeIds, edges, nodes, settings]);
   const handleStyle = useMemo(() => {
     const size = HANDLE_SIZE_VALUES[settings.handleSize];
     return {
@@ -436,10 +833,14 @@ function CanvasInner() {
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
+        onConnect={handleConnect}
+        onConnectStart={handleConnectStart}
         onConnectEnd={handleConnectEnd}
         onClickConnectEnd={handleConnectEnd}
-        onNodeDoubleClick={(_, node) => {
+        onNodeDoubleClick={(event, node) => {
+          if (isInteractiveControlTarget(event.target)) {
+            return;
+          }
           if (isSubgraphManagerNode(node)) {
             return;
           }
@@ -456,7 +857,7 @@ function CanvasInner() {
         onNodeClick={handleNodeClick}
         onNodeContextMenu={handleNodeContextMenu}
         onPaneContextMenu={handlePaneContextMenu}
-        onPaneClick={closeOverlays}
+        onPaneClick={handlePaneClick}
         onNodeDragStart={closeOverlays}
         selectionKeyCode={["Control", "Meta", "Shift"]}
         multiSelectionKeyCode={["Control", "Meta", "Shift"]}
@@ -550,6 +951,8 @@ function CanvasInner() {
           </Panel>
         )}
       </ReactFlow>
+      <BundleDragOverlay />
+      <EdgeDragOverlay />
       <CanvasStatusBar />
       <input
         ref={fileInputRef}

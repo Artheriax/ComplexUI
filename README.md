@@ -1,7 +1,7 @@
 # ComplexUI
 
 Visual, code-first node-graph IDE for Machine Learning (Scikit-Learn, XGBoost,
-LightGBM, Polars, PyTorch). Every node is live, editable Python; the backend
+LightGBM, Polars, PyTorch, torchvision, Ultralytics). Every node is live, editable Python; the backend
 parses each node's code into typed sockets and widgets, executes the DAG in
 topological order with content-addressable caching, and streams telemetry over
 WebSocket. Untrusted code must pass a diff-based approval gate before it runs.
@@ -16,19 +16,42 @@ Workflow outputs stay out of `.cuigraph.json`; terminal runs instead keep bounde
 previews and rich outputs in workspace run-history records, alongside statuses,
 timings and errors.
 
-The bundled catalog ships **64 node templates** (56 production nodes across 9
-categories plus 8 example/synthetic loaders that stay hidden and power the
-bundled workflows) and **12 ready-to-run example workflows**. Browser-style
+The vision path adds typed `IMAGE`, `VIDEO`, `MEDIA`, model, detection, mask and
+classification sockets. Uploaded images and videos stream inline (with HTTP
+range support) from repo-root `inputs/`, generated images/videos are served from
+repo-root `outputs/`, and image, video, model, detection, mask and
+classification previews render directly on nodes. torchvision covers image
+classification, detection and segmentation plus sampled-frame video
+classification; Ultralytics YOLO covers image/video detection and segmentation.
+Video inference is monolithic per backend/task and writes browser-playable H.264
+outputs under repo-root `outputs/`.
+
+The repo-root **`models/`** library is mandatory and ships with `yolo/`,
+`torchvision/`, and `classification/` folders. Custom type folders are discovered
+too. Node code can declare a local picker with
+`local_model: ModelSelector = ModelSelector(type="yolo")`; the widget lists files
+from `models/yolo`, while an empty selection keeps the existing built-in YOLO or
+torchvision model as fallback. Selections are repo-relative, block execution when
+stale, and contribute their size/mtime fingerprint to cache invalidation. Local
+formats are `.pt`, `.pth`, `.onnx`, and `.safetensors`; support is
+backend-specific. Models Library is a read-only Assets tab and auto-refreshes
+while open (press `R` to refresh immediately). Only add trusted model files:
+loading `.pt`/pickle models is not a sandbox, so SafeTensors/ONNX are preferred.
+
+The bundled catalog ships **84 node templates** (74 production nodes across 10
+categories plus 10 example/synthetic helpers that stay hidden and power the
+bundled workflows) and **21 ready-to-run example workflows**. Browser-style
 workflow tabs keep multiple graphs open at once, each with its own undo history,
 execution output and project identity; open tabs are restored after a reload.
-the left rail expands **Nodes**, **Workflows**, **Templates**, and **Datasets** drawers: drag a template, open a bundled workflow or saved
-workflow in a new tab, or upload a dataset for the `File` widgets used by the
-CSV/Parquet/Excel/NDJSON loaders. Int/Float/Bool/String **Value** nodes wire
+The left rail expands **Nodes**, **Workflows**, **Templates**, and **Assets** drawers: drag a template, open a bundled workflow or saved
+workflow in a new tab, or upload a table, image or video for the
+`File`/`ImageFile`/`VideoFile` widgets used by loaders, or inspect the repo
+`models/` library under the Models tab. Int/Float/Bool/String **Value** nodes wire
 directly into widget parameters; numeric values have `<`/`>` step buttons
 driven by an editable `step` field. Widgets annotated with
 `typing.Literal[...]` render fixed-choice dropdowns, and their
-defaults/overrides/wired values are validated before execution. Datasets can be
-previewed and deleted from the sidebar. Press `Ctrl+S` to name and save the
+defaults/overrides/wired values are validated before execution. Table uploads
+can be previewed, and every asset can be searched or deleted from the sidebar. Press `Ctrl+S` to name and save the
 active workflow; later saves are silent, and overwrites retain up to 30 version
 snapshots. Selected nodes can be turned into reusable nested subgraphs with
 automatic boundary ports; definitions have one shared Inputs and Outputs
@@ -36,7 +59,17 @@ manager pair, open in a nested canvas, and can be instantiated from the Nodes
 library. Managers provide Add input/output buttons plus draggable + handles for
 creating additional typed ports; dropping a + handle on empty canvas creates a
 compatible node already wired. Removing the last instance also removes the
-definition. The right-click **File** submenu downloads the workflow as a
+definition. Drag a connected input dot to retarget its wire to another
+compatible input; the source output stays fixed and the wire body itself is not
+draggable. Empty drops delete the wire and open node search; choosing a node
+creates a new target and wire, while invalid drops restore the wire.
+`Shift`-dragging an output moves its whole wire bundle to another
+same-typed output (invalid/cancelled drops restore it; empty drops open node
+search).
+Incompatible or occupied handles grey out while dragging. Runnable nodes and
+subgraph instances are resizable from the bottom-right; sizes persist, parameter
+controls stay fixed, and media previews expand to fill the node body. The
+right-click **File** submenu downloads the workflow as a
 `.cuigraph.json`, a runnable PEP 723 Python script, or a Jupyter notebook, and
 also contains Save, Import and Clear; exports reuse the same transpiler and
 topological order as the executor, with nested instances flattened to
@@ -76,8 +109,12 @@ from `backend/`):
 Browser E2E is a separate gate: install Chromium once with
 `cd frontend && npx playwright install chromium`, then run `npm run e2e`.
 GitHub Actions runs backend, frontend, and Playwright checks on every push and
-PR; `.github/workflows/ml-overlay.yml` additionally exercises torch, xgboost,
-and lightgbm weekly or on demand.
+PR; `.github/workflows/ml-overlay.yml` additionally exercises torch,
+torchvision, Ultralytics, xgboost, and lightgbm weekly or on demand.
+
+The Ultralytics node templates depend on the separately installed
+`ultralytics` package, which is **AGPL-3.0**. They are isolated from the
+torchvision templates so workflows that do not use YOLO do not install it.
 
 Useful flags: `--backend-port`, `--frontend-port`, `--host`, `--log-level`,
 `--log-format` (`text` or `json`), `--log-dir`, `--no-log-file`, `--no-reload`,
@@ -112,13 +149,19 @@ The default workspace is `backend/workspace`; set `COMPLEXUI_WORKSPACE` to move
 it. Named projects live in `workflows/<slug>.cuigraph.json`, including reusable
 subgraph definitions and nested canvases, overwrite snapshots in
 `.versions/<slug>/`, close/visibility recovery data in `session.json`, run
-history in `runs/`, and uploaded datasets in `data/uploads/`. Deleted projects
+history in `runs/`, uploaded assets in repo-root `inputs/`
+(`COMPLEXUI_INPUT_DIR` overrides it), and generated media in repo-root
+`outputs/` (`COMPLEXUI_OUTPUT_DIR` overrides it). Deleted projects
 move to `.trash/`. Logs
 follow the workspace unless `COMPLEXUI_LOG_DIR` is set explicitly. `File`
-widgets store workspace-relative paths such as `data/uploads/iris.csv`;
-exported scripts and notebooks therefore expect to run from the workspace root
-(or need those paths adjusted). `File` widgets reject absolute paths and
-symlink escapes outside the workspace.
+widgets store input paths such as `inputs/iris.csv` and can
+read generated files through `outputs/<name>`; exported scripts and notebooks
+therefore expect those paths to remain available. File access rejects paths
+outside the workspace, inputs, and generated-output roots.
+
+The shared model library is repo-root `models/`, not workspace-relative; set
+`COMPLEXUI_MODELS_DIR` to use another location. `ModelSelector` widget values
+are stored as `models/<type>/<file>` and resolve against that root.
 
 ## Layout
 

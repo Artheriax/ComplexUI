@@ -27,10 +27,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
       - run: uv sync --frozen
-      - name: Run tests with torch, xgboost, and lightgbm
+      - name: Run tests with torch, vision, ONNX, xgboost, and lightgbm
         run: >-
           uv run
           --with "torch>=2.0"
+          --with "torchvision>=0.17"
+          --with "ultralytics>=8.3"
+          --with "safetensors>=0.4"
+          --with "onnxruntime>=1.18"
           --with "xgboost>=2.0"
           --with "lightgbm>=4.0"
           pytest

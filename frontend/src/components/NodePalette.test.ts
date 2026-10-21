@@ -76,7 +76,7 @@ test("starts as a compact rail and expands a panel on demand", () => {
   expect(screen.queryByPlaceholderText("Search templates…")).toBeNull();
 });
 
-test("switches between Workflows, templates and datasets", () => {
+test("switches between Workflows, templates and assets", () => {
   render(createElement(NodePalette));
 
   fireEvent.click(screen.getByRole("button", { name: "Workflows" }));
@@ -87,9 +87,9 @@ test("switches between Workflows, templates and datasets", () => {
   expect(screen.getByPlaceholderText("Search templates…")).toBeTruthy();
   expect(screen.getByText(/Opening a template adds it as a new/)).toBeTruthy();
 
-  fireEvent.click(screen.getByRole("button", { name: "Datasets" }));
-  expect(screen.getByPlaceholderText("Search datasets…")).toBeTruthy();
-  expect(screen.getByLabelText("Upload dataset files")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Assets" }));
+  expect(screen.getByPlaceholderText("Search assets…")).toBeTruthy();
+  expect(screen.getByLabelText("Upload asset files")).toBeTruthy();
 });
 
 test("bottom rail buttons toggle console, shortcuts and settings", () => {

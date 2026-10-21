@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import (
@@ -37,8 +39,10 @@ from .datasets import (
     DatasetNotFound,
     DatasetPreviewError,
     DatasetTooLarge,
+    InvalidAssetPath,
     InvalidDataset,
     get_dataset_store,
+    get_output_store,
 )
 from .execution_host import (
     WorkerHandle,
@@ -50,6 +54,7 @@ from .execution_host import (
 from .executor import (
     GraphError,
     GraphPlan,
+    ModelSelectionError,
     restore_cache,
     validate_graph,
 )
@@ -63,6 +68,7 @@ from .logging_setup import (
     configure_logging,
     resolve_log_dir,
 )
+from .models import InvalidModelPath, get_model_store
 from .network_security import (
     RequestSizeLimitMiddleware,
     configured_allowed_hosts,
@@ -93,6 +99,8 @@ from .schemas import (
     ExportFormat,
     ExportRequest,
     ExportResponse,
+    ModelSummary,
+    ModelTypeSummary,
     NodeSchema,
     ParseRequest,
     ProjectCreateRequest,
@@ -382,6 +390,7 @@ logger.info(
 if _LOG_DIR is not None:
     logger.info("daily logs: %s", _LOG_DIR)
 logger.info("workspace: %s", get_project_store().root)
+logger.info("models: %s", get_model_store().root)
 if "*" in _ALLOWED_HOSTS:
     logger.warning(
         "network mode is enabled: Host validation accepts any hostname and "
@@ -447,7 +456,30 @@ def health_endpoint() -> dict[str, object]:
         "version": app.version,
         "templates": len(get_security_registry().templates()),
         "workflows": len(get_workflows()),
+        "models_root": str(get_model_store().root),
     }
+
+
+@app.get("/api/models/types", response_model=list[ModelTypeSummary])
+def list_model_types_endpoint() -> list[ModelTypeSummary]:
+    """List default and custom folders in the repo model library."""
+    try:
+        return get_model_store().list_types()
+    except (InvalidModelPath, OSError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/models", response_model=list[ModelSummary])
+def list_models_endpoint(
+    model_type: str | None = Query(default=None, alias="type"),
+) -> list[ModelSummary]:
+    """List metadata-only model files, optionally scoped to one type."""
+    try:
+        return get_model_store().list_models(model_type)
+    except InvalidModelPath as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/status", response_model=ExecutionStatusResponse)
@@ -551,14 +583,26 @@ def _dataset_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, DatasetTooLarge):
         return HTTPException(status_code=413, detail=str(exc))
-    if isinstance(exc, (InvalidDataset, DatasetPreviewError)):
+    if isinstance(exc, (InvalidDataset, InvalidAssetPath, DatasetPreviewError)):
         return HTTPException(status_code=422, detail=str(exc))
     return HTTPException(status_code=500, detail=str(exc))
 
 
+def _media_response(path: Path) -> FileResponse:
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(path.name)}",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.get("/api/uploads", response_model=list[DatasetSummary])
 def list_uploads_endpoint() -> list[DatasetSummary]:
-    """List datasets stored in the workspace upload directory."""
+    """List assets stored in the workspace upload directory."""
     try:
         return get_dataset_store().list_datasets()
     except OSError as exc:
@@ -593,10 +637,28 @@ async def upload_dataset_endpoint(
 
 @app.get("/api/uploads/{file_id}", response_model=DatasetSummary)
 def get_upload_endpoint(file_id: str) -> DatasetSummary:
-    """Return metadata for one uploaded dataset."""
+    """Return metadata for one uploaded asset."""
     try:
         return get_dataset_store().get_dataset(file_id)
     except (DatasetNotFound, InvalidDataset, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+
+
+@app.get("/api/uploads/{file_id}/raw")
+def get_upload_raw_endpoint(file_id: str) -> FileResponse:
+    """Serve an uploaded image or video inline with HTTP range support."""
+    try:
+        return _media_response(get_dataset_store().raw_path(file_id))
+    except (DatasetNotFound, InvalidDataset, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+
+
+@app.get("/api/outputs/{file_id}/raw")
+def get_output_raw_endpoint(file_id: str) -> FileResponse:
+    """Serve a generated image or video inline with HTTP range support."""
+    try:
+        return _media_response(get_output_store().media_path(file_id))
+    except (DatasetNotFound, InvalidAssetPath, OSError) as exc:
         raise _dataset_http_error(exc) from exc
 
 
@@ -777,6 +839,12 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
             exc.schema.syntax_errors[0].line if exc.schema.syntax_errors else 0,
         )
         raise HTTPException(status_code=422, detail=exc.schema.model_dump(mode="json")) from exc
+    except ModelSelectionError as exc:
+        logger.error("execute rejected: %s", exc)
+        raise HTTPException(
+            status_code=422,
+            detail={"message": str(exc), "type": "ModelSelection", "models": exc.issues},
+        ) from exc
     except GraphError as exc:
         logger.error("execute rejected: %s", exc)
         raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc

@@ -1,0 +1,31 @@
+{
+  "name": "vision_video_segmentation",
+  "title": "Video Segmentation (YOLO)",
+  "category": "Computer Vision",
+  "description": "Run YOLO11 segmentation across a synthetic video and write a colored overlay MP4.",
+  "nodes": [
+    { "id": "demo", "template": "make_demo_video", "position": { "x": 0, "y": 40 } },
+    {
+      "id": "model",
+      "template": "yolo_segmenter",
+      "position": { "x": 280, "y": 220 },
+      "widget_values": { "architecture": "yolo11n-seg", "weights": "none", "device": "cpu" }
+    },
+    {
+      "id": "segment",
+      "template": "yolo_segment_video",
+      "position": { "x": 560, "y": 40 },
+      "widget_values": {
+        "output_path": "vision-video-segmentation.mp4",
+        "min_area": 64,
+        "max_masks": 10,
+        "max_frames": 48,
+        "frame_step": 1
+      }
+    }
+  ],
+  "edges": [
+    { "source_node_id": "demo", "source_handle": "video", "target_node_id": "segment", "target_handle": "video" },
+    { "source_node_id": "model", "source_handle": "model", "target_node_id": "segment", "target_handle": "model" }
+  ]
+}

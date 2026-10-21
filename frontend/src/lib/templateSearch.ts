@@ -10,6 +10,7 @@ export const CATEGORY_ORDER = [
   "Models",
   "Evaluation",
   "PyTorch",
+  "Computer Vision",
 ];
 
 export interface TemplateGroup {

@@ -119,7 +119,13 @@ def test_parse_endpoint_returns_node_schema(client: TestClient) -> None:
     assert body["dependencies"] == ["scikit-learn>=1.5"]
     assert [socket["name"] for socket in body["inputs"]] == ["train"]
     assert body["widgets"] == [
-        {"name": "k", "data_type": "int", "default": 5, "options": []}
+        {
+            "name": "k",
+            "data_type": "int",
+            "default": 5,
+            "options": [],
+            "model_type": None,
+        }
     ]
     assert body["outputs"][0]["name"] == "k"
     assert body["outputs"][0]["data_type"] == "ANY"
@@ -141,9 +147,10 @@ def test_parse_endpoint_returns_literal_choices(client: TestClient) -> None:
             "name": "level",
             "data_type": "str",
             "default": "low",
-            "options": ["low", "medium", "high"],
-        }
-    ]
+                "options": ["low", "medium", "high"],
+                "model_type": None,
+            }
+        ]
 
 
 def test_parse_endpoint_reports_syntax_errors(client: TestClient) -> None:

@@ -25,6 +25,7 @@ PROJECT_SCHEMA_VERSION = 1
 PROJECT_VERSION_RETENTION = 30
 MAX_DATASET_NAME_CHARS = 160
 MAX_DATASET_BYTES = 100 * 1024 * 1024
+MAX_MEDIA_BYTES = 500 * 1024 * 1024
 MAX_DATASET_PREVIEW_ROWS = 100
 DEFAULT_DATASET_PREVIEW_ROWS = 20
 RUN_RECORD_SCHEMA_VERSION = 1
@@ -33,18 +34,35 @@ MAX_RUN_RICH_OUTPUT_BYTES = 5 * 1024 * 1024
 
 
 class SocketType(StrEnum):
-    """First-class socket data types (classical ML path + tensor path)."""
+    """First-class socket data types (classical ML, tensor and vision paths)."""
 
     DATAFRAME = "DATAFRAME"
     DATASET = "DATASET"
     ML_MODEL = "ML_MODEL"
     METRICS = "METRICS"
     TENSOR = "TENSOR"
+    IMAGE = "IMAGE"
+    VIDEO = "VIDEO"
+    MEDIA = "MEDIA"
+    DETECTION_MODEL = "DETECTION_MODEL"
+    SEGMENTATION_MODEL = "SEGMENTATION_MODEL"
+    CLASSIFICATION_MODEL = "CLASSIFICATION_MODEL"
+    DETECTIONS = "DETECTIONS"
+    MASKS = "MASKS"
+    CLASSIFICATIONS = "CLASSIFICATIONS"
     INT = "INT"
     FLOAT = "FLOAT"
     BOOL = "BOOL"
     STRING = "STRING"
     ANY = "ANY"
+
+
+class AssetKind(StrEnum):
+    """Kinds of workspace assets stored under ``data/uploads``."""
+
+    TABLE = "table"
+    IMAGE = "image"
+    VIDEO = "video"
 
 
 class TextOutput(BaseModel):
@@ -124,9 +142,21 @@ def widget_socket_type(raw: str) -> SocketType:
         return SocketType.FLOAT
     if cleaned == "bool":
         return SocketType.BOOL
-    if cleaned in {"str", "string", "file", "path"}:
+    if cleaned in {
+        "str",
+        "string",
+        "file",
+        "path",
+        "imagefile",
+        "videofile",
+        "outputfile",
+        "modelselector",
+    }:
         return SocketType.STRING
     return normalize_socket_type(raw)
+
+
+_MEDIA_TARGETS = {SocketType.IMAGE, SocketType.VIDEO, SocketType.MEDIA}
 
 
 def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
@@ -136,6 +166,11 @@ def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
         or source is SocketType.ANY
         or target is SocketType.ANY
         or (source is SocketType.INT and target is SocketType.FLOAT)
+        or (
+            source in _MEDIA_TARGETS
+            and target is SocketType.MEDIA
+            and source is not SocketType.MEDIA
+        )
     )
 
 
@@ -154,6 +189,7 @@ class WidgetParam(BaseModel):
     data_type: str
     default: Any = None
     options: list[Any] = Field(default_factory=list)
+    model_type: str | None = None
 
 
 def widget_choice_allowed(value: Any, options: list[Any]) -> bool:
@@ -354,13 +390,38 @@ class ExportResponse(BaseModel):
     content: str
 
 
+class ModelSummary(BaseModel):
+    """Metadata for one file in the repo-root local model library."""
+
+    id: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
+    name: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
+    path: str
+    model_type: str = Field(min_length=1, max_length=64)
+    format: str
+    size_bytes: int = Field(ge=0)
+    modified_at: str
+    mtime_ns: int = Field(ge=0)
+    fingerprint: str
+    executable: bool = False
+
+
+class ModelTypeSummary(BaseModel):
+    """One model type folder under the repo model library."""
+
+    name: str = Field(min_length=1, max_length=64)
+    path: str
+    count: int = Field(ge=0)
+    default: bool = False
+
+
 class DatasetSummary(BaseModel):
-    """Metadata for one dataset stored in the workspace upload directory."""
+    """Metadata for one asset stored in the workspace upload directory."""
 
     id: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
     name: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
     path: str
     format: str
+    kind: AssetKind = AssetKind.TABLE
     size_bytes: int = Field(ge=0)
     modified_at: str
 
