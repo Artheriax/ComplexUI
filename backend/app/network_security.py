@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers
@@ -79,13 +79,37 @@ def origin_is_allowed(
 
 
 class RequestSizeLimitMiddleware:
-    """Reject oversized HTTP requests advertised via Content-Length."""
+    """Reject oversized HTTP requests advertised via Content-Length.
+
+    ``overrides`` maps path prefixes (for example ``"/api/uploads"``) to a
+    larger or smaller limit. The longest matching prefix wins.
+    """
 
     def __init__(
-        self, app: ASGIApp, *, max_bytes: int = MAX_REQUEST_BYTES
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int = MAX_REQUEST_BYTES,
+        overrides: Mapping[str, int] | None = None,
     ) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.overrides = tuple(
+            sorted(
+                (
+                    (prefix.rstrip("/") or "/", limit)
+                    for prefix, limit in (overrides or {}).items()
+                ),
+                key=lambda item: len(item[0]),
+                reverse=True,
+            )
+        )
+
+    def _limit_for(self, path: str) -> int:
+        for prefix, limit in self.overrides:
+            if path == prefix or path.startswith(f"{prefix}/"):
+                return limit
+        return self.max_bytes
 
     async def __call__(
         self, scope: Scope, receive: Receive, send: Send
@@ -100,7 +124,7 @@ class RequestSizeLimitMiddleware:
                         "Invalid Content-Length", status_code=400
                     )(scope, receive, send)
                     return
-                if content_length > self.max_bytes:
+                if content_length > self._limit_for(scope["path"]):
                     await PlainTextResponse(
                         "Request body too large", status_code=413
                     )(scope, receive, send)

@@ -31,6 +31,9 @@ function resetStore(): void {
     templates: [template],
     nodes: [],
     edges: [],
+    subgraphs: {},
+    scopeStack: [],
+    rootGraph: null,
     past: [],
     future: [],
     clipboard: null,
@@ -110,6 +113,40 @@ describe("useGraphShortcuts", () => {
     expect(useGraphStore.getState().nodes).toHaveLength(1);
   });
 
+  it("selects every node with Ctrl+A", () => {
+    addNode();
+    addNode();
+
+    const event = press({ key: "a", ctrlKey: true });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(
+      useGraphStore.getState().nodes.every((node) => node.selected),
+    ).toBe(true);
+  });
+
+  it("groups and ungroups the selection with Ctrl+G", () => {
+    addNode();
+    addNode();
+    selectAll();
+
+    const groupEvent = press({ key: "g", ctrlKey: true });
+    expect(groupEvent.defaultPrevented).toBe(true);
+    expect(
+      useGraphStore.getState().nodes.some((node) => node.data.isFrame),
+    ).toBe(true);
+
+    const ungroupEvent = press({
+      key: "g",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+    expect(ungroupEvent.defaultPrevented).toBe(true);
+    expect(
+      useGraphStore.getState().nodes.some((node) => node.data.isFrame),
+    ).toBe(false);
+  });
+
   it("copies, pastes and duplicates the selection", async () => {
     addNode();
     selectAll();
@@ -142,6 +179,19 @@ describe("useGraphShortcuts", () => {
       expect(useGraphStore.getState().nodes).toHaveLength(1);
     });
     expect(useGraphStore.getState().nodes[0]?.id).not.toBe(original);
+  });
+
+  it("saves with Ctrl+S even when a text field is focused", () => {
+    const requestSave = vi.fn();
+    useGraphStore.setState({ requestSave });
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    const event = press({ key: "s", ctrlKey: true }, input);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(requestSave).toHaveBeenCalledTimes(1);
+    input.remove();
   });
 
   it("ignores events from text fields", () => {

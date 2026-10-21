@@ -1,10 +1,18 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
+import { useUiStore } from "../store/useUiStore";
 import type { ExecutionError } from "../types/graph";
-import { CheckIcon, SpinnerIcon, WarningIcon } from "./icons";
+import {
+  CheckIcon,
+  CloseIcon,
+  HistoryIcon,
+  SpinnerIcon,
+  WarningIcon,
+} from "./icons";
 import { PreviewValueView } from "./PreviewValueView";
 import { RichOutputView } from "./RichOutputView";
+import { RunHistoryDialog } from "./RunHistoryDialog";
 
 function ErrorCard({ error }: { error: ExecutionError }) {
   const nodeLabel = useGraphStore(
@@ -50,6 +58,8 @@ const statusBadge: Record<string, string> = {
 export function ExecutionPanel() {
   const execution = useGraphStore((state) => state.execution);
   const nodes = useGraphStore((state) => state.nodes);
+  const setConsoleOpen = useUiStore((state) => state.setConsoleOpen);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const nodeLabels = useMemo(
     () => Object.fromEntries(nodes.map((node) => [node.id, node.data.label])),
     [nodes],
@@ -85,6 +95,24 @@ export function ExecutionPanel() {
         >
           {execution.status}
         </span>
+        <button
+          type="button"
+          title="Run history"
+          aria-label="Run history"
+          onClick={() => setHistoryOpen(true)}
+          className="rounded-md border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <HistoryIcon />
+        </button>
+        <button
+          type="button"
+          title="Close console"
+          aria-label="Close console"
+          onClick={() => setConsoleOpen(false)}
+          className="rounded-md border border-zinc-700 p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <CloseIcon />
+        </button>
       </div>
 
       <div className="flex-1 space-y-3 overflow-y-auto p-2.5">
@@ -177,6 +205,9 @@ export function ExecutionPanel() {
           );
         })}
       </div>
+      {historyOpen && (
+        <RunHistoryDialog onClose={() => setHistoryOpen(false)} />
+      )}
     </aside>
   );
 }

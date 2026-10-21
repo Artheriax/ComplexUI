@@ -3,7 +3,7 @@
 # ///
 import polars as pl
 
-path: str = "data.ndjson"
+path: File = ""
 
 df = pl.read_ndjson(path)
 

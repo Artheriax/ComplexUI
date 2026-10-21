@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from sklearn.neighbors import KNeighborsClassifier
 
-from app.schemas import SocketType
+from app.schemas import SocketType, WidgetParam
 from app.transpiler import TranspileError, parse_node, transpile_node
 
 SPEC_EXAMPLE = '''\
@@ -113,6 +113,72 @@ def test_assigned_annotation_becomes_widget_with_default() -> None:
     assert result.schema.inputs == []
     assert result.func() == (5,)
     assert result.func(k=7) == (7,)
+
+
+def test_literal_widget_choices_round_trip() -> None:
+    code = (
+        "from typing import Literal\n"
+        "level: Literal['low', 'medium', 'high'] = 'medium'\n"
+        "return level: STRING"
+    )
+    result = transpile_node(code, node_id="t")
+
+    assert result.schema.widgets == [
+        WidgetParam(
+            name="level",
+            data_type="str",
+            default="medium",
+            options=["low", "medium", "high"],
+        )
+    ]
+    assert result.func() == ("medium",)
+    assert result.func(level="high") == ("high",)
+
+
+def test_literal_widget_choices_support_numeric_and_qualified_annotations() -> None:
+    schema = parse_node(
+        "count: typing.Literal[1, 2, 3] = 2\n"
+        "ratio: Literal[0.25, 0.5] = 0.5\n"
+        "return count: INT, ratio: FLOAT"
+    )
+
+    assert schema.syntax_errors == []
+    assert [(w.name, w.data_type, w.options) for w in schema.widgets] == [
+        ("count", "int", [1, 2, 3]),
+        ("ratio", "float", [0.25, 0.5]),
+    ]
+
+
+def test_literal_widget_accepts_string_annotations() -> None:
+    schema = parse_node(
+        "level: \"Literal['low', 'high']\" = 'high'\n"
+        "return level: STRING"
+    )
+
+    assert schema.syntax_errors == []
+    assert schema.widgets[0].options == ["low", "high"]
+    assert schema.widgets[0].data_type == "str"
+
+
+def test_literal_widget_rejects_default_outside_choices() -> None:
+    schema = parse_node(
+        "level: Literal['low', 'high'] = 'medium'\n"
+        "return level: STRING"
+    )
+
+    assert any("must be one of" in err.message for err in schema.syntax_errors)
+
+
+def test_literal_widget_rejects_mixed_choice_types() -> None:
+    schema = parse_node(
+        "level: Literal['low', 2] = 'low'\n"
+        "return level: STRING"
+    )
+
+    assert any(
+        "share one scalar type" in err.message
+        for err in schema.syntax_errors
+    )
 
 
 def test_widget_literal_defaults_round_trip() -> None:

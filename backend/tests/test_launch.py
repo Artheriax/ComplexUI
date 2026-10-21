@@ -108,6 +108,22 @@ def test_log_format_defaults_to_environment(monkeypatch) -> None:
     assert args.log_format == "json"
 
 
+def test_backend_environment_sets_log_dir(tmp_path: Path) -> None:
+    args = launch.parse_args(["backend", "--log-dir", str(tmp_path)])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_LOG_DIR"] == str(tmp_path)
+
+
+def test_backend_environment_can_disable_file_logs() -> None:
+    args = launch.parse_args(["backend", "--no-log-file"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_LOG_DIR"] == "0"
+
+
 def test_unknown_log_format_is_rejected() -> None:
     with pytest.raises(SystemExit):
         launch.parse_args(["backend", "--log-format", "xml"])

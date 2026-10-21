@@ -127,6 +127,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="backend log format (default text; json emits one object per line)",
     )
     parser.add_argument(
+        "--log-dir",
+        default=None,
+        help="directory for daily .txt logs (default backend/workspace/logs)",
+    )
+    parser.add_argument(
+        "--no-log-file",
+        action="store_true",
+        help="disable persistent .txt logs and keep console output only",
+    )
+    parser.add_argument(
         "--no-reload", action="store_true", help="disable uvicorn auto-reload"
     )
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
@@ -199,6 +209,10 @@ def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[s
     environment = os.environ.copy()
     environment["COMPLEXUI_LOG_LEVEL"] = args.log_level
     environment["COMPLEXUI_LOG_FORMAT"] = args.log_format
+    if args.no_log_file:
+        environment["COMPLEXUI_LOG_DIR"] = "0"
+    elif args.log_dir:
+        environment["COMPLEXUI_LOG_DIR"] = str(Path(args.log_dir).expanduser())
     if args.allow_network and not is_loopback_host(args.host):
         environment.setdefault("COMPLEXUI_ALLOWED_HOSTS", "*")
     if serve_dist:

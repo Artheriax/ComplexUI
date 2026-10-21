@@ -30,6 +30,8 @@ from app.schemas import (
     NodeSchema,
     SocketType,
     WorkflowGraph,
+    socket_types_compatible,
+    widget_socket_type,
 )
 from app.security import (
     SecurityRegistry,
@@ -101,6 +103,10 @@ def _chain_graph(n_neighbors: int = 5) -> WorkflowGraph:
 
 
 EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
+    "int_value": ([], ["result"], ["value", "step"]),
+    "float_value": ([], ["result"], ["value", "step"]),
+    "bool_value": ([], ["result"], ["value"]),
+    "string_value": ([], ["result"], ["value"]),
     "load_iris": ([], ["df"], []),
     "load_wine": ([], ["df"], []),
     "load_breast_cancer": ([], ["df"], []),
@@ -255,9 +261,7 @@ def test_chain_executes_and_accuracy_above_90() -> None:
     assert model_preview["class"] == "KNeighborsClassifier"
     assert model_preview["params"]["n_neighbors"] == 5
 
-    assert result.previews["evaluate"]["metrics"]["accuracy"] == pytest.approx(
-        metrics["accuracy"]
-    )
+    assert result.previews["evaluate"]["metrics"]["accuracy"] == pytest.approx(metrics["accuracy"])
 
     types = [event.type for event in events]
     assert types.count(EventType.NODE_STARTED) == 4
@@ -283,9 +287,7 @@ def test_node_rich_outputs_stream_and_replay_from_cache() -> None:
         "text",
         "table",
     ]
-    completed = next(
-        event for event in events if event.type is EventType.NODE_COMPLETED
-    )
+    completed = next(event for event in events if event.type is EventType.NODE_COMPLETED)
     assert [output["kind"] for output in completed.data["rich_outputs"]] == [
         "text",
         "table",
@@ -293,18 +295,14 @@ def test_node_rich_outputs_stream_and_replay_from_cache() -> None:
     json.dumps(completed.model_dump(mode="json"))
 
     replay_events: list[ExecutionEvent] = []
-    replay = execute_graph(
-        graph, security=_custom_registry(node), emit=replay_events.append
-    )
+    replay = execute_graph(graph, security=_custom_registry(node), emit=replay_events.append)
 
     assert replay.cached == {"rich": True}
     assert [output.kind for output in replay.rich_outputs["rich"]] == [
         "text",
         "table",
     ]
-    cached_event = next(
-        event for event in replay_events if event.type is EventType.NODE_COMPLETED
-    )
+    cached_event = next(event for event in replay_events if event.type is EventType.NODE_COMPLETED)
     assert cached_event.data["rich_outputs"][0]["text"] == "console line\n"
 
 
@@ -322,9 +320,7 @@ def test_node_error_event_keeps_partial_console_output() -> None:
             emit=events.append,
         )
 
-    error_event = next(
-        event for event in events if event.type is EventType.NODE_ERROR
-    )
+    error_event = next(event for event in events if event.type is EventType.NODE_ERROR)
     assert error_event.data["rich_outputs"][0]["text"] == "before failure\n"
 
 
@@ -336,6 +332,45 @@ def test_cache_honours_byte_budget(monkeypatch) -> None:
 
     assert execute_graph(graph, security=registry).cached == {"text": False}
     assert execute_graph(graph, security=registry).cached == {"text": False}
+
+
+def test_cache_keys_include_widget_target_handles() -> None:
+    templates = _templates()
+    value = GraphNode(
+        id="value",
+        code=templates["float_value"],
+        widget_values={"value": 1.0},
+    )
+    consumer = GraphNode(
+        id="consumer",
+        code=(
+            "a: float = 0.0\n"
+            "b: float = 2.0\n"
+            "result = a + b\n"
+            "return result: FLOAT"
+        ),
+    )
+    registry = _custom_registry(value, consumer)
+
+    def graph_for(handle: str) -> WorkflowGraph:
+        return WorkflowGraph(
+            nodes=[value, consumer],
+            edges=[
+                GraphEdge(
+                    source_node_id="value",
+                    source_handle="result",
+                    target_node_id="consumer",
+                    target_handle=handle,
+                )
+            ],
+        )
+
+    first = execute_graph(graph_for("a"), security=registry)
+    second = execute_graph(graph_for("b"), security=registry)
+
+    assert first.outputs_by_name["consumer"]["result"] == 3.0
+    assert second.outputs_by_name["consumer"]["result"] == 1.0
+    assert second.cached["consumer"] is False
 
 
 def test_identical_rerun_is_fully_cached() -> None:
@@ -351,9 +386,7 @@ def test_identical_rerun_is_fully_cached() -> None:
         "evaluate": True,
     }
     assert all(event.type is not EventType.NODE_STARTED for event in events)
-    completed = [
-        event for event in events if event.type is EventType.NODE_COMPLETED
-    ]
+    completed = [event for event in events if event.type is EventType.NODE_COMPLETED]
     assert len(completed) == 4
     assert all(event.data["cached"] is True for event in completed)
 
@@ -370,11 +403,7 @@ def test_modified_widget_reruns_only_downstream_nodes() -> None:
         "knn": False,
         "evaluate": False,
     }
-    started = {
-        event.node_id
-        for event in events
-        if event.type is EventType.NODE_STARTED
-    }
+    started = {event.node_id for event in events if event.type is EventType.NODE_STARTED}
     assert started == {"knn", "evaluate"}
     assert result.previews["knn"]["model"]["params"]["n_neighbors"] == 7
     assert result.outputs_by_name["evaluate"]["metrics"]["accuracy"] > 0.90
@@ -385,9 +414,7 @@ def test_cache_evicts_least_recently_used_node(monkeypatch) -> None:
     templates = _templates()
 
     def single(node_id: str) -> WorkflowGraph:
-        return WorkflowGraph(
-            nodes=[GraphNode(id=node_id, code=templates["load_iris"])]
-        )
+        return WorkflowGraph(nodes=[GraphNode(id=node_id, code=templates["load_iris"])])
 
     execute_graph(single("a"))
     execute_graph(single("b"))
@@ -489,6 +516,28 @@ def test_untrusted_node_refused_until_approved() -> None:
         execute_graph(graph, security=tampering_registry)
 
 
+def test_approval_id_preserves_node_scoped_trust_for_nested_ids() -> None:
+    registry = SecurityRegistry()
+    code = "value = 1\nreturn value: ANY\n"
+    registry.approve("local-node", code_hash(code))
+
+    nested = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="sub:outer/local-node",
+                code=code,
+                approval_id="local-node",
+            )
+        ]
+    )
+    result = execute_graph(nested, security=registry)
+    assert result.outputs_by_name["sub:outer/local-node"]["value"] == 1
+
+    unaliased = WorkflowGraph(nodes=[GraphNode(id="sub:outer/local-node", code=code)])
+    with pytest.raises(UntrustedNodeError):
+        execute_graph(unaliased, security=registry)
+
+
 def test_node_runtime_error_reports_raw_line() -> None:
     code = "k: int = 1\nvalue = k / 0\nreturn value: ANY"
     node = GraphNode(id="boom", code=code)
@@ -503,30 +552,17 @@ def test_node_runtime_error_reports_raw_line() -> None:
     assert error.error_type == "ZeroDivisionError"
     assert '<node:boom>", line 2' in error.traceback_text
 
-    error_events = [
-        event for event in events if event.type is EventType.NODE_ERROR
-    ]
+    error_events = [event for event in events if event.type is EventType.NODE_ERROR]
     assert len(error_events) == 1
     assert error_events[0].data["line"] == 2
     assert error_events[0].data["error_type"] == "ZeroDivisionError"
     assert '<node:boom>", line 2' in error_events[0].data["traceback"]
-    assert (
-        [event.type for event in events][:2]
-        == [EventType.NODE_STARTED, EventType.NODE_ERROR]
-    )
+    assert [event.type for event in events][:2] == [EventType.NODE_STARTED, EventType.NODE_ERROR]
 
 
 def test_output_contract_mismatch_reports_error() -> None:
-    code = (
-        "flag: bool = False\n"
-        "if flag:\n"
-        "    a = 1\n"
-        "    return a: ANY\n"
-        "return\n"
-    )
-    ok_graph = WorkflowGraph(
-        nodes=[GraphNode(id="maybe", code=code, widget_values={"flag": True})]
-    )
+    code = "flag: bool = False\nif flag:\n    a = 1\n    return a: ANY\nreturn\n"
+    ok_graph = WorkflowGraph(nodes=[GraphNode(id="maybe", code=code, widget_values={"flag": True})])
     registry = _custom_registry(ok_graph.nodes[0])
     ok_result = execute_graph(ok_graph, security=registry)
     assert ok_result.outputs_by_name["maybe"]["a"] == 1
@@ -539,9 +575,7 @@ def test_output_contract_mismatch_reports_error() -> None:
 
     assert "non-tuple" in excinfo.value.message
     assert excinfo.value.line is None
-    error_events = [
-        event for event in events if event.type is EventType.NODE_ERROR
-    ]
+    error_events = [event for event in events if event.type is EventType.NODE_ERROR]
     assert error_events[0].data["line"] is None
 
 
@@ -642,9 +676,7 @@ def test_dangling_edge_raises() -> None:
 
 def test_duplicate_node_ids_raise() -> None:
     code = _templates()["load_iris"]
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=code), GraphNode(id="load", code=code)]
-    )
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=code), GraphNode(id="load", code=code)])
 
     with pytest.raises(GraphValidationError, match="Duplicate"):
         execute_graph(graph)
@@ -689,6 +721,211 @@ def test_template_socket_types() -> None:
     ]
     assert evaluate.outputs[0].data_type is SocketType.METRICS
 
+    expected_values = {
+        "int_value": SocketType.INT,
+        "float_value": SocketType.FLOAT,
+        "bool_value": SocketType.BOOL,
+        "string_value": SocketType.STRING,
+    }
+    for name, expected in expected_values.items():
+        schema = parse_node(registry.get_template(name).code)
+        assert schema.inputs == []
+        assert [socket.data_type for socket in schema.outputs] == [expected]
+
+
+def test_widget_socket_types_match_python_scalars() -> None:
+    assert widget_socket_type("int") is SocketType.INT
+    assert widget_socket_type("float") is SocketType.FLOAT
+    assert widget_socket_type("bool") is SocketType.BOOL
+    assert widget_socket_type("str") is SocketType.STRING
+    assert widget_socket_type("file") is SocketType.STRING
+    assert widget_socket_type("DATAFRAME") is SocketType.DATAFRAME
+    assert widget_socket_type("mystery") is SocketType.ANY
+    assert socket_types_compatible(SocketType.FLOAT, SocketType.FLOAT)
+    assert socket_types_compatible(SocketType.ANY, SocketType.FLOAT)
+    assert socket_types_compatible(SocketType.FLOAT, SocketType.ANY)
+    assert socket_types_compatible(SocketType.INT, SocketType.FLOAT)
+    assert not socket_types_compatible(SocketType.FLOAT, SocketType.INT)
+    assert not socket_types_compatible(SocketType.STRING, SocketType.FLOAT)
+
+
+def test_value_nodes_execute_and_preview_primitive_values() -> None:
+    templates = _templates()
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="int",
+                code=templates["int_value"],
+                widget_values={"value": 3, "step": 2},
+            ),
+            GraphNode(
+                id="float",
+                code=templates["float_value"],
+                widget_values={"value": 1.5, "step": 0.25},
+            ),
+            GraphNode(
+                id="bool",
+                code=templates["bool_value"],
+                widget_values={"value": False},
+            ),
+            GraphNode(
+                id="string",
+                code=templates["string_value"],
+                widget_values={"value": "hello"},
+            ),
+        ],
+    )
+
+    result = execute_graph(graph)
+
+    assert result.outputs_by_name["int"]["result"] == 3
+    assert result.outputs_by_name["float"]["result"] == 1.5
+    assert result.outputs_by_name["bool"]["result"] is False
+    assert result.outputs_by_name["string"]["result"] == "hello"
+    assert result.previews["int"]["result"] == 3
+    assert result.previews["float"]["result"] == 1.5
+    assert result.previews["bool"]["result"] is False
+    assert result.previews["string"]["result"] == "hello"
+
+
+def test_primitive_output_overrides_widget_kwarg() -> None:
+    templates = _templates()
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(id="load", code=templates["load_iris"]),
+            GraphNode(
+                id="size",
+                code=templates["float_value"],
+                widget_values={"value": 0.5},
+            ),
+            GraphNode(id="split", code=templates["train_test_split"]),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="load",
+                source_handle="df",
+                target_node_id="split",
+                target_handle="df",
+            ),
+            GraphEdge(
+                source_node_id="size",
+                source_handle="result",
+                target_node_id="split",
+                target_handle="test_size",
+            ),
+        ],
+    )
+
+    result = execute_graph(graph)
+
+    assert result.previews["split"]["train"]["X_shape"] == [75, 4]
+    assert result.previews["split"]["test"]["X_shape"] == [75, 4]
+
+
+def test_widget_wire_enforces_literal_choices() -> None:
+    templates = _templates()
+    value = GraphNode(
+        id="value",
+        code=templates["string_value"],
+        widget_values={"value": "extreme"},
+    )
+    choice = GraphNode(
+        id="choice",
+        code=(
+            "from typing import Literal\n"
+            "level: Literal['low', 'medium', 'high'] = 'low'\n"
+            "return level: STRING"
+        ),
+    )
+    graph = WorkflowGraph(
+        nodes=[value, choice],
+        edges=[
+            GraphEdge(
+                source_node_id="value",
+                source_handle="result",
+                target_node_id="choice",
+                target_handle="level",
+            )
+        ],
+    )
+    events: list[ExecutionEvent] = []
+    registry = _custom_registry(value, choice)
+
+    with pytest.raises(NodeExecutionError, match="must be one of"):
+        execute_graph(graph, security=registry, emit=events.append)
+
+    error = next(event for event in events if event.type is EventType.NODE_ERROR)
+    assert error.data["error_type"] == "WidgetChoiceError"
+
+    valid = execute_graph(
+        WorkflowGraph(
+            nodes=[
+                GraphNode(
+                    id="value",
+                    code=templates["string_value"],
+                    widget_values={"value": "high"},
+                ),
+                choice,
+            ],
+            edges=graph.edges,
+        ),
+        security=registry,
+    )
+    assert valid.outputs_by_name["choice"]["level"] == "high"
+
+
+def test_widget_wire_enforces_workspace_file_boundary() -> None:
+    templates = _templates()
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(id="csv", code=templates["load_csv"]),
+            GraphNode(
+                id="path",
+                code=templates["string_value"],
+                widget_values={"value": "../outside.csv"},
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="path",
+                source_handle="result",
+                target_node_id="csv",
+                target_handle="path",
+            )
+        ],
+    )
+
+    with pytest.raises(NodeExecutionError, match="inside the workspace"):
+        execute_graph(graph)
+
+
+def test_widget_wire_rejects_incompatible_type() -> None:
+    templates = _templates()
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(id="load", code=templates["load_iris"]),
+            GraphNode(id="text", code=templates["string_value"]),
+            GraphNode(id="split", code=templates["train_test_split"]),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="load",
+                source_handle="df",
+                target_node_id="split",
+                target_handle="df",
+            ),
+            GraphEdge(
+                source_node_id="text",
+                source_handle="result",
+                target_node_id="split",
+                target_handle="test_size",
+            ),
+        ],
+    )
+
+    with pytest.raises(GraphValidationError, match="Type mismatch STRING -> FLOAT"):
+        execute_graph(graph)
+
 
 def test_security_registry_hashes_and_normalizes_line_endings() -> None:
     registry = SecurityRegistry()
@@ -713,9 +950,7 @@ def test_missing_dependencies_detection() -> None:
         "definitely-not-a-real-pkg-xyz>=1.0"
     ]
     assert missing_dependencies(["pytest>=99999"]) == ["pytest>=99999"]
-    assert missing_dependencies(["%%%bad-requirement%%%"]) == [
-        "%%%bad-requirement%%%"
-    ]
+    assert missing_dependencies(["%%%bad-requirement%%%"]) == ["%%%bad-requirement%%%"]
 
 
 def test_install_dependencies_invokes_uv_pip(monkeypatch) -> None:
@@ -770,9 +1005,7 @@ def test_install_dependencies_failure_wrapped(monkeypatch) -> None:
 
 
 def test_installing_deps_event_streamed_before_started(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
-    )
+    monkeypatch.setattr("app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"])
     installed: list[list[str]] = []
     monkeypatch.setattr(
         "app.executor.install_dependencies",
@@ -780,9 +1013,7 @@ def test_installing_deps_event_streamed_before_started(monkeypatch) -> None:
     )
 
     events: list[ExecutionEvent] = []
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
-    )
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=_templates()["load_iris"])])
     execute_graph(graph, emit=events.append)
 
     assert [event.type for event in events] == [
@@ -796,12 +1027,8 @@ def test_installing_deps_event_streamed_before_started(monkeypatch) -> None:
 
 
 def test_allow_installs_false_raises_with_node_error(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
-    )
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
-    )
+    monkeypatch.setattr("app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"])
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=_templates()["load_iris"])])
     events: list[ExecutionEvent] = []
 
     with pytest.raises(DependencyInstallError, match="fake-dep"):
@@ -814,17 +1041,13 @@ def test_allow_installs_false_raises_with_node_error(monkeypatch) -> None:
 
 
 def test_dependency_failure_emits_node_error(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
-    )
+    monkeypatch.setattr("app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"])
 
     def fail_install(deps, **_kwargs):
         raise DependencyInstallError("installation exploded")
 
     monkeypatch.setattr("app.executor.install_dependencies", fail_install)
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
-    )
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=_templates()["load_iris"])])
     events: list[ExecutionEvent] = []
 
     with pytest.raises(DependencyInstallError, match="exploded"):
@@ -838,9 +1061,7 @@ def test_dependency_failure_emits_node_error(monkeypatch) -> None:
 
 
 def test_cancellation_during_dependency_install(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
-    )
+    monkeypatch.setattr("app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"])
     stop = {"value": False}
 
     def cancel_install(deps, **_kwargs):
@@ -848,38 +1069,28 @@ def test_cancellation_during_dependency_install(monkeypatch) -> None:
         raise DependencyInstallError("install cancelled")
 
     monkeypatch.setattr("app.executor.install_dependencies", cancel_install)
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
-    )
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=_templates()["load_iris"])])
     events: list[ExecutionEvent] = []
 
     with pytest.raises(ExecutionCancelled, match="during dependency install"):
-        execute_graph(
-            graph, emit=events.append, should_stop=lambda: stop["value"]
-        )
+        execute_graph(graph, emit=events.append, should_stop=lambda: stop["value"])
 
     assert [event.type for event in events] == [EventType.INSTALLING_DEPS]
 
 
 def test_cancellation_after_dependency_install(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"]
-    )
+    monkeypatch.setattr("app.executor.missing_dependencies", lambda deps: ["fake-dep>=1.0"])
     stop = {"value": False}
 
     def finish_install(deps, **_kwargs):
         stop["value"] = True
 
     monkeypatch.setattr("app.executor.install_dependencies", finish_install)
-    graph = WorkflowGraph(
-        nodes=[GraphNode(id="load", code=_templates()["load_iris"])]
-    )
+    graph = WorkflowGraph(nodes=[GraphNode(id="load", code=_templates()["load_iris"])])
     events: list[ExecutionEvent] = []
 
     with pytest.raises(ExecutionCancelled, match="after dependency install"):
-        execute_graph(
-            graph, emit=events.append, should_stop=lambda: stop["value"]
-        )
+        execute_graph(graph, emit=events.append, should_stop=lambda: stop["value"])
 
     assert [event.type for event in events] == [EventType.INSTALLING_DEPS]
 
@@ -913,11 +1124,7 @@ def test_cancellation_between_nodes_keeps_completed_cache() -> None:
     result = execute_graph(graph, emit=events.append)
 
     assert result.cached == {"load": True, "split": False}
-    started = [
-        event.node_id
-        for event in events
-        if event.type is EventType.NODE_STARTED
-    ]
+    started = [event.node_id for event in events if event.type is EventType.NODE_STARTED]
     assert started == ["split"]
 
 
@@ -925,9 +1132,7 @@ def test_cancellation_before_first_node_runs_nothing() -> None:
     events: list[ExecutionEvent] = []
 
     with pytest.raises(ExecutionCancelled):
-        execute_graph(
-            _chain_graph(), emit=events.append, should_stop=lambda: True
-        )
+        execute_graph(_chain_graph(), emit=events.append, should_stop=lambda: True)
 
     assert events == []
 
@@ -940,9 +1145,7 @@ def test_run_to_target_scopes_order_and_outputs() -> None:
     assert result.cached == {"load": False, "split": False, "knn": False}
     assert "evaluate" not in result.outputs_by_name
     assert "evaluate" not in result.previews
-    started = [
-        event.node_id for event in events if event.type is EventType.NODE_STARTED
-    ]
+    started = [event.node_id for event in events if event.type is EventType.NODE_STARTED]
     assert started == ["load", "split", "knn"]
 
 
@@ -1014,9 +1217,7 @@ def test_run_to_target_ignores_out_of_scope_wiring_errors() -> None:
 def test_run_to_target_ignores_out_of_scope_cycle() -> None:
     code = "value: ANY\nreturn value: ANY"
     graph = _chain_graph()
-    graph.nodes.extend(
-        [GraphNode(id="a", code=code), GraphNode(id="b", code=code)]
-    )
+    graph.nodes.extend([GraphNode(id="a", code=code), GraphNode(id="b", code=code)])
     graph.edges.extend(
         [
             GraphEdge(

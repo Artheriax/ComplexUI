@@ -1,6 +1,7 @@
 import type { TemplateInfo } from "../types/graph";
 
 export const CATEGORY_ORDER = [
+  "Values",
   "Data Loaders",
   "Data Cleaning",
   "EDA",

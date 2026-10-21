@@ -3,7 +3,7 @@
 # ///
 import polars as pl
 
-path: str = "data.parquet"
+path: File = ""
 
 df = pl.read_parquet(path)
 

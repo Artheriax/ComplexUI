@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { useGraphStore } from "../store/useGraphStore";
 import type { NodeSchema, TemplateInfo, WorkflowTemplateInfo } from "../types/graph";
@@ -58,6 +58,10 @@ const workflows = [
 ];
 
 beforeEach(() => {
+  let counter = 0;
+  vi.stubGlobal("crypto", {
+    randomUUID: () => `window-${++counter}`,
+  });
   useGraphStore.setState({
     templates: [demoTemplate],
     templatesLoaded: true,
@@ -65,12 +69,23 @@ beforeEach(() => {
     workflows,
     workflowsLoaded: true,
     workflowsError: null,
+    windows: [],
+    activeWindowId: "window-reset",
     nodes: [],
     edges: [],
+    subgraphs: {},
+    scopeStack: [],
+    rootGraph: null,
+    past: [],
+    future: [],
   });
 });
 
-test("groups workflows by category in catalog order", () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+test("groups workflows by category in catalog order with collapsed sections", () => {
   const { container } = render(createElement(WorkflowLibrary));
 
   const text = container.textContent ?? "";
@@ -80,43 +95,32 @@ test("groups workflows by category in catalog order", () => {
   expect(gettingStarted).toBeGreaterThanOrEqual(0);
   expect(gettingStarted).toBeLessThan(classical);
   expect(classical).toBeLessThan(quality);
+  expect(screen.queryByText("Iris Flow")).toBeNull();
+
+  fireEvent.click(
+    screen.getByRole("button", { name: /Getting Started/ }),
+  );
   expect(screen.getByText("Iris Flow")).toBeTruthy();
   expect(screen.getByText("3 nodes")).toBeTruthy();
 });
 
-test("clicking a workflow loads it onto the canvas", () => {
-  useGraphStore.setState({
-    nodes: [
-      {
-        id: "old",
-        type: "complex",
-        position: { x: 0, y: 0 },
-        data: {
-          label: "Old",
-          templateName: null,
-          templateCode: null,
-          code: "",
-          schema,
-          widgetValues: {},
-          isTrusted: false,
-          color: "default",
-        },
-      },
-    ],
-  });
-
+test("clicking a workflow opens it in a new window", () => {
   render(createElement(WorkflowLibrary));
-  fireEvent.click(screen.getByText("Wine Flow"));
+  fireEvent.click(
+    screen.getByRole("button", { name: /Getting Started/ }),
+  );
+  fireEvent.click(screen.getByText("Iris Flow"));
 
   const state = useGraphStore.getState();
-  expect(state.nodes.map((node) => node.id)).toEqual(["n0", "n1", "n2", "n3"]);
+  expect(state.nodes.map((node) => node.id)).toEqual(["n0", "n1", "n2"]);
+  expect(state.windows).toHaveLength(1);
   expect(state.execution.status).toBe("idle");
 });
 
-test("search filters workflow cards", () => {
+test("search filters workflow cards and expands matches", () => {
   render(createElement(WorkflowLibrary));
 
-  fireEvent.change(screen.getByPlaceholderText("Search workflows…"), {
+  fireEvent.change(screen.getByPlaceholderText("Search templates…"), {
     target: { value: "messy" },
   });
 

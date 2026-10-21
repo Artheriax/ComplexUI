@@ -55,9 +55,7 @@ def missing_dependencies(requirements: Sequence[str]) -> list[str]:
         if version is None:
             missing.append(raw)
             continue
-        if requirement.specifier and not requirement.specifier.contains(
-            version, prereleases=True
-        ):
+        if requirement.specifier and not requirement.specifier.contains(version, prereleases=True):
             missing.append(raw)
     return missing
 
@@ -72,9 +70,7 @@ def _requirement_name(raw: str) -> str:
         return name
 
 
-def build_install_command(
-    requirements: Sequence[str], *, platform: str | None = None
-) -> list[str]:
+def build_install_command(requirements: Sequence[str], *, platform: str | None = None) -> list[str]:
     """Build ``uv pip install`` args, routing torch to the CPU wheel index.
 
     On Windows/Linux the default PyPI torch wheels bundle multi-GB CUDA
@@ -92,6 +88,19 @@ def build_install_command(
     return command
 
 
+def _validated_requirements(requirements: Sequence[str]) -> list[str]:
+    validated: list[str] = []
+    for raw in requirements:
+        if raw.strip().startswith("-"):
+            raise DependencyInstallError(f"Invalid dependency requirement: {raw!r}")
+        try:
+            Requirement(raw)
+        except InvalidRequirement as exc:
+            raise DependencyInstallError(f"Invalid dependency requirement: {raw!r}") from exc
+        validated.append(raw)
+    return validated
+
+
 def install_dependencies(
     requirements: Sequence[str],
     *,
@@ -106,6 +115,7 @@ def install_dependencies(
     """
     if not requirements:
         return
+    requirements = _validated_requirements(requirements)
     environment = os.environ.copy()
     environment.setdefault("VIRTUAL_ENV", sys.prefix)
     command = build_install_command(requirements)
@@ -121,9 +131,7 @@ def install_dependencies(
                 env=environment,
             )
         except OSError as exc:
-            raise DependencyInstallError(
-                f"could not start `uv pip install`: {exc}"
-            ) from exc
+            raise DependencyInstallError(f"could not start `uv pip install`: {exc}") from exc
         deadline = time.monotonic() + timeout
         while True:
             returncode = process.poll()
@@ -139,8 +147,7 @@ def install_dependencies(
                 _terminate(process)
                 logger.error("dependency install timed out after %.0fs", timeout)
                 raise DependencyInstallError(
-                    f"`uv pip install {' '.join(requirements)}` timed out "
-                    f"after {timeout:.0f}s"
+                    f"`uv pip install {' '.join(requirements)}` timed out after {timeout:.0f}s"
                 )
             time.sleep(_POLL_INTERVAL_SECONDS)
         output.seek(0)

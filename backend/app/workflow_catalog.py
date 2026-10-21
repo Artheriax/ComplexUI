@@ -16,7 +16,15 @@ from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .schemas import GraphEdge, GraphNode, NodeSchema, SocketType, WorkflowGraph
+from .schemas import (
+    GraphEdge,
+    GraphNode,
+    NodeSchema,
+    WorkflowGraph,
+    socket_types_compatible,
+    widget_choice_allowed,
+    widget_socket_type,
+)
 from .security import get_security_registry
 from .transpiler import parse_node
 
@@ -132,23 +140,31 @@ def validate_workflow(info: WorkflowTemplateInfo) -> None:
         schema = parse_node(registry.get_template(node.template).code, node.id)
         schemas[node.id] = schema
         widget_types = {widget.name: widget.data_type for widget in schema.widgets}
+        widget_options = {
+            widget.name: widget.options for widget in schema.widgets
+        }
         for key, value in node.widget_values.items():
             if key not in widget_types:
                 raise WorkflowCatalogError(
                     f"{label}: node '{node.id}' sets unknown widget '{key}'"
                 )
             allowed = _WIDGET_PYTHON_TYPES.get(widget_types[key])
-            if allowed is None:
-                continue
-            if isinstance(value, bool) and widget_types[key] != "bool":
+            if allowed is not None:
+                if isinstance(value, bool) and widget_types[key] != "bool":
+                    raise WorkflowCatalogError(
+                        f"{label}: widget '{key}' on '{node.id}' expects "
+                        f"{widget_types[key]}, got bool"
+                    )
+                if not isinstance(value, allowed):
+                    raise WorkflowCatalogError(
+                        f"{label}: widget '{key}' on '{node.id}' expects "
+                        f"{widget_types[key]}, got {type(value).__name__}"
+                    )
+            options = widget_options[key]
+            if options and not widget_choice_allowed(value, options):
                 raise WorkflowCatalogError(
-                    f"{label}: widget '{key}' on '{node.id}' expects "
-                    f"{widget_types[key]}, got bool"
-                )
-            if not isinstance(value, allowed):
-                raise WorkflowCatalogError(
-                    f"{label}: widget '{key}' on '{node.id}' expects "
-                    f"{widget_types[key]}, got {type(value).__name__}"
+                    f"{label}: widget '{key}' on '{node.id}' must be one of "
+                    f"{options!r}"
                 )
 
     occupancy: set[tuple[str, str]] = set()
@@ -160,22 +176,26 @@ def validate_workflow(info: WorkflowTemplateInfo) -> None:
                 )
         outputs = {socket.name: socket.data_type for socket in schemas[edge.source_node_id].outputs}
         inputs = {socket.name: socket.data_type for socket in schemas[edge.target_node_id].inputs}
+        widgets = {
+            widget.name: widget_socket_type(widget.data_type)
+            for widget in schemas[edge.target_node_id].widgets
+        }
         if edge.source_handle not in outputs:
             raise WorkflowCatalogError(
                 f"{label}: unknown output '{edge.source_handle}' on "
                 f"'{edge.source_node_id}'"
             )
-        if edge.target_handle not in inputs:
+        if edge.target_handle in inputs:
+            target_type = inputs[edge.target_handle]
+        elif edge.target_handle in widgets:
+            target_type = widgets[edge.target_handle]
+        else:
             raise WorkflowCatalogError(
-                f"{label}: unknown input '{edge.target_handle}' on "
+                f"{label}: unknown input or widget '{edge.target_handle}' on "
                 f"'{edge.target_node_id}'"
             )
         source_type = outputs[edge.source_handle]
-        target_type = inputs[edge.target_handle]
-        if (
-            source_type not in (SocketType.ANY, target_type)
-            and target_type is not SocketType.ANY
-        ):
+        if not socket_types_compatible(source_type, target_type):
             raise WorkflowCatalogError(
                 f"{label}: type mismatch {source_type.value} -> "
                 f"{target_type.value} for {edge.source_node_id}.{edge.source_handle}"
@@ -183,7 +203,7 @@ def validate_workflow(info: WorkflowTemplateInfo) -> None:
         key = (edge.target_node_id, edge.target_handle)
         if key in occupancy:
             raise WorkflowCatalogError(
-                f"{label}: input '{edge.target_handle}' of "
+                f"{label}: parameter '{edge.target_handle}' of "
                 f"'{edge.target_node_id}' is wired twice"
             )
         occupancy.add(key)

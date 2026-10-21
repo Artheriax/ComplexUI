@@ -2,10 +2,13 @@
 
 Call :func:`configure_logging` once at startup; modules then use
 ``logging.getLogger("complexui.<area>")`` so every step of a parse, approval,
-install or execution is narrated on the console.
+install or execution is narrated on the console. Daily plain-text logs are
+written under ``backend/workspace/logs`` by default; set ``COMPLEXUI_LOG_DIR``
+to relocate them or to ``0`` to disable file logging.
 
-Set ``COMPLEXUI_LOG_FORMAT=json`` for newline-delimited JSON application logs
-(one object per line) suitable for shipping to a log collector.
+Set ``COMPLEXUI_LOG_FORMAT=json`` for newline-delimited JSON console logs (one
+object per line) suitable for shipping to a log collector. Files stay in the
+human-readable text format.
 """
 
 from __future__ import annotations
@@ -14,15 +17,23 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import IO, Any
+
+from .workspace import workspace_root
 
 __all__ = [
     "ConsoleFormatter",
+    "DailyTextFileHandler",
+    "DEFAULT_LOG_DIR",
+    "FileFormatter",
     "JsonFormatter",
     "LogFormat",
     "configure_logging",
+    "resolve_log_dir",
 ]
 
 _DIM = "\x1b[2m"
@@ -36,7 +47,9 @@ _LEVEL_COLORS = {
 }
 _LEVEL_WIDTH = 8
 _HANDLER_MARKER = "_complexui_console_handler"
+_FILE_HANDLER_MARKER = "_complexui_file_handler"
 _FORMAT_ENV = "COMPLEXUI_LOG_FORMAT"
+_LOG_DIR_ENV = "COMPLEXUI_LOG_DIR"
 _LEVEL_ALIASES = {"WARN": "WARNING", "FATAL": "CRITICAL"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _RESERVED_RECORD_KEYS = {
@@ -64,6 +77,7 @@ _RESERVED_RECORD_KEYS = {
     "thread",
     "threadName",
 }
+DEFAULT_LOG_DIR = Path(__file__).resolve().parents[1] / "workspace" / "logs"
 
 
 class LogFormat(StrEnum):
@@ -98,6 +112,25 @@ class ConsoleFormatter(logging.Formatter):
         )
 
 
+class FileFormatter(logging.Formatter):
+    """Plain timestamped output for persistent ``.txt`` logs (never ANSI)."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = (
+            f"{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}."
+            f"{int(record.msecs):03d}"
+        )
+        message = record.getMessage()
+        if record.exc_info:
+            message = f"{message}\n{self.formatException(record.exc_info)}"
+        if record.stack_info:
+            message = f"{message}\n{self.formatStack(record.stack_info)}"
+        return (
+            f"{timestamp} {record.levelname.ljust(_LEVEL_WIDTH)} "
+            f"{record.name} {message}"
+        )
+
+
 class JsonFormatter(logging.Formatter):
     """Render each record as a single JSON object, including ``extra`` fields."""
 
@@ -121,6 +154,93 @@ class JsonFormatter(logging.Formatter):
             default=str,
             separators=(",", ":"),
         )
+
+
+class DailyTextFileHandler(logging.Handler):
+    """Append to ``<prefix>-YYYY-MM-DD.txt`` and prune old daily files."""
+
+    def __init__(
+        self,
+        directory: str | Path,
+        *,
+        prefix: str = "complexui",
+        retention_days: int = 14,
+    ) -> None:
+        super().__init__()
+        if retention_days < 1:
+            raise ValueError("retention_days must be at least 1")
+        self._directory = Path(directory).expanduser()
+        self._prefix = prefix
+        self._retention_days = retention_days
+        self._stream: IO[str] | None = None
+        self._day: str | None = None
+        self._directory.mkdir(parents=True, exist_ok=True)
+        self._prune()
+
+    @property
+    def directory(self) -> Path:
+        return self._directory
+
+    @property
+    def current_path(self) -> Path | None:
+        if self._day is None:
+            return None
+        return self._directory / f"{self._prefix}-{self._day}.txt"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._ensure_stream()
+            stream = self._stream
+            if stream is None:
+                return
+            stream.write(self.format(record) + "\n")
+            stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        self._close_stream()
+        super().close()
+
+    def _ensure_stream(self) -> None:
+        day = datetime.now().astimezone().date().isoformat()
+        if self._stream is not None and self._day == day:
+            return
+        self._close_stream()
+        path = self._directory / f"{self._prefix}-{day}.txt"
+        self._stream = path.open("a", encoding="utf-8")
+        self._day = day
+        self._prune()
+
+    def _close_stream(self) -> None:
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+
+    def _prune(self) -> None:
+        cutoff = time.time() - self._retention_days * 86_400
+        for path in self._directory.glob(f"{self._prefix}-*.txt"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                # A log file locked by another process must not break logging.
+                continue
+
+
+def resolve_log_dir() -> Path | None:
+    """Return the configured log directory, or ``None`` when disabled.
+
+    Logs follow ``COMPLEXUI_WORKSPACE`` unless ``COMPLEXUI_LOG_DIR`` overrides
+    them explicitly.
+    """
+    raw = os.environ.get(_LOG_DIR_ENV)
+    if raw is None:
+        return workspace_root() / "logs"
+    value = raw.strip()
+    if not value or value.lower() in _FALSE_VALUES:
+        return None
+    return Path(value).expanduser()
 
 
 def _iso_timestamp(created: float) -> str:
@@ -187,13 +307,18 @@ def configure_logging(
     color: bool | None = None,
     log_format: str | LogFormat | None = None,
     stream: IO[str] | None = None,
+    log_dir: str | Path | None = None,
+    retention_days: int = 14,
+    file_prefix: str = "complexui",
 ) -> logging.Logger:
     """Configure the ``complexui`` logger tree and return it.
 
-    Repeated calls update the level and replace the managed handler, so
-    callers can switch between text/JSON output or targets without stacking
-    handlers. The format defaults to ``COMPLEXUI_LOG_FORMAT`` (``text`` or
-    ``json``).
+    Repeated calls update the level and replace managed console/file handlers,
+    so callers can switch between text/JSON output or targets without stacking
+    handlers. The console format defaults to ``COMPLEXUI_LOG_FORMAT`` (``text``
+    or ``json``). Passing ``log_dir`` additionally writes daily plain-text files
+    named ``<file_prefix>-YYYY-MM-DD.txt`` and prunes files older than
+    ``retention_days``.
     """
     logger = logging.getLogger("complexui")
     logger.setLevel(_coerce_level(level))
@@ -206,7 +331,9 @@ def configure_logging(
         formatter = ConsoleFormatter(color=_should_color(color, target))
 
     for handler in list(logger.handlers):
-        if getattr(handler, _HANDLER_MARKER, False):
+        if getattr(handler, _HANDLER_MARKER, False) or getattr(
+            handler, _FILE_HANDLER_MARKER, False
+        ):
             logger.removeHandler(handler)
             handler.close()
     handler = logging.StreamHandler(target)
@@ -214,4 +341,19 @@ def configure_logging(
     setattr(handler, _HANDLER_MARKER, True)
     logger.addHandler(handler)
     logger.propagate = False
+
+    if log_dir is not None:
+        try:
+            file_handler = DailyTextFileHandler(
+                log_dir,
+                prefix=file_prefix,
+                retention_days=retention_days,
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("file logging disabled: %s", exc)
+        else:
+            file_handler.setFormatter(FileFormatter())
+            setattr(file_handler, _FILE_HANDLER_MARKER, True)
+            logger.addHandler(file_handler)
+
     return logger

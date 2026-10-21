@@ -5,15 +5,21 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
 from app.logging_setup import (
     ConsoleFormatter,
+    DailyTextFileHandler,
+    FileFormatter,
     JsonFormatter,
     _should_color,
     configure_logging,
+    resolve_log_dir,
 )
 
 
@@ -65,6 +71,86 @@ def test_formatter_includes_exception_text() -> None:
         )
     output = formatter.format(record)
     assert "ValueError: boom" in output
+
+
+def test_file_formatter_is_plain_and_timestamped() -> None:
+    output = FileFormatter().format(_record(logging.INFO, "persisted"))
+
+    assert "persisted" in output
+    assert "complexui.test" in output
+    assert "\x1b[" not in output
+    assert output[:4].isdigit()
+
+
+def test_configure_logging_writes_daily_text_file(tmp_path: Path) -> None:
+    logger = configure_logging(
+        "DEBUG", color=False, log_dir=tmp_path, retention_days=3
+    )
+
+    logger.info("persisted message", extra={"run_id": "run-1"})
+    handlers = [
+        handler
+        for handler in logger.handlers
+        if isinstance(handler, DailyTextFileHandler)
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    assert handler.current_path is not None
+    handler.flush()
+
+    files = list(tmp_path.glob("complexui-*.txt"))
+    assert files == [handler.current_path]
+    content = files[0].read_text(encoding="utf-8")
+    assert "persisted message" in content
+    assert "run-1" not in content
+    assert "\x1b[" not in content
+
+
+def test_configure_logging_replaces_managed_file_handler(tmp_path: Path) -> None:
+    logger = configure_logging("INFO", color=False, log_dir=tmp_path)
+
+    configure_logging(
+        "INFO", color=False, log_dir=tmp_path / "nested", retention_days=7
+    )
+
+    file_handlers = [
+        handler
+        for handler in logger.handlers
+        if isinstance(handler, DailyTextFileHandler)
+    ]
+    assert len(file_handlers) == 1
+    assert file_handlers[0].directory == tmp_path / "nested"
+
+
+def test_daily_file_handler_prunes_old_logs(tmp_path: Path) -> None:
+    old = tmp_path / "complexui-2000-01-01.txt"
+    current = tmp_path / "complexui-2099-01-01.txt"
+    old.write_text("old", encoding="utf-8")
+    current.write_text("current", encoding="utf-8")
+    old_time = time.time() - 3 * 86_400
+    old.touch()
+    os.utime(old, (old_time, old_time))
+
+    DailyTextFileHandler(tmp_path, retention_days=1)
+
+    assert not old.exists()
+    assert current.exists()
+
+
+def test_daily_file_handler_rejects_invalid_retention(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="retention_days"):
+        DailyTextFileHandler(tmp_path, retention_days=0)
+
+
+def test_resolve_log_dir_honors_environment(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("COMPLEXUI_LOG_DIR", str(tmp_path))
+    assert resolve_log_dir() == tmp_path
+
+    monkeypatch.setenv("COMPLEXUI_LOG_DIR", "off")
+    assert resolve_log_dir() is None
+
+    monkeypatch.delenv("COMPLEXUI_LOG_DIR")
+    assert resolve_log_dir() is not None
 
 
 def test_configure_logging_is_idempotent_and_updates_level() -> None:
@@ -194,6 +280,42 @@ def test_execution_events_log_structured_context() -> None:
     assert payload["error_type"] == "ValueError"
     assert payload["line"] == 3
     assert payload["message"] == "  [error] n1: ValueError (line 3): boom"
+
+
+def test_per_run_log_captures_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.main import _close_run_log, _log_event, _open_run_log
+    from app.schemas import EventType, ExecutionEvent
+
+    monkeypatch.setenv("COMPLEXUI_LOG_DIR", str(tmp_path))
+    run_logger, handler = _open_run_log("run-test")
+    assert run_logger is not None
+    assert handler is not None
+    _log_event(
+        ExecutionEvent(
+            type=EventType.EXECUTION_STARTED,
+            node_id="",
+            data={"run_id": "run-test", "order": ["a", "b"]},
+        ),
+        target=run_logger,
+    )
+    _log_event(
+        ExecutionEvent(
+            type=EventType.EXECUTION_COMPLETED,
+            node_id="",
+            data={"run_id": "run-test", "duration_ms": 12.5, "cached": {}},
+        ),
+        target=run_logger,
+    )
+    handler.flush()
+    path = tmp_path / "runs" / "run-test.txt"
+    content = path.read_text(encoding="utf-8")
+    _close_run_log(run_logger, handler)
+
+    assert "run run-test started: 2 node(s)" in content
+    assert "run run-test completed in 12.5ms" in content
+    assert run_logger.handlers == []
 
 
 def test_should_color_prefers_explicit_value(monkeypatch) -> None:

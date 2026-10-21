@@ -38,6 +38,7 @@ from .schemas import (
     SyntaxErrorInfo,
     WidgetParam,
     normalize_socket_type,
+    widget_choice_allowed,
 )
 
 __all__ = [
@@ -73,6 +74,7 @@ class TranspileResult:
 
     schema: NodeSchema
     func: Callable[..., Any]
+    func_name: str
     source: str
     line_offset: int
 
@@ -119,6 +121,7 @@ def transpile_node(code: str, node_id: str = "node") -> TranspileResult:
     return TranspileResult(
         schema=analysis.schema,
         func=func,
+        func_name=analysis.func_name,
         source=analysis.source,
         line_offset=analysis.line_offset,
     )
@@ -487,6 +490,66 @@ def _annotation_text(node: ast.expr) -> str:
     return ast.unparse(node)
 
 
+def _literal_subscript(annotation: ast.expr) -> ast.Subscript | None:
+    candidate = annotation
+    if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+        try:
+            candidate = ast.parse(candidate.value, mode="eval").body
+        except SyntaxError:
+            return None
+    if not isinstance(candidate, ast.Subscript):
+        return None
+    base = candidate.value
+    if isinstance(base, ast.Name):
+        return candidate if base.id == "Literal" else None
+    if isinstance(base, ast.Attribute):
+        return candidate if base.attr == "Literal" else None
+    return None
+
+
+def _literal_widget_options(annotation: ast.Subscript) -> tuple[list[Any], str]:
+    elements = (
+        annotation.slice.elts
+        if isinstance(annotation.slice, ast.Tuple)
+        else [annotation.slice]
+    )
+    options: list[Any] = []
+    kinds: set[str] = set()
+    for element in elements:
+        try:
+            option = ast.literal_eval(element)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(
+                "Literal widget options must be literal values"
+            ) from exc
+        if isinstance(option, bool):
+            kind = "bool"
+        elif isinstance(option, int):
+            kind = "int"
+        elif isinstance(option, float):
+            kind = "float"
+        elif isinstance(option, str):
+            kind = "str"
+        else:
+            raise ValueError(
+                "Literal widget options must be strings, integers, "
+                "floats or booleans"
+            )
+        options.append(option)
+        kinds.add(kind)
+    if not options:
+        raise ValueError("Literal widgets need at least one option")
+    if kinds <= {"int", "float"}:
+        data_type = "float" if "float" in kinds else "int"
+    elif len(kinds) == 1:
+        data_type = next(iter(kinds))
+    else:
+        raise ValueError(
+            "Literal widget options must share one scalar type"
+        )
+    return options, data_type
+
+
 def _extract_bindings(source: str) -> _Bindings:
     inputs: list[InputSocket] = []
     widgets: list[WidgetParam] = []
@@ -549,6 +612,20 @@ def _extract_bindings(source: str) -> _Bindings:
                 InputSocket(name=name, data_type=normalize_socket_type(type_text))
             )
             continue
+        options: list[Any] = []
+        literal = _literal_subscript(node.annotation)
+        if literal is not None:
+            try:
+                options, type_text = _literal_widget_options(literal)
+            except ValueError as exc:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=str(exc),
+                    )
+                )
+                continue
         try:
             default = ast.literal_eval(node.value)
         except (ValueError, TypeError, SyntaxError) as exc:
@@ -563,9 +640,26 @@ def _extract_bindings(source: str) -> _Bindings:
                 )
             )
             continue
+        if options and not widget_choice_allowed(default, options):
+            errors.append(
+                SyntaxErrorInfo(
+                    line=node.lineno,
+                    column=node.col_offset,
+                    message=(
+                        f"Widget default for '{name}' must be one of "
+                        f"{options!r}"
+                    ),
+                )
+            )
+            continue
         seen[name] = "widget"
         widgets.append(
-            WidgetParam(name=name, data_type=type_text, default=default)
+            WidgetParam(
+                name=name,
+                data_type=type_text,
+                default=default,
+                options=options,
+            )
         )
     return _Bindings(inputs, widgets, hoisted_imports, blank_spans, errors)
 

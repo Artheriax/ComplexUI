@@ -8,7 +8,7 @@ import {
   DEFAULT_SETTINGS,
   useSettingsStore,
 } from "../store/useSettingsStore";
-import type { TemplateInfo } from "../types/graph";
+import type { SubgraphDefinition, TemplateInfo } from "../types/graph";
 import { NodeLibrary } from "./NodeLibrary";
 
 afterEach(cleanup);
@@ -60,11 +60,36 @@ beforeEach(() => {
     templates,
     templatesLoaded: true,
     templatesError: null,
+    nodes: [],
+    subgraphs: {},
+    scopeStack: [],
   });
   useSettingsStore.setState({
     settings: { ...DEFAULT_SETTINGS },
     isOpen: false,
   });
+});
+
+test("lists reusable subgraphs and inserts instances", () => {
+  const definition: SubgraphDefinition = {
+    id: "def-1",
+    name: "Reusable",
+    inputs: [{ name: "df", data_type: "DATAFRAME" }],
+    outputs: [],
+    nodes: [],
+    edges: [],
+    inputPosition: { x: 0, y: 0 },
+    outputPosition: { x: 0, y: 0 },
+  };
+  useGraphStore.setState({ subgraphs: { "def-1": definition } });
+
+  render(createElement(NodeLibrary));
+  fireEvent.click(screen.getByText("Reusable"));
+
+  const state = useGraphStore.getState();
+  expect(state.nodes).toHaveLength(1);
+  expect(state.nodes[0]?.data.isSubgraph).toBe(true);
+  expect(state.nodes[0]?.data.subgraphId).toBe("def-1");
 });
 
 test("groups templates by category in catalog order", () => {
@@ -128,14 +153,6 @@ test("search with no results shows the empty state", () => {
   });
 
   expect(screen.getByText(/No templates match “zzz”/)).toBeTruthy();
-});
-
-test("opens settings from the palette footer button", () => {
-  render(createElement(NodeLibrary));
-
-  fireEvent.click(screen.getByRole("button", { name: /Settings/ }));
-
-  expect(useSettingsStore.getState().isOpen).toBe(true);
 });
 
 test("categories start collapsed, expand on click, and search force-expands them", () => {

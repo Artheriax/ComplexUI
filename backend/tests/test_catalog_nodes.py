@@ -58,9 +58,7 @@ def _single(code: str, widgets: dict[str, object] | None = None):
         ("load_digits", 1797, 65),
     ],
 )
-def test_builtin_sklearn_loaders_produce_dataframes(
-    name: str, rows: int, cols: int
-) -> None:
+def test_builtin_sklearn_loaders_produce_dataframes(name: str, rows: int, cols: int) -> None:
     result = _single(_templates()[name])
     preview = result.previews["node"]["df"]
     assert preview["rows"] == rows
@@ -265,7 +263,10 @@ def test_drop_columns_without_selection_raises() -> None:
         execute_graph(graph)
 
 
-def test_file_loaders_read_csv_parquet_excel_and_ndjson(tmp_path: Path) -> None:
+def test_file_loaders_read_csv_parquet_excel_and_ndjson(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COMPLEXUI_WORKSPACE", str(tmp_path))
     templates = _templates()
     table = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
 

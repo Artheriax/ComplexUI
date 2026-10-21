@@ -1,8 +1,12 @@
 import type { XYPosition } from "@xyflow/react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { nodeSearchPlacement } from "../lib/nodeSearchPlacement";
 import { matchTemplateConnection } from "../lib/socketCompatibility";
 import type { TemplateConnectionMatch } from "../lib/socketCompatibility";
 import { searchTemplates } from "../lib/templateSearch";
@@ -20,7 +24,10 @@ interface NodeSearchPopupProps {
   flowPosition: XYPosition;
   connection: PendingConnection | null;
   onClose: () => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
 }
+
+
 
 interface SearchItem {
   key: string;
@@ -71,6 +78,7 @@ export function NodeSearchPopup({
   flowPosition,
   connection,
   onClose,
+  inputRef: externalInputRef,
 }: NodeSearchPopupProps) {
   const templates = useGraphStore((state) => state.templates);
   const templatesLoaded = useGraphStore((state) => state.templatesLoaded);
@@ -86,7 +94,8 @@ export function NodeSearchPopup({
   const [activeIndex, setActiveIndex] = useState(0);
   const [showAll, setShowAll] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const localInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = externalInputRef ?? localInputRef;
   const listId = useId();
 
   const templateItems = useMemo<SearchItem[]>(() => {
@@ -142,11 +151,16 @@ export function NodeSearchPopup({
 
   useEffect(() => {
     inputRef.current?.focus();
-  }, []);
+  }, [inputRef]);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      const inCompanion =
+        target instanceof Element &&
+        target.closest("[data-canvas-context-menu]") !== null;
       if (
+        !inCompanion &&
         popupRef.current &&
         !popupRef.current.contains(event.target as Node)
       ) {
@@ -218,18 +232,12 @@ export function NodeSearchPopup({
     }
   };
 
-  const left = Math.max(
-    8,
-    Math.min(anchor.x, window.innerWidth - 336),
-  );
-  const top = Math.max(
-    8,
-    Math.min(anchor.y, window.innerHeight - 400),
-  );
+  const { left, top } = nodeSearchPlacement(anchor);
 
   return createPortal(
     <div
       ref={popupRef}
+      data-node-search-popup="true"
       className="fixed z-[60] w-80 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl"
       style={{ left, top }}
       onContextMenu={(event) => event.preventDefault()}

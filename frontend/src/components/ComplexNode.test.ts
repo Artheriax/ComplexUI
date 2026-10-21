@@ -110,6 +110,31 @@ test("renders the persisted node color accent", () => {
   );
 });
 
+test("renders a shared subgraph manager without code controls", () => {
+  const managerData = {
+    ...data,
+    label: "Inputs",
+    subgraphRole: "input" as const,
+    schema: {
+      ...data.schema,
+      node_id: "__subgraph_input__",
+      outputs: [{ name: "df", data_type: "DATAFRAME" as const }],
+    },
+  };
+
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, { ...nodeProps(), data: managerData }),
+    ),
+  );
+
+  expect(container.textContent).toContain("Inputs");
+  expect(container.textContent).toContain("shared");
+  expect(container.textContent).not.toContain("Edit code");
+});
+
 test("renders dataframe previews as a table inside the node", () => {
   useGraphStore.setState({
     execution: {

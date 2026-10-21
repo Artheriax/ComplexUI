@@ -142,6 +142,35 @@ def test_request_size_limit_rejects_large_content_length() -> None:
     assert rejected.status_code == 413
 
 
+def test_request_size_override_uses_longest_matching_prefix() -> None:
+    limited = FastAPI()
+    limited.add_middleware(
+        RequestSizeLimitMiddleware,
+        max_bytes=32,
+        overrides={"/upload": 128, "/upload/nested": 16},
+    )
+
+    @limited.post("/upload")
+    def upload() -> dict[str, bool]:
+        return {"ok": True}
+
+    @limited.post("/upload/nested/item")
+    def nested() -> dict[str, bool]:
+        return {"ok": True}
+
+    @limited.post("/uploader")
+    def uploader() -> dict[str, bool]:
+        return {"ok": True}
+
+    with TestClient(limited) as limited_client:
+        assert limited_client.post("/upload", content=b"x" * 64).status_code == 200
+        assert (
+            limited_client.post("/upload/nested/item", content=b"x" * 64).status_code
+            == 413
+        )
+        assert limited_client.post("/uploader", content=b"x" * 64).status_code == 413
+
+
 def test_parse_code_limit(client: TestClient) -> None:
     response = client.post(
         "/api/parse", json={"code": "x" * (MAX_NODE_CODE_CHARS + 1)}

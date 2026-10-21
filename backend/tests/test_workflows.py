@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.executor import clear_cache, execute_graph
+from app.security import SecurityRegistry
 from app.workflow_catalog import (
     WORKFLOW_CATEGORIES,
     WorkflowCatalogError,
@@ -120,6 +121,84 @@ def test_catalog_rejects_socket_type_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(WorkflowCatalogError, match="type mismatch"):
         load_workflows(tmp_path)
+
+
+def test_catalog_accepts_widget_parameter_edges(tmp_path: Path) -> None:
+    payload = _base_payload(
+        "widget_wire",
+        [
+            {"id": "load", "template": "load_iris", "position": {"x": 0, "y": 0}},
+            {
+                "id": "size",
+                "template": "float_value",
+                "position": {"x": 0, "y": 200},
+                "widget_values": {"value": 0.5},
+            },
+            {
+                "id": "split",
+                "template": "train_test_split",
+                "position": {"x": 300, "y": 100},
+            },
+        ],
+        [
+            {
+                "source_node_id": "load",
+                "source_handle": "df",
+                "target_node_id": "split",
+                "target_handle": "df",
+            },
+            {
+                "source_node_id": "size",
+                "source_handle": "result",
+                "target_node_id": "split",
+                "target_handle": "test_size",
+            },
+        ],
+    )
+    _write_catalog(tmp_path, "widget_wire", payload)
+
+    workflow = load_workflows(tmp_path)["widget_wire"]
+    result = execute_graph(materialize_workflow(workflow))
+
+    assert result.previews["split"]["train"]["X_shape"] == [75, 4]
+    assert result.previews["split"]["test"]["X_shape"] == [75, 4]
+
+
+def test_catalog_rejects_values_outside_literal_choices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    templates_dir = tmp_path / "templates"
+    templates_dir.mkdir()
+    (templates_dir / "choice_node.py").write_text(
+        "from typing import Literal\n"
+        "level: Literal['low', 'medium', 'high'] = 'low'\n"
+        "return level: STRING\n",
+        encoding="utf-8",
+    )
+    registry = SecurityRegistry(templates_dir)
+    monkeypatch.setattr(
+        "app.workflow_catalog.get_security_registry",
+        lambda: registry,
+    )
+    workflows_dir = tmp_path / "workflows"
+    workflows_dir.mkdir()
+    payload = _base_payload(
+        "bad_choice",
+        [
+            {
+                "id": "choice",
+                "template": "choice_node",
+                "position": {"x": 0, "y": 0},
+                "widget_values": {"level": "extreme"},
+            }
+        ],
+        [],
+    )
+    _write_catalog(workflows_dir, "bad_choice", payload)
+
+    with pytest.raises(WorkflowCatalogError, match="must be one of"):
+        load_workflows(workflows_dir)
 
 
 def test_catalog_rejects_cycles(tmp_path: Path) -> None:

@@ -1,13 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../lib/hash";
-import { clearLocalWorkflow, saveLocalWorkflow } from "../lib/persistence";
+import {
+  clearLocalProjectIdentity,
+  clearLocalWorkflow,
+  saveLocalWorkflow,
+} from "../lib/persistence";
 import type { SavedWorkflow } from "../lib/persistence";
 import type {
+  AppEdge,
   AppNode,
+  InputSocket,
   NodeSchema,
+  OutputSocket,
   TemplateInfo,
   WorkflowTemplateInfo,
+} from "../types/graph";
+import {
+  NEW_SUBGRAPH_INPUT_HANDLE,
+  NEW_SUBGRAPH_OUTPUT_HANDLE,
+  SUBGRAPH_INPUT_NODE_ID,
+  SUBGRAPH_OUTPUT_NODE_ID,
 } from "../types/graph";
 import {
   SCRATCH_NODE_CODE,
@@ -57,8 +70,19 @@ function resetStore(): void {
     workflows: [],
     workflowsLoaded: false,
     workflowsError: null,
+    projects: [],
+    projectsLoaded: false,
+    projectsError: null,
+    projectName: null,
+    projectSlug: null,
+    saveDialogOpen: false,
+    saveBusy: false,
+    saveError: null,
     nodes: [],
     edges: [],
+    subgraphs: {},
+    scopeStack: [],
+    rootGraph: null,
     past: [],
     future: [],
     clipboard: null,
@@ -85,6 +109,7 @@ function resetStore(): void {
 beforeEach(() => {
   resetStore();
   clearLocalWorkflow();
+  clearLocalProjectIdentity();
   vi.unstubAllGlobals();
 });
 
@@ -552,6 +577,46 @@ describe("runGraph", () => {
     expect(execution.runId).toBe("run-42");
   });
 
+  it("does not overwrite a fast completion before the execute response", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    useGraphStore.getState().addNodeFromTemplate(template, { x: 0, y: 0 });
+
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const run = useGraphStore.getState().runGraph();
+    useGraphStore.getState().applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "run-fast", order: [] },
+    });
+    useGraphStore.getState().applyExecutionEvent({
+      type: "EXECUTION_COMPLETED",
+      node_id: "",
+      data: { previews: {}, cached: {} },
+    });
+
+    resolveFetch?.(
+      new Response(JSON.stringify({ status: "started", run_id: "run-fast" }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await run;
+    vi.unstubAllGlobals();
+
+    const execution = useGraphStore.getState().execution;
+    expect(execution.status).toBe("completed");
+    expect(execution.runId).toBe("run-fast");
+  });
+
   it("sends targets in the execute payload for run-to-node", async () => {
     const template = await makeTemplate();
     useGraphStore.setState({ templates: [template] });
@@ -574,8 +639,10 @@ describe("runGraph", () => {
     const body = JSON.parse((init?.body ?? "") as string) as {
       graph: { nodes: { id: string }[] };
       targets: string[] | null;
+      node_labels: Record<string, string>;
     };
     expect(body.targets).toEqual([sourceId]);
+    expect(body.node_labels).toEqual({ [sourceId]: "Demo Node" });
     expect(body.graph.nodes.map((node) => node.id)).toEqual([sourceId]);
   });
 
@@ -598,8 +665,10 @@ describe("runGraph", () => {
     const init = fetchMock.mock.calls[0]?.[1];
     const body = JSON.parse((init?.body ?? "") as string) as {
       targets: string[] | null;
+      node_labels: Record<string, string>;
     };
     expect(body.targets).toBeNull();
+    expect(Object.values(body.node_labels)).toEqual(["Demo Node"]);
   });
 });
 
@@ -830,6 +899,82 @@ describe("onConnect socket types", () => {
     });
     expect(useGraphStore.getState().edges).toHaveLength(1);
   });
+
+  it("creates a source node when dropped on a widget target", async () => {
+    const producer = await makeTemplate({
+      name: "float_value",
+      node_schema: makeSchema({
+        outputs: [{ name: "result", data_type: "FLOAT" }],
+      }),
+    });
+    const consumer = await makeTemplate({
+      name: "split",
+      node_schema: makeSchema({
+        widgets: [{ name: "test_size", data_type: "float", default: 0.2 }],
+      }),
+    });
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(consumer, { x: 200, y: 0 });
+
+    const createdId = useGraphStore
+      .getState()
+      .addConnectedNodeFromTemplate(producer, { x: 0, y: 0 }, {
+        nodeId: targetId,
+        handleId: "test_size",
+        handleType: "target",
+        dataType: "FLOAT",
+      });
+
+    expect(createdId).not.toBeNull();
+    const edge = useGraphStore.getState().edges[0];
+    expect(edge?.source).toBe(createdId?.nodeId);
+    expect(edge?.sourceHandle).toBe("result");
+    expect(edge?.targetHandle).toBe("test_size");
+  });
+
+  it("wires primitive outputs into widget parameters", async () => {
+    const producer = await makeTemplate({
+      name: "float_value",
+      node_schema: makeSchema({
+        outputs: [{ name: "result", data_type: "FLOAT" }],
+      }),
+    });
+    const consumer = await makeTemplate({
+      name: "split",
+      node_schema: makeSchema({
+        widgets: [{ name: "test_size", data_type: "float", default: 0.2 }],
+      }),
+    });
+    const sourceId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(producer, { x: 0, y: 0 });
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(consumer, { x: 200, y: 0 });
+    const conflictingId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(producer, { x: 0, y: 200 });
+
+    useGraphStore.getState().onConnect({
+      source: sourceId,
+      target: targetId,
+      sourceHandle: "result",
+      targetHandle: "test_size",
+    });
+
+    const edge = useGraphStore.getState().edges[0];
+    expect(edge?.target).toBe(targetId);
+    expect(edge?.targetHandle).toBe("test_size");
+
+    useGraphStore.getState().onConnect({
+      source: conflictingId,
+      target: targetId,
+      sourceHandle: "result",
+      targetHandle: "test_size",
+    });
+    expect(useGraphStore.getState().edges).toHaveLength(1);
+  });
 });
 
 describe("restoreWorkflow", () => {
@@ -838,7 +983,10 @@ describe("restoreWorkflow", () => {
     useGraphStore.setState({ templates: [template] });
     const parsedSchema = makeSchema({
       inputs: [{ name: "k", data_type: "ANY" }],
-      widgets: [{ name: "k", data_type: "int", default: 5 }],
+      widgets: [
+        { name: "k", data_type: "int", default: 5 },
+        { name: "w", data_type: "float", default: 0.2 },
+      ],
       outputs: [{ name: "k", data_type: "ANY" }],
     });
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(parsedSchema)));
@@ -868,6 +1016,7 @@ describe("restoreWorkflow", () => {
         { id: "e1", source: "n1", sourceHandle: "k", target: "n2", targetHandle: "k" },
         { id: "e2", source: "n1", sourceHandle: "missing", target: "n2", targetHandle: "k" },
         { id: "e3", source: "n1", sourceHandle: "k", target: "ghost", targetHandle: "k" },
+        { id: "e4", source: "n1", sourceHandle: "k", target: "n2", targetHandle: "w" },
       ],
     };
 
@@ -880,21 +1029,28 @@ describe("restoreWorkflow", () => {
     const restored = state.nodes.find((node) => node.id === "n1");
     expect(restored?.data.isTrusted).toBe(true);
     expect(restored?.data.templateCode).toBe(template.code);
-    expect(restored?.data.widgetValues).toEqual({ k: 7 });
+    expect(restored?.data.widgetValues).toEqual({ k: 7, w: 0.2 });
 
     const custom = state.nodes.find((node) => node.id === "n2");
     expect(custom?.data.isTrusted).toBe(false);
     expect(custom?.data.templateCode).toBeNull();
 
-    expect(state.edges).toHaveLength(1);
-    expect(state.edges[0]?.id).toBe("e1");
+    expect(state.edges.map((edge) => edge.id)).toEqual(["e1", "e4"]);
   });
 
   it("drops restored widget values that no longer match the schema", async () => {
     const template = await makeTemplate();
     useGraphStore.setState({ templates: [template] });
     const parsedSchema = makeSchema({
-      widgets: [{ name: "k", data_type: "int", default: 5 }],
+      widgets: [
+        { name: "k", data_type: "int", default: 5 },
+        {
+          name: "level",
+          data_type: "str",
+          default: "low",
+          options: ["low", "medium", "high"],
+        },
+      ],
     });
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(parsedSchema)));
 
@@ -907,7 +1063,7 @@ describe("restoreWorkflow", () => {
           label: "Demo Node",
           position: { x: 0, y: 0 },
           code: template.code,
-          widgetValues: { k: "not-a-number" },
+          widgetValues: { k: "not-a-number", level: "extreme" },
           templateName: "demo",
         },
       ],
@@ -917,6 +1073,7 @@ describe("restoreWorkflow", () => {
 
     expect(useGraphStore.getState().nodes[0]?.data.widgetValues).toEqual({
       k: 5,
+      level: "low",
     });
   });
 });
@@ -1610,6 +1767,35 @@ describe("addConnectedNodeFromTemplate", () => {
     });
   });
 
+  it("creates a source node when dragging from a widget parameter", async () => {
+    const producer = await makeTemplate();
+    const consumer = await makeTemplate({ name: "sink", title: "Sink" });
+    useGraphStore.setState({ templates: [producer, consumer] });
+    const targetId = useGraphStore
+      .getState()
+      .addNodeFromTemplate(consumer, { x: 300, y: 0 });
+
+    const created = useGraphStore.getState().addConnectedNodeFromTemplate(
+      producer,
+      { x: 60, y: 0 },
+      {
+        nodeId: targetId,
+        handleId: "k",
+        handleType: "target",
+        dataType: "INT",
+      },
+    );
+
+    expect(created).not.toBeNull();
+    expect(useGraphStore.getState().edges[0]).toEqual({
+      id: `${created?.nodeId}:k->${targetId}:k`,
+      source: created?.nodeId,
+      sourceHandle: "k",
+      target: targetId,
+      targetHandle: "k",
+    });
+  });
+
   it("rejects incompatible templates and occupied inputs", async () => {
     const metricsTemplate = await makeTemplate({
       node_schema: makeSchema({
@@ -1739,6 +1925,795 @@ describe("node selection and appearance", () => {
       .getState()
       .nodes.find((node) => node.id === pasted[0]);
     expect(copy?.position).toEqual({ x: 10, y: 20 });
+  });
+});
+
+describe("canvas arrangement", () => {
+  function makeNode(
+    id: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    selected = true,
+  ): AppNode {
+    return {
+      id,
+      type: "complex",
+      position: { x, y },
+      selected,
+      measured: { width, height },
+      data: {
+        label: id,
+        templateName: null,
+        templateCode: null,
+        code: "",
+        schema: makeSchema(),
+        widgetValues: {},
+        isTrusted: false,
+        color: "default",
+      },
+    };
+  }
+
+  function setNodes(nodes: AppNode[]): void {
+    useGraphStore.setState({ nodes, past: [], future: [] });
+  }
+
+  function positions(): Record<string, { x: number; y: number }> {
+    return Object.fromEntries(
+      useGraphStore
+        .getState()
+        .nodes.map((node) => [node.id, node.position]),
+    );
+  }
+
+  it.each([
+    ["align-left", { a: { x: 10, y: 20 }, b: { x: 10, y: 80 }, c: { x: 10, y: 40 } }],
+    [
+      "align-center-x",
+      { a: { x: 55, y: 20 }, b: { x: 75, y: 80 }, c: { x: 65, y: 40 } },
+    ],
+    [
+      "align-right",
+      { a: { x: 100, y: 20 }, b: { x: 140, y: 80 }, c: { x: 120, y: 40 } },
+    ],
+    ["align-top", { a: { x: 10, y: 20 }, b: { x: 50, y: 20 }, c: { x: 120, y: 20 } }],
+    [
+      "align-center-y",
+      { a: { x: 10, y: 60 }, b: { x: 50, y: 50 }, c: { x: 120, y: 40 } },
+    ],
+    [
+      "align-bottom",
+      { a: { x: 10, y: 100 }, b: { x: 50, y: 80 }, c: { x: 120, y: 60 } },
+    ],
+  ] as const)("applies %s", (mode, expected) => {
+    setNodes([
+      makeNode("a", 10, 20, 100, 40),
+      makeNode("b", 50, 80, 60, 60),
+      makeNode("c", 120, 40, 80, 80),
+    ]);
+
+    expect(useGraphStore.getState().arrangeSelection(mode)).toBe(true);
+    expect(positions()).toEqual(expected);
+
+    useGraphStore.getState().undo();
+    expect(positions()).toEqual({
+      a: { x: 10, y: 20 },
+      b: { x: 50, y: 80 },
+      c: { x: 120, y: 40 },
+    });
+  });
+
+  it("distributes three or more nodes with equal gaps", () => {
+    setNodes([
+      makeNode("a", 0, 0, 100, 40),
+      makeNode("b", 300, 50, 100, 40),
+      makeNode("c", 700, 100, 100, 40),
+    ]);
+
+    expect(useGraphStore.getState().arrangeSelection("distribute-x")).toBe(
+      true,
+    );
+    expect(positions()).toEqual({
+      a: { x: 0, y: 0 },
+      b: { x: 350, y: 50 },
+      c: { x: 700, y: 100 },
+    });
+
+    useGraphStore.setState((state) => ({
+      nodes: state.nodes.map((node) => ({
+        ...node,
+        position: {
+          x: node.position.x,
+          y: node.id === "a" ? 0 : node.id === "b" ? 30 : 200,
+        },
+      })),
+    }));
+    expect(useGraphStore.getState().arrangeSelection("distribute-y")).toBe(
+      true,
+    );
+    expect(positions()).toEqual({
+      a: { x: 0, y: 0 },
+      b: { x: 350, y: 100 },
+      c: { x: 700, y: 200 },
+    });
+  });
+
+  it("requires three selected nodes to distribute", () => {
+    setNodes([
+      makeNode("a", 0, 0, 100, 40),
+      makeNode("b", 300, 50, 100, 40),
+    ]);
+
+    expect(useGraphStore.getState().arrangeSelection("distribute-x")).toBe(
+      false,
+    );
+    expect(useGraphStore.getState().past).toHaveLength(0);
+  });
+
+  it("arranges selected nodes into a grid and leaves others alone", () => {
+    setNodes([
+      makeNode("a", 0, 0, 100, 40),
+      makeNode("b", 200, 20, 120, 60),
+      makeNode("c", 400, 40, 80, 80),
+      makeNode("d", 600, 60, 90, 50),
+      makeNode("outside", 900, 900, 100, 40, false),
+    ]);
+
+    expect(useGraphStore.getState().arrangeSelection("grid")).toBe(true);
+    expect(positions()).toEqual({
+      a: { x: 0, y: 0 },
+      b: { x: 148, y: 0 },
+      c: { x: 0, y: 92 },
+      d: { x: 148, y: 92 },
+      outside: { x: 900, y: 900 },
+    });
+  });
+
+  it("selects all nodes and clears the selection without history", () => {
+    setNodes([
+      makeNode("a", 0, 0, 100, 40, false),
+      makeNode("b", 200, 0, 100, 40, false),
+    ]);
+
+    useGraphStore.getState().selectAllNodes();
+    expect(
+      useGraphStore.getState().nodes.every((node) => node.selected),
+    ).toBe(true);
+    expect(useGraphStore.getState().past).toHaveLength(0);
+
+    useGraphStore.getState().clearSelection();
+    expect(
+      useGraphStore.getState().nodes.some((node) => node.selected),
+    ).toBe(false);
+    expect(useGraphStore.getState().past).toHaveLength(0);
+  });
+});
+
+describe("frames", () => {
+  function makeNode(
+    id: string,
+    x: number,
+    y: number,
+    selected = true,
+  ): AppNode {
+    return {
+      id,
+      type: "complex",
+      position: { x, y },
+      selected,
+      measured: { width: 100, height: 40 },
+      data: {
+        label: id,
+        templateName: null,
+        templateCode: null,
+        code: "",
+        schema: makeSchema(),
+        widgetValues: {},
+        isTrusted: false,
+        color: "default",
+      },
+    };
+  }
+
+  function setNodes(nodes: AppNode[]): void {
+    useGraphStore.setState({ nodes, edges: [], past: [], future: [] });
+  }
+
+  function node(id: string): AppNode | undefined {
+    return useGraphStore.getState().nodes.find((item) => item.id === id);
+  }
+
+  it("groups selected nodes into a frame and undoes in one step", () => {
+    setNodes([
+      makeNode("a", 10, 20),
+      makeNode("b", 50, 80),
+      makeNode("c", 400, 400, false),
+    ]);
+
+    const frameId = useGraphStore.getState().groupSelection();
+    expect(frameId).not.toBeNull();
+
+    const frame = node(frameId as string);
+    expect(frame?.data.isFrame).toBe(true);
+    expect(frame?.position).toEqual({ x: -14, y: -20 });
+    expect(frame?.width).toBe(280);
+    expect(frame?.height).toBe(180);
+    expect(frame?.selected).toBe(true);
+
+    const grouped = node("a");
+    expect(grouped?.parentId).toBe(frameId);
+    expect(grouped?.extent).toBe("parent");
+    expect(grouped?.selected).toBe(false);
+    expect(grouped?.position).toEqual({ x: 24, y: 40 });
+    expect(node("b")?.position).toEqual({ x: 64, y: 100 });
+    expect(node("c")?.parentId).toBeUndefined();
+
+    const payload = serialiseGraph(
+      useGraphStore.getState().nodes,
+      useGraphStore.getState().edges,
+    );
+    expect(payload.nodes.map((item) => item.id).sort()).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().nodes).toHaveLength(3);
+    expect(node("a")?.parentId).toBeUndefined();
+    expect(node("a")?.position).toEqual({ x: 10, y: 20 });
+    expect(node("a")?.selected).toBe(true);
+  });
+
+  it("ungroups a selected frame while preserving absolute positions", () => {
+    setNodes([makeNode("a", 10, 20), makeNode("b", 50, 80)]);
+    const frameId = useGraphStore.getState().groupSelection();
+    expect(frameId).not.toBeNull();
+
+    expect(useGraphStore.getState().ungroupSelection()).toBe(true);
+
+    expect(node(frameId as string)).toBeUndefined();
+    expect(node("a")?.parentId).toBeUndefined();
+    expect(node("a")?.selected).toBe(true);
+    expect(node("a")?.position).toEqual({ x: 10, y: 20 });
+    expect(node("b")?.position).toEqual({ x: 50, y: 80 });
+
+    useGraphStore.getState().undo();
+    expect(node(frameId as string)?.data.isFrame).toBe(true);
+    expect(node("a")?.parentId).toBe(frameId);
+  });
+
+  it("deleting a frame keeps unselected children and their positions", () => {
+    setNodes([makeNode("a", 10, 20), makeNode("b", 50, 80)]);
+    const frameId = useGraphStore.getState().groupSelection();
+    expect(frameId).not.toBeNull();
+
+    expect(useGraphStore.getState().deleteSelection()).toBe(true);
+
+    expect(node(frameId as string)).toBeUndefined();
+    expect(node("a")?.parentId).toBeUndefined();
+    expect(node("a")?.extent).toBeUndefined();
+    expect(node("a")?.position).toEqual({ x: 10, y: 20 });
+    expect(node("b")?.position).toEqual({ x: 50, y: 80 });
+  });
+
+  it("copies and pastes a frame together with its children", async () => {
+    setNodes([makeNode("a", 10, 20), makeNode("b", 50, 80)]);
+    const frameId = useGraphStore.getState().groupSelection();
+    expect(frameId).not.toBeNull();
+
+    expect(useGraphStore.getState().copySelection()).toBe(true);
+    expect(useGraphStore.getState().clipboard?.nodes).toHaveLength(3);
+
+    const pasted = await useGraphStore.getState().pasteClipboard();
+    expect(pasted).toHaveLength(3);
+
+    const state = useGraphStore.getState();
+    const frames = state.nodes.filter((item) => item.data.isFrame);
+    expect(frames).toHaveLength(2);
+    const pastedFrame = frames.find((item) => item.id !== frameId);
+    expect(pastedFrame).toBeDefined();
+    const children = state.nodes.filter(
+      (item) => item.parentId === pastedFrame?.id,
+    );
+    expect(children).toHaveLength(2);
+    expect(children.map((item) => item.position)).toEqual(
+      expect.arrayContaining([
+        { x: 24, y: 40 },
+        { x: 64, y: 100 },
+      ]),
+    );
+    expect(children.every((item) => item.selected)).toBe(true);
+    expect(
+      state.nodes.filter((item) => item.parentId === frameId),
+    ).toHaveLength(2);
+  });
+
+  it("unparents children when React Flow removes a frame", () => {
+    setNodes([makeNode("a", 10, 20), makeNode("b", 50, 80)]);
+    const frameId = useGraphStore.getState().groupSelection();
+    expect(frameId).not.toBeNull();
+
+    useGraphStore.getState().onNodesChange([
+      { type: "remove", id: frameId as string },
+    ]);
+
+    expect(node(frameId as string)).toBeUndefined();
+    expect(node("a")?.parentId).toBeUndefined();
+    expect(node("a")?.position).toEqual({ x: 10, y: 20 });
+  });
+
+  it("restores frames before their children with dimensions intact", async () => {
+    const saved: SavedWorkflow = {
+      version: 1,
+      savedAt: "",
+      nodes: [
+        {
+          id: "child",
+          label: "Child",
+          position: { x: 24, y: 40 },
+          code: "return 1: ANY\n",
+          widgetValues: {},
+          templateName: null,
+          parentId: "frame",
+        },
+        {
+          id: "frame",
+          label: "Frame 1",
+          position: { x: 100, y: 100 },
+          code: "",
+          widgetValues: {},
+          templateName: null,
+          isFrame: true,
+          width: 640,
+          height: 420,
+        },
+      ],
+      edges: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(makeSchema({ node_id: "child" }))),
+    );
+
+    await useGraphStore.getState().restoreWorkflow(saved);
+    vi.unstubAllGlobals();
+
+    const state = useGraphStore.getState();
+    expect(state.nodes.map((item) => item.id)).toEqual(["frame", "child"]);
+    const frame = state.nodes[0];
+    expect(frame?.width).toBe(640);
+    expect(frame?.height).toBe(420);
+    expect(frame?.data.isFrame).toBe(true);
+    expect(state.nodes[1]?.parentId).toBe("frame");
+    expect(state.nodes[1]?.extent).toBe("parent");
+  });
+});
+
+describe("subgraphs", () => {
+  function makeNode(
+    id: string,
+    inputs: InputSocket[],
+    outputs: OutputSocket[],
+    x: number,
+    y: number,
+    selected = false,
+  ): AppNode {
+    return {
+      id,
+      type: "complex",
+      position: { x, y },
+      selected,
+      measured: { width: 200, height: 100 },
+      data: {
+        label: id.toUpperCase(),
+        templateName: null,
+        templateCode: null,
+        code: "value = 1\nreturn value: ANY\n",
+        schema: makeSchema({
+          node_id: id,
+          inputs,
+          outputs,
+        }),
+        widgetValues: {},
+        isTrusted: true,
+        color: "default",
+      },
+    };
+  }
+
+  function makeEdge(
+    source: string,
+    sourceHandle: string,
+    target: string,
+    targetHandle: string,
+  ): AppEdge {
+    return {
+      id: `${source}:${sourceHandle}->${target}:${targetHandle}`,
+      source,
+      sourceHandle,
+      target,
+      targetHandle,
+    };
+  }
+
+  function setGraph(): void {
+    const source = makeNode(
+      "src",
+      [],
+      [{ name: "df", data_type: "DATAFRAME" }],
+      0,
+      0,
+    );
+    const a = makeNode(
+      "a",
+      [{ name: "df", data_type: "DATAFRAME" }],
+      [{ name: "mid", data_type: "ANY" }],
+      200,
+      40,
+      true,
+    );
+    const b = makeNode(
+      "b",
+      [{ name: "mid", data_type: "ANY" }],
+      [{ name: "result", data_type: "ANY" }],
+      400,
+      80,
+      true,
+    );
+    const sink = makeNode(
+      "sink",
+      [{ name: "result", data_type: "ANY" }],
+      [],
+      600,
+      40,
+    );
+    useGraphStore.setState({
+      nodes: [source, a, b, sink],
+      edges: [
+        makeEdge("src", "df", "a", "df"),
+        makeEdge("a", "mid", "b", "mid"),
+        makeEdge("b", "result", "sink", "result"),
+      ],
+      subgraphs: {},
+      scopeStack: [],
+      rootGraph: null,
+      past: [],
+      future: [],
+      clipboard: null,
+    });
+  }
+
+  it("creates a subgraph, rewires boundary edges and undoes it", () => {
+    setGraph();
+    const instanceId = useGraphStore.getState().createSubgraphFromSelection();
+    expect(instanceId).not.toBeNull();
+
+    const state = useGraphStore.getState();
+    const instance = state.nodes.find((node) => node.id === instanceId);
+    expect(instance?.data.isSubgraph).toBe(true);
+    expect(instance?.data.schema.inputs.map((socket) => socket.name)).toEqual([
+      "df",
+    ]);
+    expect(instance?.data.schema.outputs.map((socket) => socket.name)).toEqual([
+      "result",
+    ]);
+    expect(state.nodes.map((node) => node.id).sort()).toEqual(
+      [instanceId as string, "sink", "src"].sort(),
+    );
+    expect(Object.keys(state.subgraphs)).toHaveLength(1);
+    const document = state.getWorkflowDocument();
+    expect(Object.keys(document.subgraphs ?? {})).toHaveLength(1);
+    const savedDefinition = Object.values(document.subgraphs ?? {})[0];
+    expect(
+      savedDefinition?.nodes.some(
+        (node) =>
+          node.id === SUBGRAPH_INPUT_NODE_ID ||
+          node.id === SUBGRAPH_OUTPUT_NODE_ID,
+      ),
+    ).toBe(false);
+
+    const flattened = state.getExecutionGraph();
+    expect(flattened.graph.nodes.map((node) => node.id).sort()).toEqual(
+      [`sub:${instanceId}/a`, `sub:${instanceId}/b`, "sink", "src"].sort(),
+    );
+    expect(flattened.labels[`sub:${instanceId}/a`]).toBe("A");
+    expect(flattened.graph.edges).toHaveLength(3);
+
+    useGraphStore.getState().undo();
+    expect(Object.keys(useGraphStore.getState().subgraphs)).toHaveLength(0);
+    expect(useGraphStore.getState().nodes).toHaveLength(4);
+    expect(useGraphStore.getState().nodes.some((node) => node.data.isSubgraph)).toBe(
+      false,
+    );
+  });
+
+  it("enters and exits the nested canvas with shared managers", () => {
+    setGraph();
+    const instanceId = useGraphStore.getState().createSubgraphFromSelection();
+    expect(instanceId).not.toBeNull();
+
+    expect(useGraphStore.getState().enterSubgraph(instanceId as string)).toBe(
+      true,
+    );
+    const nested = useGraphStore.getState();
+    expect(nested.scopeStack).toHaveLength(1);
+    expect(nested.nodes.map((node) => node.id).sort()).toEqual([
+      SUBGRAPH_INPUT_NODE_ID,
+      SUBGRAPH_OUTPUT_NODE_ID,
+      "a",
+      "b",
+    ]);
+    expect(nested.edges.some((edge) => edge.source === SUBGRAPH_INPUT_NODE_ID)).toBe(
+      true,
+    );
+    expect(nested.edges.some((edge) => edge.target === SUBGRAPH_OUTPUT_NODE_ID)).toBe(
+      true,
+    );
+
+    const flatWhileNested = nested.getExecutionGraph();
+    expect(
+      flatWhileNested.graph.nodes.map((node) => node.id).sort(),
+    ).toEqual(
+      [`sub:${instanceId}/a`, `sub:${instanceId}/b`, "sink", "src"].sort(),
+    );
+
+    expect(useGraphStore.getState().exitSubgraph()).toBe(true);
+    expect(useGraphStore.getState().scopeStack).toHaveLength(0);
+    expect(useGraphStore.getState().nodes).toHaveLength(3);
+  });
+
+  it("reuses definitions and flattens nested subgraphs with path ids", () => {
+    setGraph();
+    const outerInstance = useGraphStore
+      .getState()
+      .createSubgraphFromSelection();
+    expect(outerInstance).not.toBeNull();
+    const outerDefinition = useGraphStore.getState().nodes.find(
+      (node) => node.id === outerInstance,
+    )?.data.subgraphId as string;
+
+    const second = useGraphStore.getState().addSubgraphInstance(
+      outerDefinition,
+      { x: 800, y: 200 },
+    );
+    expect(second).not.toBeNull();
+    expect(
+      useGraphStore.getState().getExecutionGraph().graph.nodes.filter((node) =>
+        node.id.startsWith("sub:"),
+      ),
+    ).toHaveLength(4);
+
+    useGraphStore.getState().enterSubgraph(outerInstance as string);
+    useGraphStore.setState((state) => ({
+      nodes: state.nodes.map((node) =>
+        node.id === "a" || node.id === "b"
+          ? { ...node, selected: true }
+          : node,
+      ),
+    }));
+    const innerInstance = useGraphStore
+      .getState()
+      .createSubgraphFromSelection();
+    expect(innerInstance).not.toBeNull();
+    useGraphStore.getState().exitSubgraph();
+
+    const state = useGraphStore.getState();
+    const document = state.getWorkflowDocument();
+    expect(Object.keys(document.subgraphs ?? {})).toHaveLength(2);
+    const flattened = state.getExecutionGraph();
+    const ids = flattened.graph.nodes.map((node) => node.id);
+    expect(
+      ids.some((id) =>
+        id.startsWith(`sub:${outerInstance}/${innerInstance}/`),
+      ),
+    ).toBe(true);
+  });
+
+  it("adds manager ports and infers them from new-handle connections", () => {
+    setGraph();
+    const instanceId = useGraphStore.getState().createSubgraphFromSelection();
+    expect(instanceId).not.toBeNull();
+    useGraphStore.getState().enterSubgraph(instanceId as string);
+
+    const inputPort = useGraphStore
+      .getState()
+      .addSubgraphPort("input", "ANY", "extra");
+    const outputPort = useGraphStore
+      .getState()
+      .addSubgraphPort("output", "ANY", "extra");
+    expect(inputPort).toBe("extra");
+    expect(outputPort).toBe("extra");
+
+    const free = makeNode(
+      "free",
+      [
+        { name: "x", data_type: "DATAFRAME" },
+        { name: "y", data_type: "ANY" },
+      ],
+      [{ name: "out", data_type: "METRICS" }],
+      800,
+      200,
+    );
+    useGraphStore.setState((state) => ({
+      nodes: [...state.nodes, free],
+    }));
+
+    useGraphStore.getState().onConnect({
+      source: SUBGRAPH_INPUT_NODE_ID,
+      sourceHandle: NEW_SUBGRAPH_INPUT_HANDLE,
+      target: "free",
+      targetHandle: "x",
+    });
+    useGraphStore.getState().onConnect({
+      source: "free",
+      sourceHandle: "out",
+      target: SUBGRAPH_OUTPUT_NODE_ID,
+      targetHandle: NEW_SUBGRAPH_OUTPUT_HANDLE,
+    });
+
+    const nested = useGraphStore.getState();
+    const inputManager = nested.nodes.find(
+      (node) => node.id === SUBGRAPH_INPUT_NODE_ID,
+    );
+    const outputManager = nested.nodes.find(
+      (node) => node.id === SUBGRAPH_OUTPUT_NODE_ID,
+    );
+    expect(
+      inputManager?.data.schema.outputs.map((socket) => socket.name),
+    ).toEqual(["df", "extra", "x"]);
+    expect(
+      outputManager?.data.schema.inputs.map((socket) => socket.name),
+    ).toEqual(["result", "extra", "out"]);
+    expect(
+      nested.edges.some(
+        (edge) =>
+          edge.sourceHandle === "x" &&
+          edge.target === "free" &&
+          edge.targetHandle === "x",
+      ),
+    ).toBe(true);
+    expect(
+      nested.edges.some(
+        (edge) =>
+          edge.source === "free" &&
+          edge.sourceHandle === "out" &&
+          edge.targetHandle === "out",
+      ),
+    ).toBe(true);
+
+    useGraphStore.getState().exitSubgraph();
+    const instance = useGraphStore
+      .getState()
+      .nodes.find((node) => node.id === instanceId);
+    expect(
+      instance?.data.schema.inputs.map((socket) => socket.name),
+    ).toEqual(["df", "extra", "x"]);
+    expect(
+      instance?.data.schema.outputs.map((socket) => socket.name),
+    ).toEqual(["result", "extra", "out"]);
+  });
+
+  it("removes a definition when its last instance is deleted", () => {
+    setGraph();
+    const first = useGraphStore.getState().createSubgraphFromSelection();
+    expect(first).not.toBeNull();
+    const definitionId = useGraphStore
+      .getState()
+      .nodes.find((node) => node.id === first)?.data.subgraphId as string;
+    const second = useGraphStore.getState().addSubgraphInstance(
+      definitionId,
+      { x: 800, y: 200 },
+    );
+    expect(second).not.toBeNull();
+
+    useGraphStore.getState().selectOnlyNode(second as string);
+    expect(useGraphStore.getState().deleteSelection()).toBe(true);
+    expect(useGraphStore.getState().subgraphs[definitionId]).toBeDefined();
+
+    useGraphStore.getState().selectOnlyNode(first as string);
+    expect(useGraphStore.getState().deleteSelection()).toBe(true);
+    expect(useGraphStore.getState().subgraphs[definitionId]).toBeUndefined();
+    expect(
+      useGraphStore.getState().nodes.some((node) => node.data.isSubgraph),
+    ).toBe(false);
+
+    useGraphStore.getState().undo();
+    expect(useGraphStore.getState().subgraphs[definitionId]).toBeDefined();
+    expect(
+      useGraphStore.getState().nodes.some((node) => node.id === first),
+    ).toBe(true);
+    useGraphStore.getState().redo();
+    expect(useGraphStore.getState().subgraphs[definitionId]).toBeUndefined();
+  });
+
+  it("connects new nodes from the manager search handles", async () => {
+    const template = await makeTemplate();
+    setGraph();
+    const instanceId = useGraphStore.getState().createSubgraphFromSelection();
+    expect(instanceId).not.toBeNull();
+    useGraphStore.getState().enterSubgraph(instanceId as string);
+
+    const inputResult = useGraphStore
+      .getState()
+      .addConnectedNodeFromTemplate(
+        template,
+        { x: 900, y: 100 },
+        {
+          nodeId: SUBGRAPH_INPUT_NODE_ID,
+          handleId: NEW_SUBGRAPH_INPUT_HANDLE,
+          handleType: "source",
+          dataType: "ANY",
+        },
+      );
+    expect(inputResult).not.toBeNull();
+
+    const outputResult = useGraphStore
+      .getState()
+      .addConnectedNodeFromTemplate(
+        template,
+        { x: 900, y: 300 },
+        {
+          nodeId: SUBGRAPH_OUTPUT_NODE_ID,
+          handleId: NEW_SUBGRAPH_OUTPUT_HANDLE,
+          handleType: "target",
+          dataType: "ANY",
+        },
+      );
+    expect(outputResult).not.toBeNull();
+
+    const state = useGraphStore.getState();
+    const inputManager = state.nodes.find(
+      (node) => node.id === SUBGRAPH_INPUT_NODE_ID,
+    );
+    const outputManager = state.nodes.find(
+      (node) => node.id === SUBGRAPH_OUTPUT_NODE_ID,
+    );
+    expect(
+      inputManager?.data.schema.outputs.map((socket) => socket.name),
+    ).toContain("df_2");
+    expect(
+      outputManager?.data.schema.inputs.map((socket) => socket.name),
+    ).toContain("k");
+    expect(
+      state.edges.some(
+        (edge) =>
+          edge.source === SUBGRAPH_INPUT_NODE_ID &&
+          edge.sourceHandle === "df_2" &&
+          edge.target === inputResult?.nodeId &&
+          edge.targetHandle === "df",
+      ),
+    ).toBe(true);
+    expect(
+      state.edges.some(
+        (edge) =>
+          edge.source === outputResult?.nodeId &&
+          edge.sourceHandle === "k" &&
+          edge.target === SUBGRAPH_OUTPUT_NODE_ID &&
+          edge.targetHandle === "k",
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks execution while editing a subgraph", async () => {
+    setGraph();
+    const instanceId = useGraphStore.getState().createSubgraphFromSelection();
+    useGraphStore.getState().enterSubgraph(instanceId as string);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await useGraphStore.getState().runGraph();
+    vi.unstubAllGlobals();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useGraphStore.getState().execution.error?.errorType).toBe(
+      "LocalValidation",
+    );
+    expect(useGraphStore.getState().execution.error?.message).toContain(
+      "Exit the subgraph",
+    );
   });
 });
 

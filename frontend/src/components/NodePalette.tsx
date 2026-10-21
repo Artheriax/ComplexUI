@@ -1,39 +1,141 @@
-import { useState } from "react";
+import type { ReactNode } from "react";
 
+import { useSettingsStore } from "../store/useSettingsStore";
+import type { SidebarPanel } from "../store/useUiStore";
+import { useUiStore } from "../store/useUiStore";
+import { DatasetLibrary } from "./DatasetLibrary";
 import { NodeLibrary } from "./NodeLibrary";
+import { ProjectLibrary } from "./ProjectLibrary";
 import { WorkflowLibrary } from "./WorkflowLibrary";
+import {
+  DatabaseIcon,
+  FolderIcon,
+  GridIcon,
+  KeyboardIcon,
+  SettingsIcon,
+  SubgraphIcon,
+  TerminalIcon,
+} from "./icons";
 
-type PaletteTab = "nodes" | "workflows";
+interface RailItem {
+  id: SidebarPanel;
+  label: string;
+  icon: ReactNode;
+}
 
-const TABS: { value: PaletteTab; label: string }[] = [
-  { value: "nodes", label: "Nodes" },
-  { value: "workflows", label: "Workflows" },
+const TOP_ITEMS: RailItem[] = [
+  { id: "nodes", label: "Nodes", icon: <GridIcon className="h-4 w-4" /> },
+  {
+    id: "workflows",
+    label: "Workflows",
+    icon: <FolderIcon className="h-4 w-4" />,
+  },
+  {
+    id: "templates",
+    label: "Templates",
+    icon: <SubgraphIcon className="h-4 w-4" />,
+  },
+  {
+    id: "datasets",
+    label: "Datasets",
+    icon: <DatabaseIcon className="h-4 w-4" />,
+  },
 ];
 
+const railButton =
+  "flex h-9 w-9 items-center justify-center rounded-md border transition-colors";
+
+function RailButton({
+  active,
+  label,
+  icon,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  icon: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      aria-expanded={active}
+      onClick={onClick}
+      className={`${railButton} ${
+        active
+          ? "border-cyan-700 bg-cyan-950/60 text-cyan-200"
+          : "border-transparent text-zinc-500 hover:border-zinc-700 hover:bg-zinc-800/70 hover:text-zinc-200"
+      }`}
+    >
+      {icon}
+    </button>
+  );
+}
+
 export function NodePalette() {
-  const [tab, setTab] = useState<PaletteTab>("nodes");
+  const sidebarPanel = useUiStore((state) => state.sidebarPanel);
+  const toggleSidebarPanel = useUiStore((state) => state.toggleSidebarPanel);
+  const consoleOpen = useUiStore((state) => state.consoleOpen);
+  const toggleConsole = useUiStore((state) => state.toggleConsole);
+  const openShortcuts = useUiStore((state) => state.openShortcuts);
+  const openSettings = useSettingsStore((state) => state.openSettings);
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-zinc-800 bg-zinc-900/40">
-      <div className="flex border-b border-zinc-800" role="tablist">
-        {TABS.map(({ value, label }) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={tab === value}
-            onClick={() => setTab(value)}
-            className={`flex-1 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
-              tab === value
-                ? "border-b-2 border-cyan-500 text-cyan-300"
-                : "text-zinc-500 hover:text-zinc-300"
-            }`}
-          >
-            {label}
-          </button>
+    <aside className="flex shrink-0 border-r border-zinc-800 bg-zinc-900/40">
+      <nav
+        aria-label="Workspace panels"
+        className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-zinc-800 bg-zinc-950/60 py-2"
+      >
+        {TOP_ITEMS.map((item) => (
+          <RailButton
+            key={item.id}
+            active={sidebarPanel === item.id}
+            label={item.label}
+            icon={item.icon}
+            onClick={() => toggleSidebarPanel(item.id)}
+          />
         ))}
-      </div>
-      {tab === "nodes" ? <NodeLibrary /> : <WorkflowLibrary />}
+        <div className="mt-auto flex flex-col items-center gap-1">
+          <RailButton
+            active={consoleOpen}
+            label="Console"
+            icon={<TerminalIcon className="h-4 w-4" />}
+            onClick={toggleConsole}
+          />
+          <RailButton
+            active={false}
+            label="Keyboard shortcuts"
+            icon={<KeyboardIcon className="h-4 w-4" />}
+            onClick={openShortcuts}
+          />
+          <RailButton
+            active={false}
+            label="Settings"
+            icon={<SettingsIcon className="h-4 w-4" />}
+            onClick={openSettings}
+          />
+        </div>
+      </nav>
+      {sidebarPanel !== null && (
+        <section
+          id={`sidebar-panel-${sidebarPanel}`}
+          aria-label={TOP_ITEMS.find((item) => item.id === sidebarPanel)?.label}
+          className="flex w-60 min-w-0 flex-col border-r border-zinc-800"
+        >
+          {sidebarPanel === "nodes" ? (
+            <NodeLibrary />
+          ) : sidebarPanel === "workflows" ? (
+            <ProjectLibrary />
+          ) : sidebarPanel === "templates" ? (
+            <WorkflowLibrary />
+          ) : (
+            <DatasetLibrary />
+          )}
+        </section>
+      )}
     </aside>
   );
 }
+

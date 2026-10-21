@@ -5,16 +5,18 @@ import { createPortal } from "react-dom";
 
 import { useGraphStore } from "../store/useGraphStore";
 import type { NodeColor } from "../types/graph";
-import { NODE_COLOR_ORDER, NODE_COLORS } from "../types/graph";
+import { isFrameNode, NODE_COLOR_ORDER, NODE_COLORS } from "../types/graph";
 import {
   CopyIcon,
   CutIcon,
   DuplicateIcon,
+  EnterIcon,
   PasteIcon,
   PencilIcon,
   PlayIcon,
   ResetIcon,
   TrashIcon,
+  UngroupIcon,
 } from "./icons";
 
 interface NodeContextMenuProps {
@@ -91,6 +93,8 @@ export function NodeContextMenu({
   const runGraph = useGraphStore((state) => state.runGraph);
   const setNodeColor = useGraphStore((state) => state.setNodeColor);
   const resetNode = useGraphStore((state) => state.resetNode);
+  const ungroupSelection = useGraphStore((state) => state.ungroupSelection);
+  const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState(anchor);
 
@@ -100,8 +104,12 @@ export function NodeContextMenu({
     node?.selected && selectedNodes.length > 0
       ? selectedNodes.map((candidate) => candidate.id)
       : [nodeId];
+  const frame = node !== undefined && isFrameNode(node);
+  const subgraph = node !== undefined && node.data.isSubgraph === true;
   const resetEnabled =
     node !== undefined &&
+    !frame &&
+    !subgraph &&
     (node.data.templateName === null ||
       templates.some((template) => template.name === node.data.templateName));
 
@@ -187,7 +195,7 @@ export function NodeContextMenu({
       ?.focus();
   }, [anchor.x, anchor.y]);
 
-  if (!node) {
+  if (!node || node.data.subgraphRole) {
     return null;
   }
 
@@ -211,7 +219,11 @@ export function NodeContextMenu({
         <div className="mt-0.5 text-[9px] uppercase tracking-wide text-zinc-600">
           {selectedCount > 1
             ? `${selectedCount} nodes selected`
-            : node.data.templateName ?? "Scratch node"}
+            : frame
+              ? "Frame"
+              : subgraph
+                ? "Subgraph instance"
+                : (node.data.templateName ?? "Scratch node")}
         </div>
       </div>
 
@@ -232,12 +244,22 @@ export function NodeContextMenu({
 
       <MenuItem
         icon={<PencilIcon className="h-3.5 w-3.5" />}
-        label="Rename…"
+        label={subgraph ? "Rename instance…" : "Rename…"}
         onClick={() => {
           onClose();
           onRename(nodeId);
         }}
       />
+      {subgraph && (
+        <MenuItem
+          icon={<EnterIcon className="h-3.5 w-3.5" />}
+          label="Open subgraph"
+          onClick={() => {
+            enterSubgraph(nodeId);
+            onClose();
+          }}
+        />
+      )}
       <MenuItem
         icon={<CopyIcon className="h-3.5 w-3.5" />}
         label="Copy"
@@ -278,38 +300,60 @@ export function NodeContextMenu({
           onClose();
         }}
       />
+      {frame && (
+        <MenuItem
+          icon={<UngroupIcon className="h-3.5 w-3.5" />}
+          label="Ungroup frame"
+          onClick={() => {
+            ungroupSelection();
+            onClose();
+          }}
+        />
+      )}
 
       <div className="my-1 border-t border-zinc-800" />
 
-      <MenuItem
-        icon={<PencilIcon className="h-3.5 w-3.5" />}
-        label="Edit code"
-        onClick={() => {
-          openEditor(nodeId);
-          onClose();
-        }}
-      />
-      <MenuItem
-        icon={<PlayIcon className="h-3.5 w-3.5" />}
-        label="Run to this node"
-        disabled={running}
-        onClick={() => {
-          void runGraph([nodeId]);
-          onClose();
-        }}
-      />
-      <MenuItem
-        icon={<ResetIcon className="h-3.5 w-3.5" />}
-        label="Reset node"
-        disabled={!resetEnabled}
-        onClick={() => {
-          resetNode(nodeId);
-          onClose();
-        }}
-      />
+      {!frame && !subgraph && (
+        <MenuItem
+          icon={<PencilIcon className="h-3.5 w-3.5" />}
+          label="Edit code"
+          onClick={() => {
+            openEditor(nodeId);
+            onClose();
+          }}
+        />
+      )}
+      {!frame && !subgraph && (
+        <MenuItem
+          icon={<PlayIcon className="h-3.5 w-3.5" />}
+          label="Run to this node"
+          disabled={running}
+          onClick={() => {
+            void runGraph([nodeId]);
+            onClose();
+          }}
+        />
+      )}
+      {!frame && !subgraph && (
+        <MenuItem
+          icon={<ResetIcon className="h-3.5 w-3.5" />}
+          label="Reset node"
+          disabled={!resetEnabled}
+          onClick={() => {
+            resetNode(nodeId);
+            onClose();
+          }}
+        />
+      )}
       <MenuItem
         icon={<TrashIcon className="h-3.5 w-3.5" />}
-        label="Delete"
+        label={
+          frame
+            ? "Delete frame"
+            : subgraph
+              ? "Delete subgraph instance"
+              : "Delete"
+        }
         shortcut="Del"
         danger
         disabled={selectedCount === 0}

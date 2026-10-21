@@ -15,22 +15,51 @@ import {
   ApiError,
   approveNode,
   cancelExecution,
+  createProject as createProjectApi,
+  deleteProject as deleteProjectApi,
   executeGraph,
+  fetchProject as fetchProjectApi,
+  fetchProjectVersion as fetchProjectVersionApi,
+  fetchProjects as fetchProjectsApi,
   fetchTemplates,
   fetchWorkflowTemplates,
+  fetchWorkspaceSession,
   parseCode,
   syntaxErrorFrom,
   untrustedNodesFrom,
+  updateProject as updateProjectApi,
 } from "../lib/api";
+import type { ProjectSummary, WorkspaceSession } from "../lib/api";
 import { sha256Hex } from "../lib/hash";
-import { loadLocalWorkflow } from "../lib/persistence";
+import {
+  loadLocalProjectIdentity,
+  loadLocalWorkflow,
+  loadLocalWorkspace,
+  saveLocalProjectIdentity,
+  saveLocalWorkflow,
+  serialiseWorkflow,
+} from "../lib/persistence";
 import type { SavedWorkflow } from "../lib/persistence";
 import {
-  findCompatibleInput,
   findCompatibleOutput,
+  findCompatibleTarget,
   isInputTaken,
+  resolveTargetSocket,
   socketTypesCompatible,
 } from "../lib/socketCompatibility";
+import type { TemplateConnectionMatch } from "../lib/socketCompatibility";
+import {
+  buildSubgraphFromSelection,
+  createSubgraphInstanceNode,
+  createSubgraphManagerNodes,
+  flattenWorkflow,
+  stripSubgraphManagers,
+  subgraphDependsOn,
+  syncSubgraphDefinitions,
+  syncSubgraphInstanceSchemas,
+  uniqueSubgraphPortName,
+} from "../lib/subgraph";
+import type { FlattenedWorkflow } from "../lib/subgraph";
 import type {
   AppEdge,
   AppNode,
@@ -47,11 +76,27 @@ import type {
   PendingConnection,
   PreviewValue,
   RichOutput,
+  SocketType,
+  SubgraphDefinition,
+  SubgraphMap,
+  SubgraphScope,
   TemplateInfo,
+  WidgetParam,
   WorkflowGraphPayload,
   WorkflowTemplateInfo,
 } from "../types/graph";
-import { defaultWidgetValues, parseRichOutputs } from "../types/graph";
+import {
+  defaultWidgetValues,
+  isFrameNode,
+  isRunnableNode,
+  isSubgraphInstanceNode,
+  isSubgraphManagerNode,
+  NEW_SUBGRAPH_INPUT_HANDLE,
+  NEW_SUBGRAPH_OUTPUT_HANDLE,
+  parseRichOutputs,
+  SUBGRAPH_INPUT_NODE_ID,
+  SUBGRAPH_OUTPUT_NODE_ID,
+} from "../types/graph";
 
 export interface GraphExecutionState {
   status: ExecutionStatus;
@@ -87,6 +132,32 @@ function pruneExecution(
 export interface GraphSnapshot {
   nodes: AppNode[];
   edges: AppEdge[];
+  subgraphs: SubgraphMap;
+  scopeStack: SubgraphScope[];
+  rootGraph: RootGraph | null;
+}
+
+export interface RootGraph {
+  nodes: AppNode[];
+  edges: AppEdge[];
+}
+
+export interface WorkflowWindowState {
+  nodes: AppNode[];
+  edges: AppEdge[];
+  subgraphs: SubgraphMap;
+  scopeStack: SubgraphScope[];
+  rootGraph: RootGraph | null;
+  past: GraphSnapshot[];
+  future: GraphSnapshot[];
+  execution: GraphExecutionState;
+  projectName: string | null;
+  projectSlug: string | null;
+}
+
+export interface WorkflowWindow extends WorkflowWindowState {
+  id: string;
+  title: string;
 }
 
 interface HistoryMeta {
@@ -99,10 +170,36 @@ const HISTORY_LIMIT = 100;
 const HISTORY_COALESCE_MS = 800;
 const PASTE_OFFSET = 40;
 const MAX_NODE_LABEL_CHARS = 80;
+const ARRANGE_GAP_X = 48;
+const ARRANGE_GAP_Y = 32;
+const FALLBACK_NODE_WIDTH = 250;
+const FALLBACK_NODE_HEIGHT = 160;
+const FRAME_PADDING_X = 24;
+const FRAME_HEADER_HEIGHT = 40;
+const FRAME_PADDING_BOTTOM = 24;
+const FRAME_MIN_WIDTH = 280;
+const FRAME_MIN_HEIGHT = 180;
+
+export type ArrangeMode =
+  | "align-left"
+  | "align-center-x"
+  | "align-right"
+  | "align-top"
+  | "align-center-y"
+  | "align-bottom"
+  | "distribute-x"
+  | "distribute-y"
+  | "grid";
 
 export interface ConnectedNodeResult {
   nodeId: string;
   edgeId: string;
+}
+
+export interface WindowMeta {
+  title?: string;
+  projectName?: string | null;
+  projectSlug?: string | null;
 }
 
 interface GraphStore {
@@ -114,8 +211,24 @@ interface GraphStore {
   workflowsLoaded: boolean;
   workflowsError: string | null;
 
+  projects: ProjectSummary[];
+  projectsLoaded: boolean;
+  projectsError: string | null;
+  projectName: string | null;
+  projectSlug: string | null;
+  saveDialogOpen: boolean;
+  saveBusy: boolean;
+  saveError: string | null;
+
+  windows: WorkflowWindow[];
+  activeWindowId: string;
+  executionWindowId: string | null;
+
   nodes: AppNode[];
   edges: AppEdge[];
+  subgraphs: SubgraphMap;
+  scopeStack: SubgraphScope[];
+  rootGraph: RootGraph | null;
 
   past: GraphSnapshot[];
   future: GraphSnapshot[];
@@ -131,9 +244,30 @@ interface GraphStore {
   wsConnected: boolean;
   execution: GraphExecutionState;
 
+  newWorkflowWindow: () => void;
+  activateWorkflowWindow: (windowId: string) => boolean;
+  closeWorkflowWindow: (windowId: string) => boolean;
+  openWorkflowInWindow: (
+    saved: SavedWorkflow,
+    meta?: WindowMeta,
+  ) => Promise<boolean>;
+  openProjectInWindow: (slug: string) => Promise<boolean>;
+  openWorkflowTemplateInWindow: (
+    workflow: WorkflowTemplateInfo,
+  ) => boolean;
+  getWindowDocument: (windowId: string) => SavedWorkflow | null;
+
   loadTemplates: () => Promise<void>;
   loadWorkflowTemplates: () => Promise<void>;
   loadWorkflowTemplate: (workflow: WorkflowTemplateInfo) => boolean;
+  loadProjects: () => Promise<void>;
+  openProject: (slug: string) => Promise<boolean>;
+  requestSave: () => void;
+  openSaveDialog: () => void;
+  closeSaveDialog: () => void;
+  saveProject: (name?: string, overwrite?: boolean) => Promise<boolean>;
+  deleteProject: (slug: string) => Promise<boolean>;
+  restoreProjectVersion: (slug: string, version: string) => Promise<boolean>;
   addNodeFromTemplate: (template: TemplateInfo, position: XYPosition) => string;
   addConnectedNodeFromTemplate: (
     template: TemplateInfo,
@@ -153,6 +287,26 @@ interface GraphStore {
   pasteClipboard: (anchor?: XYPosition) => Promise<string[]>;
   duplicateSelection: () => Promise<string[]>;
   selectOnlyNode: (nodeId: string) => void;
+  selectAllNodes: () => void;
+  clearSelection: () => void;
+  arrangeSelection: (mode: ArrangeMode) => boolean;
+  groupSelection: () => string | null;
+  ungroupSelection: () => boolean;
+  createSubgraphFromSelection: () => string | null;
+  addSubgraphInstance: (
+    definitionId: string,
+    position: XYPosition,
+  ) => string | null;
+  addSubgraphPort: (
+    kind: "input" | "output",
+    dataType: SocketType,
+    suggestedName?: string,
+  ) => string | null;
+  enterSubgraph: (nodeId: string) => boolean;
+  exitSubgraph: () => boolean;
+  navigateToScope: (depth: number) => boolean;
+  getWorkflowDocument: (name?: string | null) => SavedWorkflow;
+  getExecutionGraph: () => FlattenedWorkflow;
   renameNode: (nodeId: string, label: string) => boolean;
   setNodeColor: (nodeIds: string[], color: NodeColor) => boolean;
   resetNode: (nodeId: string) => boolean;
@@ -188,12 +342,16 @@ result = factor * 21
 return result: ANY
 `;
 
-function emptySchema(nodeId: string): NodeSchema {
+function emptySchema(
+  nodeId: string,
+  inputs: NodeSchema["inputs"] = [],
+  outputs: NodeSchema["outputs"] = [],
+): NodeSchema {
   return {
     node_id: nodeId,
-    inputs: [],
+    inputs,
     widgets: [],
-    outputs: [],
+    outputs,
     dependencies: [],
     syntax_errors: [],
   };
@@ -210,8 +368,12 @@ const idleExecution = (): GraphExecutionState => ({
   error: null,
 });
 
-function widgetValueAllowed(dataType: string, value: unknown): boolean {
-  switch (dataType) {
+function widgetValueAllowed(widget: WidgetParam, value: unknown): boolean {
+  const options = widget.options ?? [];
+  if (options.length > 0 && !options.some((option) => option === value)) {
+    return false;
+  }
+  switch (widget.data_type) {
     case "int":
       return typeof value === "number" && Number.isInteger(value);
     case "float":
@@ -233,7 +395,7 @@ function mergeWidgetValues(
   for (const widget of schema.widgets) {
     if (
       previous[widget.name] !== undefined &&
-      widgetValueAllowed(widget.data_type, previous[widget.name])
+      widgetValueAllowed(widget, previous[widget.name])
     ) {
       next[widget.name] = previous[widget.name];
     }
@@ -246,39 +408,812 @@ function reconcileEdges(
   nodeId: string,
   schema: NodeSchema,
 ): AppEdge[] {
-  const inputs = new Set(schema.inputs.map((socket) => socket.name));
+  const targets = new Set([
+    ...schema.inputs.map((socket) => socket.name),
+    ...schema.widgets.map((widget) => widget.name),
+  ]);
   const outputs = new Set(schema.outputs.map((socket) => socket.name));
   return edges.filter((edge) => {
     if (edge.source === nodeId && !outputs.has(edge.sourceHandle ?? "")) {
       return false;
     }
-    if (edge.target === nodeId && !inputs.has(edge.targetHandle ?? "")) {
+    if (edge.target === nodeId && !targets.has(edge.targetHandle ?? "")) {
       return false;
     }
     return true;
   });
 }
 
+interface SizedNode {
+  node: AppNode;
+  width: number;
+  height: number;
+}
+
+function sizedNodes(nodes: AppNode[]): SizedNode[] {
+  return nodes.map((node) => ({
+    node,
+    width:
+      node.width ?? node.measured?.width ?? FALLBACK_NODE_WIDTH,
+    height:
+      node.height ?? node.measured?.height ?? FALLBACK_NODE_HEIGHT,
+  }));
+}
+
+function absolutePosition(
+  node: AppNode,
+  nodesById: Map<string, AppNode>,
+): XYPosition {
+  let position = node.position;
+  let parentId = node.parentId;
+  const visited = new Set<string>([node.id]);
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = nodesById.get(parentId);
+    if (!parent) {
+      break;
+    }
+    position = {
+      x: position.x + parent.position.x,
+      y: position.y + parent.position.y,
+    };
+    parentId = parent.parentId;
+  }
+  return position;
+}
+
+function frameLabel(nodes: AppNode[]): string {
+  const used = new Set(
+    nodes.filter(isFrameNode).map((node) => node.data.label),
+  );
+  let index = 1;
+  while (used.has(`Frame ${index}`)) {
+    index += 1;
+  }
+  return `Frame ${index}`;
+}
+
+function arrangementPositions(
+  nodes: AppNode[],
+  mode: ArrangeMode,
+): Map<string, XYPosition> {
+  const items = sizedNodes(nodes);
+  const positions = new Map<string, XYPosition>();
+  if (items.length < 2) {
+    return positions;
+  }
+  const left = Math.min(...items.map((item) => item.node.position.x));
+  const top = Math.min(...items.map((item) => item.node.position.y));
+  const right = Math.max(
+    ...items.map((item) => item.node.position.x + item.width),
+  );
+  const bottom = Math.max(
+    ...items.map((item) => item.node.position.y + item.height),
+  );
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+
+  for (const item of items) {
+    const position = item.node.position;
+    let x = position.x;
+    let y = position.y;
+    if (mode === "align-left") {
+      x = left;
+    } else if (mode === "align-center-x") {
+      x = centerX - item.width / 2;
+    } else if (mode === "align-right") {
+      x = right - item.width;
+    } else if (mode === "align-top") {
+      y = top;
+    } else if (mode === "align-center-y") {
+      y = centerY - item.height / 2;
+    } else if (mode === "align-bottom") {
+      y = bottom - item.height;
+    }
+    positions.set(item.node.id, { x, y });
+  }
+
+  if (mode === "distribute-x") {
+    if (items.length < 3) {
+      return new Map();
+    }
+    const ordered = [...items].sort(
+      (a, b) =>
+        a.node.position.x +
+        a.width / 2 -
+        (b.node.position.x + b.width / 2),
+    );
+    const totalWidth = ordered.reduce((sum, item) => sum + item.width, 0);
+    const gap = (right - left - totalWidth) / (ordered.length - 1);
+    let cursor = left;
+    for (const item of ordered) {
+      positions.set(item.node.id, { x: cursor, y: item.node.position.y });
+      cursor += item.width + gap;
+    }
+  } else if (mode === "distribute-y") {
+    if (items.length < 3) {
+      return new Map();
+    }
+    const ordered = [...items].sort(
+      (a, b) =>
+        a.node.position.y +
+        a.height / 2 -
+        (b.node.position.y + b.height / 2),
+    );
+    const totalHeight = ordered.reduce((sum, item) => sum + item.height, 0);
+    const gap = (bottom - top - totalHeight) / (ordered.length - 1);
+    let cursor = top;
+    for (const item of ordered) {
+      positions.set(item.node.id, { x: item.node.position.x, y: cursor });
+      cursor += item.height + gap;
+    }
+  } else if (mode === "grid") {
+    const ordered = [...items].sort(
+      (a, b) =>
+        a.node.position.y - b.node.position.y ||
+        a.node.position.x - b.node.position.x ||
+        a.node.id.localeCompare(b.node.id),
+    );
+    const columnCount = Math.ceil(Math.sqrt(ordered.length));
+    const rowCount = Math.ceil(ordered.length / columnCount);
+    const columnWidths = Array<number>(columnCount).fill(0);
+    const rowHeights = Array<number>(rowCount).fill(0);
+    ordered.forEach((item, index) => {
+      const column = index % columnCount;
+      const row = Math.floor(index / columnCount);
+      columnWidths[column] = Math.max(columnWidths[column] ?? 0, item.width);
+      rowHeights[row] = Math.max(rowHeights[row] ?? 0, item.height);
+    });
+    const columnOffsets: number[] = [];
+    let x = left;
+    for (const width of columnWidths) {
+      columnOffsets.push(x);
+      x += width + ARRANGE_GAP_X;
+    }
+    ordered.forEach((item, index) => {
+      const column = index % columnCount;
+      const row = Math.floor(index / columnCount);
+      const y =
+        top +
+        rowHeights.slice(0, row).reduce((sum, height) => sum + height, 0) +
+        row * ARRANGE_GAP_Y;
+      positions.set(item.node.id, {
+        x: columnOffsets[column] ?? left,
+        y,
+      });
+    });
+  }
+
+  return positions;
+}
+
 export function serialiseGraph(
   nodes: AppNode[],
   edges: AppEdge[],
+  subgraphs: SubgraphMap = {},
 ): WorkflowGraphPayload {
+  return flattenWorkflow(nodes, edges, subgraphs).graph;
+}
+
+function mergeActiveSubgraph(
+  state: Pick<GraphStore, "nodes" | "edges" | "subgraphs" | "scopeStack">,
+): SubgraphMap {
+  const active = state.scopeStack[state.scopeStack.length - 1];
+  if (!active) {
+    return state.subgraphs;
+  }
+  const definition = state.subgraphs[active.definitionId];
+  if (!definition) {
+    return state.subgraphs;
+  }
+  const inputManager = state.nodes.find(
+    (node) => node.id === SUBGRAPH_INPUT_NODE_ID,
+  );
+  const outputManager = state.nodes.find(
+    (node) => node.id === SUBGRAPH_OUTPUT_NODE_ID,
+  );
   return {
-    nodes: nodes.map((node) => ({
-      id: node.id,
-      code: node.data.code,
-      widget_values: node.data.widgetValues,
-    })),
-    edges: edges.map((edge) => ({
-      source_node_id: edge.source,
-      source_handle: edge.sourceHandle ?? "",
-      target_node_id: edge.target,
-      target_handle: edge.targetHandle ?? "",
-    })),
+    ...state.subgraphs,
+    [definition.id]: {
+      ...definition,
+      inputs: inputManager?.data.schema.outputs ?? definition.inputs,
+      outputs: outputManager?.data.schema.inputs ?? definition.outputs,
+      nodes: stripSubgraphManagers(state.nodes),
+      edges: state.edges,
+      inputPosition: inputManager?.position ?? definition.inputPosition,
+      outputPosition: outputManager?.position ?? definition.outputPosition,
+    },
+  };
+}
+
+function pruneUnusedSubgraphs(
+  state: Pick<
+    GraphStore,
+    "nodes" | "edges" | "subgraphs" | "scopeStack" | "rootGraph"
+  >,
+  nodes: AppNode[],
+  edges: AppEdge[],
+  candidates: Set<string>,
+): SubgraphMap {
+  const merged = mergeActiveSubgraph({ ...state, nodes, edges });
+  if (candidates.size === 0) {
+    return merged;
+  }
+  const affected = new Set<string>();
+  const visitAffected = (definitionId: string): void => {
+    if (affected.has(definitionId)) {
+      return;
+    }
+    const definition = merged[definitionId];
+    if (!definition) {
+      return;
+    }
+    affected.add(definitionId);
+    for (const node of definition.nodes) {
+      if (isSubgraphInstanceNode(node) && node.data.subgraphId) {
+        visitAffected(node.data.subgraphId);
+      }
+    }
+  };
+  for (const candidate of candidates) {
+    visitAffected(candidate);
+  }
+
+  const reachable = new Set<string>();
+  const visitReachable = (definitionId: string): void => {
+    if (reachable.has(definitionId)) {
+      return;
+    }
+    const definition = merged[definitionId];
+    if (!definition) {
+      return;
+    }
+    reachable.add(definitionId);
+    for (const node of definition.nodes) {
+      if (isSubgraphInstanceNode(node) && node.data.subgraphId) {
+        visitReachable(node.data.subgraphId);
+      }
+    }
+  };
+  const rootNodes =
+    state.scopeStack.length === 0
+      ? nodes
+      : (state.rootGraph?.nodes ?? nodes);
+  for (const node of rootNodes) {
+    if (isSubgraphInstanceNode(node) && node.data.subgraphId) {
+      visitReachable(node.data.subgraphId);
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(merged).filter(
+      ([id]) => !affected.has(id) || reachable.has(id),
+    ),
+  );
+}
+
+function rootGraphFor(
+  state: Pick<GraphStore, "nodes" | "edges" | "scopeStack" | "rootGraph">,
+): RootGraph {
+  if (state.scopeStack.length === 0) {
+    return { nodes: state.nodes, edges: state.edges };
+  }
+  return state.rootGraph ?? { nodes: [], edges: [] };
+}
+
+function graphForDefinition(
+  definition: SubgraphDefinition,
+): RootGraph {
+  return {
+    nodes: [
+      ...definition.nodes.map((node) => ({ ...node, selected: false })),
+      ...createSubgraphManagerNodes(definition),
+    ],
+    edges: definition.edges,
+  };
+}
+
+function nextSubgraphName(subgraphs: SubgraphMap): string {
+  const names = new Set(
+    Object.values(subgraphs).map((definition) => definition.name),
+  );
+  let index = 1;
+  while (names.has(`Subgraph ${index}`)) {
+    index += 1;
+  }
+  return `Subgraph ${index}`;
+}
+
+function emptyWindowState(): WorkflowWindowState {
+  return {
+    nodes: [],
+    edges: [],
+    subgraphs: {},
+    scopeStack: [],
+    rootGraph: null,
+    past: [],
+    future: [],
+    execution: idleExecution(),
+    projectName: null,
+    projectSlug: null,
+  };
+}
+
+function nextUntitledTitle(windows: WorkflowWindow[]): string {
+  const used = new Set(windows.map((window) => window.title));
+  let index = 1;
+  while (used.has(`Untitled ${index}`)) {
+    index += 1;
+  }
+  return `Untitled ${index}`;
+}
+
+function createWorkflowWindow(
+  windows: WorkflowWindow[],
+  meta: WindowMeta = {},
+): WorkflowWindow {
+  return {
+    id: crypto.randomUUID(),
+    title: meta.title ?? nextUntitledTitle(windows),
+    ...emptyWindowState(),
+    projectName: meta.projectName ?? null,
+    projectSlug: meta.projectSlug ?? null,
+  };
+}
+
+function snapshotActiveWindow(state: GraphStore): WorkflowWindowState {
+  return {
+    nodes: state.nodes,
+    edges: state.edges,
+    subgraphs: mergeActiveSubgraph(state),
+    scopeStack: state.scopeStack,
+    rootGraph: state.rootGraph,
+    past: state.past,
+    future: state.future,
+    execution: state.execution,
+    projectName: state.projectName,
+    projectSlug: state.projectSlug,
+  };
+}
+
+function windowTopLevel(window: WorkflowWindow): Partial<GraphStore> {
+  return {
+    nodes: window.nodes,
+    edges: window.edges,
+    subgraphs: window.subgraphs,
+    scopeStack: window.scopeStack,
+    rootGraph: window.rootGraph,
+    past: window.past,
+    future: window.future,
+    execution: window.execution,
+    projectName: window.projectName,
+    projectSlug: window.projectSlug,
+    editingNodeId: null,
+    pendingApproval: null,
+    approvalBusy: false,
+    approvalError: null,
+    saveDialogOpen: false,
+    saveError: null,
+    historyMeta: { coalesceKey: null, coalesceAt: 0, dragging: false },
+  };
+}
+
+function windowsWithSnapshot(
+  state: GraphStore,
+  snapshot: WorkflowWindowState,
+): WorkflowWindow[] {
+  return state.windows.map((window) =>
+    window.id === state.activeWindowId
+      ? {
+          ...window,
+          ...snapshot,
+          title: snapshot.projectName ?? window.title,
+        }
+      : window,
+  );
+}
+
+function materialiseWorkflowTemplate(
+  workflow: WorkflowTemplateInfo,
+  templates: TemplateInfo[],
+): { graph: RootGraph; missing: string[] } {
+  const byName = new Map(
+    templates.map((template) => [template.name, template]),
+  );
+  const missing = workflow.nodes
+    .filter((node) => !byName.has(node.template))
+    .map((node) => node.template);
+  if (missing.length > 0) {
+    return { graph: { nodes: [], edges: [] }, missing };
+  }
+  const nodes: AppNode[] = workflow.nodes.map((spec) => {
+    const template = byName.get(spec.template) as TemplateInfo;
+    return {
+      id: spec.id,
+      type: "complex",
+      position: spec.position,
+      data: {
+        label: template.title,
+        templateName: template.name,
+        templateCode: template.code,
+        code: template.code,
+        schema: template.node_schema,
+        widgetValues: {
+          ...defaultWidgetValues(template.node_schema),
+          ...spec.widget_values,
+        },
+        isTrusted: true,
+        color: "default",
+      },
+    };
+  });
+  const edges: AppEdge[] = workflow.edges.map((edge) => ({
+    id: `${edge.source_node_id}:${edge.source_handle}->${edge.target_node_id}:${edge.target_handle}`,
+    source: edge.source_node_id,
+    target: edge.target_node_id,
+    sourceHandle: edge.source_handle,
+    targetHandle: edge.target_handle,
+  }));
+  return { graph: { nodes, edges }, missing: [] };
+}
+
+interface BuiltWorkflow {
+  nodes: AppNode[];
+  edges: AppEdge[];
+  subgraphs: SubgraphMap;
+}
+
+async function buildSavedWorkflow(
+  saved: SavedWorkflow,
+  templates: TemplateInfo[],
+): Promise<BuiltWorkflow> {
+  const templateByName = new Map(
+    templates.map((template) => [template.name, template]),
+  );
+  const savedSubgraphs = saved.subgraphs ?? {};
+
+  const buildNode = async (
+    savedNode: SavedWorkflow["nodes"][number],
+  ): Promise<AppNode> => {
+    if (savedNode.isFrame) {
+      return {
+        id: savedNode.id,
+        type: "complex",
+        position: savedNode.position,
+        width: savedNode.width ?? FRAME_MIN_WIDTH,
+        height: savedNode.height ?? FRAME_MIN_HEIGHT,
+        parentId: savedNode.parentId,
+        extent: savedNode.parentId ? "parent" : undefined,
+        zIndex: -1,
+        data: {
+          label: savedNode.label,
+          templateName: null,
+          templateCode: null,
+          code: "",
+          schema: emptySchema(savedNode.id),
+          widgetValues: {},
+          isTrusted: true,
+          color: savedNode.color ?? "default",
+          isFrame: true,
+        },
+      };
+    }
+    if (savedNode.isSubgraph) {
+      const definition = savedSubgraphs[savedNode.subgraphId ?? ""];
+      if (!definition) {
+        throw new Error(
+          `Node '${savedNode.id}' references a missing subgraph.`,
+        );
+      }
+      return {
+        id: savedNode.id,
+        type: "complex",
+        position: savedNode.position,
+        parentId: savedNode.parentId,
+        extent: savedNode.parentId ? "parent" : undefined,
+        data: {
+          label: savedNode.label,
+          templateName: null,
+          templateCode: null,
+          code: "",
+          schema: emptySchema(
+            savedNode.id,
+            definition.inputs,
+            definition.outputs,
+          ),
+          widgetValues: {},
+          isTrusted: true,
+          color: savedNode.color ?? "default",
+          isSubgraph: true,
+          subgraphId: definition.id,
+        },
+      };
+    }
+    let schema: NodeSchema;
+    try {
+      schema = await parseCode(savedNode.code, savedNode.id);
+    } catch (error) {
+      schema = {
+        ...emptySchema(savedNode.id),
+        syntax_errors: [
+          {
+            line: 1,
+            column: 0,
+            message: `Failed to re-parse restored code: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        ],
+      };
+    }
+    const template = savedNode.templateName
+      ? (templateByName.get(savedNode.templateName) ?? null)
+      : null;
+    const hash = await sha256Hex(savedNode.code);
+    const isOfficial = templates.some(
+      (candidate) => candidate.code_hash === hash,
+    );
+    return {
+      id: savedNode.id,
+      type: "complex",
+      position: savedNode.position,
+      parentId: savedNode.parentId,
+      extent: savedNode.parentId ? "parent" : undefined,
+      data: {
+        label: savedNode.label,
+        templateName: template?.name ?? savedNode.templateName,
+        templateCode: template?.code ?? null,
+        code: savedNode.code,
+        schema,
+        widgetValues: mergeWidgetValues(schema, savedNode.widgetValues),
+        isTrusted: isOfficial,
+        color: savedNode.color ?? "default",
+      },
+    };
+  };
+
+  const buildGraph = async (
+    nodes: SavedWorkflow["nodes"],
+    edges: SavedWorkflow["edges"],
+    definition: boolean,
+  ): Promise<RootGraph> => {
+    const built = await Promise.all(nodes.map(buildNode));
+    built.sort(
+      (a, b) => Number(Boolean(a.parentId)) - Number(Boolean(b.parentId)),
+    );
+    const nodeIds = new Set(built.map((node) => node.id));
+    const allowed = new Set(nodeIds);
+    if (definition) {
+      allowed.add(SUBGRAPH_INPUT_NODE_ID);
+      allowed.add(SUBGRAPH_OUTPUT_NODE_ID);
+    }
+    let builtEdges: AppEdge[] = edges
+      .filter(
+        (edge) => allowed.has(edge.source) && allowed.has(edge.target),
+      )
+      .map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle,
+      }));
+    for (const node of built) {
+      builtEdges = reconcileEdges(
+        builtEdges,
+        node.id,
+        node.data.schema,
+      );
+    }
+    return { nodes: built, edges: builtEdges };
+  };
+
+  const subgraphs: SubgraphMap = {};
+  for (const [id, definition] of Object.entries(savedSubgraphs)) {
+    const graph = await buildGraph(
+      definition.nodes,
+      definition.edges,
+      true,
+    );
+    subgraphs[id] = {
+      id: definition.id,
+      name: definition.name,
+      inputs: definition.inputs,
+      outputs: definition.outputs,
+      nodes: graph.nodes,
+      edges: graph.edges,
+      inputPosition: definition.inputPosition,
+      outputPosition: definition.outputPosition,
+    };
+  }
+  const root = await buildGraph(saved.nodes, saved.edges, false);
+  return { nodes: root.nodes, edges: root.edges, subgraphs };
+}
+
+function reduceExecutionEvent(
+  execution: GraphExecutionState,
+  event: ExecutionEvent,
+): GraphExecutionState {
+  switch (event.type) {
+    case "EXECUTION_STARTED": {
+      const order = Array.isArray(event.data.order)
+        ? (event.data.order as string[])
+        : [];
+      return {
+        ...idleExecution(),
+        status: "running",
+        runId:
+          typeof event.data.run_id === "string"
+            ? event.data.run_id
+            : execution.runId,
+        order,
+      };
+    }
+    case "NODE_STARTED":
+      return {
+        ...execution,
+        nodeStates: {
+          ...execution.nodeStates,
+          [event.node_id]: { status: "running" },
+        },
+      };
+    case "INSTALLING_DEPS": {
+      const installing = Array.isArray(event.data.dependencies)
+        ? (event.data.dependencies as string[])
+        : [];
+      return {
+        ...execution,
+        nodeStates: {
+          ...execution.nodeStates,
+          [event.node_id]: { status: "running", installing },
+        },
+      };
+    }
+    case "NODE_COMPLETED": {
+      const outputs = (event.data.outputs ?? {}) as Record<
+        string,
+        PreviewValue
+      >;
+      const richOutputs = parseRichOutputs(event.data.rich_outputs);
+      return {
+        ...execution,
+        previews: {
+          ...execution.previews,
+          [event.node_id]: outputs,
+        },
+        richOutputs: {
+          ...execution.richOutputs,
+          [event.node_id]: richOutputs,
+        },
+        cached: {
+          ...execution.cached,
+          [event.node_id]: event.data.cached === true,
+        },
+        nodeStates: {
+          ...execution.nodeStates,
+          [event.node_id]: {
+            status: "completed",
+            cached: event.data.cached === true,
+            outputs,
+            richOutputs,
+          },
+        },
+      };
+    }
+    case "NODE_ERROR": {
+      const richOutputs = parseRichOutputs(event.data.rich_outputs);
+      return {
+        ...execution,
+        richOutputs: {
+          ...execution.richOutputs,
+          [event.node_id]: richOutputs,
+        },
+        nodeStates: {
+          ...execution.nodeStates,
+          [event.node_id]: {
+            status: "error",
+            richOutputs,
+            error: {
+              line:
+                typeof event.data.line === "number"
+                  ? event.data.line
+                  : null,
+              message: String(event.data.message ?? "Node failed"),
+              errorType: String(event.data.error_type ?? "Error"),
+              traceback: String(event.data.traceback ?? ""),
+            },
+          },
+        },
+      };
+    }
+    case "EXECUTION_COMPLETED":
+      return {
+        ...execution,
+        status: "completed",
+        previews: (event.data.previews ?? {}) as Record<
+          string,
+          Record<string, PreviewValue>
+        >,
+        cached: (event.data.cached ?? {}) as Record<string, boolean>,
+      };
+    case "EXECUTION_FAILED":
+      return {
+        ...execution,
+        status: "failed",
+        error: {
+          message: String(event.data.message ?? "Execution failed"),
+          errorType: String(event.data.error_type ?? "Error"),
+          nodeId:
+            typeof event.data.node_id === "string"
+              ? event.data.node_id
+              : null,
+          line:
+            typeof event.data.line === "number"
+              ? event.data.line
+              : null,
+          traceback: String(event.data.traceback ?? ""),
+        },
+      };
+    case "EXECUTION_CANCELLED": {
+      const nodeStates: Record<string, NodeExecutionState> = {};
+      for (const [nodeId, nodeState] of Object.entries(
+        execution.nodeStates,
+      )) {
+        nodeStates[nodeId] =
+          nodeState.status === "running" ? { status: "idle" } : nodeState;
+      }
+      return {
+        ...execution,
+        status: "cancelled",
+        error: null,
+        nodeStates,
+      };
+    }
+    default:
+      return execution;
+  }
+}
+
+function reduceRunStatus(
+  execution: GraphExecutionState,
+  status: BackendRunStatus,
+): GraphExecutionState {
+  if (status.status === "running") {
+    if (execution.status === "running") {
+      return execution;
+    }
+    return {
+      ...idleExecution(),
+      status: "running",
+      runId: status.run_id,
+    };
+  }
+  if (execution.status !== "running" || execution.runId === null) {
+    return execution;
+  }
+  const nodeStates: Record<string, NodeExecutionState> = {};
+  for (const [nodeId, nodeState] of Object.entries(execution.nodeStates)) {
+    nodeStates[nodeId] =
+      nodeState.status === "running" ? { status: "idle" } : nodeState;
+  }
+  return {
+    ...execution,
+    status: "failed",
+    nodeStates,
+    error: {
+      message:
+        "Lost contact with the backend before the run finished. Re-run the workflow to refresh outputs.",
+      errorType: "Disconnected",
+      nodeId: null,
+      line: null,
+      traceback: "",
+    },
   };
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => {
+  const initialWindow = createWorkflowWindow([]);
+
   const commitNodeCode = (
     nodeId: string,
     code: string,
@@ -307,8 +1242,14 @@ export const useGraphStore = create<GraphStore>((set, get) => {
   };
 
   const snapshotGraph = (): GraphSnapshot => {
-    const { nodes, edges } = get();
-    return { nodes, edges };
+    const state = get();
+    return {
+      nodes: state.nodes,
+      edges: state.edges,
+      subgraphs: mergeActiveSubgraph(state),
+      scopeStack: state.scopeStack,
+      rootGraph: state.rootGraph,
+    };
   };
 
   const pushHistory = (coalesceKey?: string): void => {
@@ -343,8 +1284,24 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     workflowsLoaded: false,
     workflowsError: null,
 
-    nodes: [],
-    edges: [],
+    projects: [],
+    projectsLoaded: false,
+    projectsError: null,
+    projectName: initialWindow.projectName,
+    projectSlug: initialWindow.projectSlug,
+    saveDialogOpen: false,
+    saveBusy: false,
+    saveError: null,
+
+    windows: [initialWindow],
+    activeWindowId: initialWindow.id,
+    executionWindowId: null,
+
+    nodes: initialWindow.nodes,
+    edges: initialWindow.edges,
+    subgraphs: initialWindow.subgraphs,
+    scopeStack: initialWindow.scopeStack,
+    rootGraph: initialWindow.rootGraph,
 
     past: [],
     future: [],
@@ -359,6 +1316,199 @@ export const useGraphStore = create<GraphStore>((set, get) => {
 
     wsConnected: false,
     execution: idleExecution(),
+
+    newWorkflowWindow: () => {
+      const state = get();
+      const windows = windowsWithSnapshot(state, snapshotActiveWindow(state));
+      const window = createWorkflowWindow(windows);
+      set({
+        windows: [...windows, window],
+        activeWindowId: window.id,
+        ...windowTopLevel(window),
+      });
+    },
+
+    activateWorkflowWindow: (windowId) => {
+      const state = get();
+      if (state.activeWindowId === windowId) {
+        return true;
+      }
+      const target = state.windows.find((window) => window.id === windowId);
+      if (!target) {
+        return false;
+      }
+      const windows = windowsWithSnapshot(state, snapshotActiveWindow(state));
+      set({
+        windows,
+        activeWindowId: target.id,
+        ...windowTopLevel(target),
+      });
+      return true;
+    },
+
+    closeWorkflowWindow: (windowId) => {
+      const state = get();
+      const index = state.windows.findIndex((window) => window.id === windowId);
+      if (index < 0) {
+        return false;
+      }
+      const target = state.windows[index];
+      if (!target) {
+        return false;
+      }
+      const closingActive = target.id === state.activeWindowId;
+      const running = closingActive
+        ? state.execution.status === "running"
+        : target.execution.status === "running";
+      if (running) {
+        return false;
+      }
+      if (state.windows.length === 1) {
+        const window = createWorkflowWindow([]);
+        set({
+          windows: [window],
+          activeWindowId: window.id,
+          executionWindowId: null,
+          ...windowTopLevel(window),
+        });
+        return true;
+      }
+      if (!closingActive) {
+        const windows = windowsWithSnapshot(
+          state,
+          snapshotActiveWindow(state),
+        ).filter((window) => window.id !== windowId);
+        set({
+          windows,
+          executionWindowId:
+            state.executionWindowId === windowId
+              ? null
+              : state.executionWindowId,
+        });
+        return true;
+      }
+      const windows = state.windows.filter((window) => window.id !== windowId);
+      const next = windows[Math.min(index, windows.length - 1)] ?? windows[0];
+      if (!next) {
+        return false;
+      }
+      set({
+        windows,
+        activeWindowId: next.id,
+        executionWindowId:
+          state.executionWindowId === windowId
+            ? null
+            : state.executionWindowId,
+        ...windowTopLevel(next),
+      });
+      return true;
+    },
+
+    openWorkflowInWindow: async (saved, meta = {}) => {
+      const built = await buildSavedWorkflow(saved, get().templates);
+      const state = get();
+      const windows = windowsWithSnapshot(state, snapshotActiveWindow(state));
+      const projectName = meta.projectName ?? saved.name ?? null;
+      const window = createWorkflowWindow(windows, {
+        title: meta.title ?? projectName ?? undefined,
+        projectName,
+        projectSlug: meta.projectSlug ?? null,
+      });
+      window.nodes = built.nodes;
+      window.edges = built.edges;
+      window.subgraphs = built.subgraphs;
+      set({
+        windows: [...windows, window],
+        activeWindowId: window.id,
+        ...windowTopLevel(window),
+      });
+      return true;
+    },
+
+    openProjectInWindow: async (slug) => {
+      const state = get();
+      const existing = state.windows.find(
+        (window) => window.projectSlug === slug,
+      );
+      if (existing) {
+        return get().activateWorkflowWindow(existing.id);
+      }
+      try {
+        const detail = await fetchProjectApi(slug);
+        const opened = await get().openWorkflowInWindow(detail.workflow, {
+          title: detail.name,
+          projectName: detail.name,
+          projectSlug: detail.slug,
+        });
+        if (opened) {
+          set((current) => ({
+            projects: [
+              detail,
+              ...current.projects.filter(
+                (project) => project.slug !== detail.slug,
+              ),
+            ],
+            projectsLoaded: true,
+            projectsError: null,
+          }));
+        }
+        return opened;
+      } catch (error) {
+        set({
+          projectsError:
+            error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    },
+
+    openWorkflowTemplateInWindow: (workflow) => {
+      const state = get();
+      const { graph, missing } = materialiseWorkflowTemplate(
+        workflow,
+        state.templates,
+      );
+      if (missing.length > 0) {
+        set({
+          workflowsError: `Missing templates: ${missing.join(", ")}`,
+        });
+        return false;
+      }
+      const windows = windowsWithSnapshot(state, snapshotActiveWindow(state));
+      const window = createWorkflowWindow(windows, {
+        title: workflow.title,
+      });
+      window.nodes = graph.nodes;
+      window.edges = graph.edges;
+      window.execution = idleExecution();
+      set({
+        windows: [...windows, window],
+        activeWindowId: window.id,
+        ...windowTopLevel(window),
+        workflowsError: null,
+      });
+      return true;
+    },
+
+    getWindowDocument: (windowId) => {
+      const state = get();
+      if (windowId === state.activeWindowId) {
+        return state.getWorkflowDocument(state.projectName);
+      }
+      const window = state.windows.find(
+        (candidate) => candidate.id === windowId,
+      );
+      if (!window) {
+        return null;
+      }
+      const graph = rootGraphFor(window);
+      return serialiseWorkflow(
+        graph.nodes,
+        graph.edges,
+        window.projectName,
+        mergeActiveSubgraph(window),
+      );
+    },
 
     loadTemplates: async () => {
       try {
@@ -385,60 +1535,279 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     loadWorkflowTemplate: (workflow) => {
-      const templates = new Map(
-        get().templates.map((template) => [template.name, template]),
-      );
-      const missing = workflow.nodes.filter(
-        (node) => !templates.has(node.template),
+      const { graph, missing } = materialiseWorkflowTemplate(
+        workflow,
+        get().templates,
       );
       if (missing.length > 0) {
         set({
-          workflowsError: `Missing templates: ${missing
-            .map((node) => node.template)
-            .join(", ")}`,
+          workflowsError: `Missing templates: ${missing.join(", ")}`,
         });
         return false;
       }
-      const nodes: AppNode[] = workflow.nodes.map((spec) => {
-        const template = templates.get(spec.template) as TemplateInfo;
-        const node: AppNode = {
-          id: spec.id,
-          type: "complex",
-          position: spec.position,
-          data: {
-            label: template.title,
-            templateName: template.name,
-            templateCode: template.code,
-            code: template.code,
-            schema: template.node_schema,
-            widgetValues: {
-              ...defaultWidgetValues(template.node_schema),
-              ...spec.widget_values,
-            },
-            isTrusted: true,
-            color: "default",
-          },
-        };
-        return node;
-      });
-      const edges: AppEdge[] = workflow.edges.map((edge) => ({
-        id: `${edge.source_node_id}:${edge.source_handle}->${edge.target_node_id}:${edge.target_handle}`,
-        source: edge.source_node_id,
-        target: edge.target_node_id,
-        sourceHandle: edge.source_handle,
-        targetHandle: edge.target_handle,
-      }));
       pushHistory();
-      set({
-        nodes,
-        edges,
+      set((state) => ({
+        windows: state.windows.map((window) =>
+          window.id === state.activeWindowId
+            ? {
+                ...window,
+                ...snapshotActiveWindow(state),
+                nodes: graph.nodes,
+                edges: graph.edges,
+                subgraphs: {},
+                scopeStack: [],
+                rootGraph: null,
+                execution: idleExecution(),
+                projectName: null,
+                projectSlug: null,
+                title: workflow.title,
+              }
+            : window,
+        ),
+        nodes: graph.nodes,
+        edges: graph.edges,
+        subgraphs: {},
+        scopeStack: [],
+        rootGraph: null,
+        projectName: null,
+        projectSlug: null,
+        saveDialogOpen: false,
+        saveError: null,
         editingNodeId: null,
         pendingApproval: null,
         approvalError: null,
         workflowsError: null,
         execution: idleExecution(),
-      });
+      }));
       return true;
+    },
+
+    loadProjects: async () => {
+      try {
+        const projects = await fetchProjectsApi();
+        set({ projects, projectsLoaded: true, projectsError: null });
+      } catch (error) {
+        set({
+          projectsLoaded: true,
+          projectsError:
+            error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+
+    openProject: async (slug) => {
+      try {
+        const detail = await fetchProjectApi(slug);
+        await get().restoreWorkflow(detail.workflow);
+        set((state) => ({
+          projectName: detail.name,
+          projectSlug: detail.slug,
+          projectsError: null,
+          saveDialogOpen: false,
+          saveError: null,
+          past: [],
+          future: [],
+          windows: state.windows.map((window) =>
+            window.id === state.activeWindowId
+              ? {
+                  ...window,
+                  ...snapshotActiveWindow(state),
+                  past: [],
+                  future: [],
+                  projectName: detail.name,
+                  projectSlug: detail.slug,
+                  title: detail.name,
+                }
+              : window,
+          ),
+        }));
+        const state = get();
+        saveLocalWorkflow(state.getWorkflowDocument(detail.name));
+        saveLocalProjectIdentity({ name: detail.name, slug: detail.slug });
+        return true;
+      } catch (error) {
+        set({
+          projectsError:
+            error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    },
+
+    requestSave: () => {
+      const state = get();
+      if (
+        state.nodes.length === 0 &&
+        state.edges.length === 0 &&
+        Object.keys(state.subgraphs).length === 0
+      ) {
+        return;
+      }
+      if (state.projectSlug && state.projectName) {
+        void state.saveProject();
+        return;
+      }
+      set({ saveDialogOpen: true, saveError: null });
+    },
+
+    openSaveDialog: () => set({ saveDialogOpen: true, saveError: null }),
+
+    closeSaveDialog: () => {
+      if (!get().saveBusy) {
+        set({ saveDialogOpen: false, saveError: null });
+      }
+    },
+
+    saveProject: async (name, overwrite = false) => {
+      const state = get();
+      if (state.saveBusy) {
+        return false;
+      }
+      const projectName = (name ?? state.projectName ?? "").trim();
+      if (!projectName) {
+        set({
+          saveDialogOpen: true,
+          saveError: "Enter a project name between 1 and 80 characters.",
+        });
+        return false;
+      }
+      const windowId = state.activeWindowId;
+      const workflow = state.getWorkflowDocument(projectName);
+      set({ saveBusy: true, saveError: null });
+      try {
+        const result = state.projectSlug
+          ? await updateProjectApi(state.projectSlug, projectName, workflow)
+          : await createProjectApi(projectName, workflow, overwrite);
+        const saved = result.project;
+        set((current) => {
+          const active = current.activeWindowId === windowId;
+          return {
+            ...(active
+              ? { projectName: saved.name, projectSlug: saved.slug }
+              : {}),
+            projects: [
+              saved,
+              ...current.projects.filter(
+                (project) => project.slug !== saved.slug,
+              ),
+            ],
+            projectsLoaded: true,
+            projectsError: null,
+            saveBusy: false,
+            saveDialogOpen: false,
+            saveError: null,
+            windows: current.windows.map((window) =>
+              window.id === windowId
+                ? {
+                    ...window,
+                    projectName: saved.name,
+                    projectSlug: saved.slug,
+                    title: saved.name,
+                  }
+                : window,
+            ),
+          };
+        });
+        if (get().activeWindowId === windowId) {
+          saveLocalWorkflow(workflow);
+          saveLocalProjectIdentity({ name: saved.name, slug: saved.slug });
+        }
+        return true;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        set((current) =>
+          current.activeWindowId === windowId
+            ? {
+                saveBusy: false,
+                saveDialogOpen: true,
+                saveError: message,
+              }
+            : { saveBusy: false },
+        );
+        return false;
+      }
+    },
+
+    deleteProject: async (slug) => {
+      try {
+        await deleteProjectApi(slug);
+        const wasCurrent = get().projectSlug === slug;
+        set((state) => ({
+          projects: state.projects.filter((project) => project.slug !== slug),
+          projectsError: null,
+          windows: state.windows.map((window) =>
+            window.projectSlug === slug
+              ? {
+                  ...window,
+                  projectName: null,
+                  projectSlug: null,
+                  title: "Untitled",
+                }
+              : window,
+          ),
+          ...(wasCurrent
+            ? { projectName: null, projectSlug: null, saveError: null }
+            : {}),
+        }));
+        if (wasCurrent) {
+          saveLocalProjectIdentity({ name: null, slug: null });
+        }
+        return true;
+      } catch (error) {
+        set({
+          projectsError:
+            error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    },
+
+    restoreProjectVersion: async (slug, version) => {
+      try {
+        const snapshot = await fetchProjectVersionApi(slug, version);
+        await get().restoreWorkflow(snapshot.workflow);
+        const project = get().projects.find((item) => item.slug === slug);
+        set((state) => {
+          const projectName =
+            snapshot.workflow.name ?? project?.name ?? state.projectName;
+          return {
+            projectName,
+            projectSlug: slug,
+            projectsError: null,
+            saveDialogOpen: false,
+            saveError: null,
+            past: [],
+            future: [],
+            windows: state.windows.map((window) =>
+              window.id === state.activeWindowId
+                ? {
+                    ...window,
+                    ...snapshotActiveWindow(state),
+                    past: [],
+                    future: [],
+                    projectName,
+                    projectSlug: slug,
+                    title: projectName ?? window.title,
+                  }
+                : window,
+            ),
+          };
+        });
+        const state = get();
+        saveLocalWorkflow(state.getWorkflowDocument(state.projectName));
+        saveLocalProjectIdentity({
+          name: state.projectName,
+          slug: state.projectSlug,
+        });
+        return true;
+      } catch (error) {
+        set({
+          projectsError:
+            error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
     },
 
     addNodeFromTemplate: (template, position) => {
@@ -471,39 +1840,95 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       if (!existing) {
         return null;
       }
-      const existingSocket =
-        connection.handleType === "source"
-          ? existing.data.schema.outputs.find(
-              (socket) => socket.name === connection.handleId,
-            )
-          : existing.data.schema.inputs.find(
-              (socket) => socket.name === connection.handleId,
-            );
-      if (!existingSocket) {
-        return null;
-      }
-      if (
+      const newInput =
+        existing.data.subgraphRole === "input" &&
+        connection.handleType === "source" &&
+        connection.handleId === NEW_SUBGRAPH_INPUT_HANDLE;
+      const newOutput =
+        existing.data.subgraphRole === "output" &&
         connection.handleType === "target" &&
-        isInputTaken(
-          state.edges,
-          connection.nodeId,
-          connection.handleId,
-        )
-      ) {
-        return null;
-      }
-      const match =
-        connection.handleType === "source"
-          ? findCompatibleInput(
-              template.node_schema,
-              existingSocket.data_type,
-            )
-          : findCompatibleOutput(
-              template.node_schema,
-              existingSocket.data_type,
-            );
-      if (!match) {
-        return null;
+        connection.handleId === NEW_SUBGRAPH_OUTPUT_HANDLE;
+      let sourceHandle = connection.handleId;
+      let targetHandle = connection.handleId;
+      let match: TemplateConnectionMatch | null;
+      let createdPort = false;
+      if (newInput || newOutput) {
+        if (newInput) {
+          match = findCompatibleTarget(template.node_schema, "ANY");
+        } else {
+          const sourceSocket = findCompatibleOutput(
+            template.node_schema,
+            "ANY",
+          );
+          match = sourceSocket
+            ? {
+                socketName: sourceSocket.name,
+                socketType: sourceSocket.data_type,
+                targetKind: "output",
+              }
+            : null;
+        }
+        if (!match) {
+          return null;
+        }
+        const port = get().addSubgraphPort(
+          newInput ? "input" : "output",
+          match.socketType,
+          match.socketName,
+        );
+        if (!port) {
+          return null;
+        }
+        if (newInput) {
+          sourceHandle = port;
+        } else {
+          targetHandle = port;
+        }
+        createdPort = true;
+      } else {
+        const existingSocket =
+          connection.handleType === "source"
+            ? existing.data.schema.outputs.find(
+                (socket) => socket.name === connection.handleId,
+              )
+            : resolveTargetSocket(
+                existing.data.schema,
+                connection.handleId,
+              );
+        if (!existingSocket) {
+          return null;
+        }
+        if (
+          connection.handleType === "target" &&
+          isInputTaken(
+            state.edges,
+            connection.nodeId,
+            connection.handleId,
+          )
+        ) {
+          return null;
+        }
+        if (connection.handleType === "source") {
+          match = findCompatibleTarget(
+            template.node_schema,
+            existingSocket.data_type,
+          );
+        } else {
+          const sourceSocket = findCompatibleOutput(
+            template.node_schema,
+            existingSocket.data_type,
+          );
+          match = sourceSocket
+            ? {
+                socketName: sourceSocket.name,
+                socketType: sourceSocket.data_type,
+                targetKind: "output",
+              }
+            : null;
+        }
+        if (!match) {
+          return null;
+        }
       }
       const id = crypto.randomUUID();
       const node: AppNode = {
@@ -525,20 +1950,22 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       const edge: AppEdge =
         connection.handleType === "source"
           ? {
-              id: `${connection.nodeId}:${connection.handleId}->${id}:${match.name}`,
+              id: `${connection.nodeId}:${sourceHandle}->${id}:${match.socketName}`,
               source: connection.nodeId,
-              sourceHandle: connection.handleId,
+              sourceHandle,
               target: id,
-              targetHandle: match.name,
+              targetHandle: match.socketName,
             }
           : {
-              id: `${id}:${match.name}->${connection.nodeId}:${connection.handleId}`,
+              id: `${id}:${match.socketName}->${connection.nodeId}:${targetHandle}`,
               source: id,
-              sourceHandle: match.name,
+              sourceHandle: match.socketName,
               target: connection.nodeId,
-              targetHandle: connection.handleId,
+              targetHandle,
             };
-      pushHistory();
+      if (!createdPort) {
+        pushHistory();
+      }
       set((current) => ({
         nodes: [
           ...current.nodes.map((candidate) =>
@@ -603,7 +2030,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
 
     duplicateNode: async (nodeId) => {
       const node = get().nodes.find((candidate) => candidate.id === nodeId);
-      if (!node) {
+      if (!node || isSubgraphManagerNode(node)) {
         return null;
       }
       pushHistory();
@@ -624,39 +2051,110 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     deleteNode: (nodeId) => {
-      if (!get().nodes.some((node) => node.id === nodeId)) {
+      const target = get().nodes.find((node) => node.id === nodeId);
+      if (!target || isSubgraphManagerNode(target)) {
         return;
       }
       pushHistory();
-      set((state) => ({
-        nodes: state.nodes.filter((node) => node.id !== nodeId),
-        edges: state.edges.filter(
+      const removingFrame = isFrameNode(target);
+      const candidates = new Set(
+        isSubgraphInstanceNode(target) && target.data.subgraphId
+          ? [target.data.subgraphId]
+          : [],
+      );
+      set((state) => {
+        const nodes = state.nodes
+          .filter((node) => node.id !== nodeId)
+          .map((node) =>
+            removingFrame && node.parentId === nodeId
+              ? {
+                  ...node,
+                  parentId: undefined,
+                  extent: undefined,
+                  position: {
+                    x: node.position.x + target.position.x,
+                    y: node.position.y + target.position.y,
+                  },
+                }
+              : node,
+          );
+        const edges = state.edges.filter(
           (edge) => edge.source !== nodeId && edge.target !== nodeId,
-        ),
-        editingNodeId:
-          state.editingNodeId === nodeId ? null : state.editingNodeId,
-        execution: pruneExecution(state.execution, new Set([nodeId])),
-      }));
+        );
+        return {
+          nodes,
+          edges,
+          subgraphs:
+            candidates.size > 0
+              ? pruneUnusedSubgraphs(state, nodes, edges, candidates)
+              : state.subgraphs,
+          editingNodeId:
+            state.editingNodeId === nodeId ? null : state.editingNodeId,
+          execution: pruneExecution(state.execution, new Set([nodeId])),
+        };
+      });
     },
 
     deleteSelection: () => {
-      const selected = get().nodes.filter((node) => node.selected);
+      const snapshot = get();
+      const selected = snapshot.nodes.filter((node) => node.selected);
       if (selected.length === 0) {
         return false;
       }
+      const frames = new Set(
+        selected.filter(isFrameNode).map((node) => node.id),
+      );
+      const removed = new Set(
+        selected.filter(isRunnableNode).map((node) => node.id),
+      );
+      if (frames.size === 0 && removed.size === 0) {
+        return false;
+      }
+      const nodesById = new Map(
+        snapshot.nodes.map((node) => [node.id, node]),
+      );
+      const candidates = new Set(
+        selected
+          .filter(isSubgraphInstanceNode)
+          .map((node) => node.data.subgraphId)
+          .filter((id): id is string => Boolean(id)),
+      );
       pushHistory();
-      const removed = new Set(selected.map((node) => node.id));
-      set((state) => ({
-        nodes: state.nodes.filter((node) => !removed.has(node.id)),
-        edges: state.edges.filter(
-          (edge) => !removed.has(edge.source) && !removed.has(edge.target),
-        ),
-        editingNodeId:
-          state.editingNodeId !== null && removed.has(state.editingNodeId)
-            ? null
-            : state.editingNodeId,
-        execution: pruneExecution(state.execution, removed),
-      }));
+      set((state) => {
+        const nodes = state.nodes
+          .filter(
+            (node) => !frames.has(node.id) && !removed.has(node.id),
+          )
+          .map((node) => {
+            if (!node.parentId || !frames.has(node.parentId)) {
+              return node;
+            }
+            return {
+              ...node,
+              parentId: undefined,
+              extent: undefined,
+              position: absolutePosition(node, nodesById),
+            };
+          });
+        const edges = state.edges.filter(
+          (edge) =>
+            !removed.has(edge.source) && !removed.has(edge.target),
+        );
+        return {
+          nodes,
+          edges,
+          subgraphs:
+            candidates.size > 0
+              ? pruneUnusedSubgraphs(state, nodes, edges, candidates)
+              : state.subgraphs,
+          editingNodeId:
+            state.editingNodeId !== null &&
+            removed.has(state.editingNodeId)
+              ? null
+              : state.editingNodeId,
+          execution: pruneExecution(state.execution, removed),
+        };
+      });
       return true;
     },
 
@@ -670,6 +2168,461 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           selected: node.id === nodeId,
         })),
       }));
+    },
+
+    selectAllNodes: () => {
+      if (get().nodes.length === 0) {
+        return;
+      }
+      set((state) => ({
+        nodes: state.nodes.map((node) =>
+          node.selected ? node : { ...node, selected: true },
+        ),
+      }));
+    },
+
+    clearSelection: () => {
+      if (!get().nodes.some((node) => node.selected)) {
+        return;
+      }
+      set((state) => ({
+        nodes: state.nodes.map((node) =>
+          node.selected ? { ...node, selected: false } : node,
+        ),
+      }));
+    },
+
+    arrangeSelection: (mode) => {
+      const allSelected = get().nodes.filter((node) => node.selected);
+      if (
+        allSelected.some(
+          (node) => isFrameNode(node) || node.parentId !== undefined,
+        )
+      ) {
+        return false;
+      }
+      const selected = allSelected;
+      if (selected.length < 2) {
+        return false;
+      }
+      if (
+        (mode === "distribute-x" || mode === "distribute-y") &&
+        selected.length < 3
+      ) {
+        return false;
+      }
+      const positions = arrangementPositions(selected, mode);
+      if (positions.size === 0) {
+        return false;
+      }
+      const changed = selected.some((node) => {
+        const position = positions.get(node.id);
+        return (
+          position !== undefined &&
+          (position.x !== node.position.x || position.y !== node.position.y)
+        );
+      });
+      if (!changed) {
+        return false;
+      }
+      pushHistory();
+      set((state) => ({
+        nodes: state.nodes.map((node) => {
+          const position = positions.get(node.id);
+          return position ? { ...node, position } : node;
+        }),
+      }));
+      return true;
+    },
+
+    groupSelection: () => {
+      const state = get();
+      const selected = state.nodes.filter(
+        (node) =>
+          node.selected && isRunnableNode(node) && node.parentId === undefined,
+      );
+      if (selected.length < 2) {
+        return null;
+      }
+      const sized = sizedNodes(selected);
+      const left = Math.min(...sized.map((item) => item.node.position.x));
+      const top = Math.min(...sized.map((item) => item.node.position.y));
+      const right = Math.max(
+        ...sized.map((item) => item.node.position.x + item.width),
+      );
+      const bottom = Math.max(
+        ...sized.map((item) => item.node.position.y + item.height),
+      );
+      const framePosition = {
+        x: left - FRAME_PADDING_X,
+        y: top - FRAME_HEADER_HEIGHT,
+      };
+      const frameId = crypto.randomUUID();
+      const selectedIds = new Set(selected.map((node) => node.id));
+      const frame: AppNode = {
+        id: frameId,
+        type: "complex",
+        position: framePosition,
+        width: Math.max(
+          FRAME_MIN_WIDTH,
+          right - left + FRAME_PADDING_X * 2,
+        ),
+        height: Math.max(
+          FRAME_MIN_HEIGHT,
+          bottom - top + FRAME_HEADER_HEIGHT + FRAME_PADDING_BOTTOM,
+        ),
+        selected: true,
+        zIndex: -1,
+        data: {
+          label: frameLabel(state.nodes),
+          templateName: null,
+          templateCode: null,
+          code: "",
+          schema: emptySchema(frameId),
+          widgetValues: {},
+          isTrusted: true,
+          color: "default",
+          isFrame: true,
+        },
+      };
+      pushHistory();
+      set((current) => ({
+        nodes: [
+          frame,
+          ...current.nodes.map((node) =>
+            selectedIds.has(node.id)
+              ? {
+                  ...node,
+                  selected: false,
+                  parentId: frameId,
+                  extent: "parent" as const,
+                  position: {
+                    x: node.position.x - framePosition.x,
+                    y: node.position.y - framePosition.y,
+                  },
+                }
+              : node.selected
+                ? { ...node, selected: false }
+                : node,
+          ),
+        ],
+      }));
+      return frameId;
+    },
+
+    ungroupSelection: () => {
+      const state = get();
+      const frames = state.nodes.filter(
+        (node) => node.selected && isFrameNode(node),
+      );
+      if (frames.length === 0) {
+        return false;
+      }
+      const frameIds = new Set(frames.map((frame) => frame.id));
+      const nodesById = new Map(
+        state.nodes.map((node) => [node.id, node]),
+      );
+      pushHistory();
+      set((current) => ({
+        nodes: current.nodes
+          .filter((node) => !frameIds.has(node.id))
+          .map((node) =>
+            node.parentId && frameIds.has(node.parentId)
+              ? {
+                  ...node,
+                  selected: true,
+                  parentId: undefined,
+                  extent: undefined,
+                  position: absolutePosition(node, nodesById),
+                }
+              : node,
+          ),
+      }));
+      return true;
+    },
+
+    createSubgraphFromSelection: () => {
+      const state = get();
+      const selectedAll = state.nodes.filter((node) => node.selected);
+      if (
+        selectedAll.length < 2 ||
+        selectedAll.some(
+          (node) =>
+            isFrameNode(node) ||
+            isSubgraphManagerNode(node) ||
+            node.parentId !== undefined,
+        )
+      ) {
+        return null;
+      }
+      const selected = selectedAll.filter(isRunnableNode);
+      if (selected.length < 2) {
+        return null;
+      }
+      const definitionId = crypto.randomUUID();
+      const instanceId = crypto.randomUUID();
+      const name = nextSubgraphName(state.subgraphs);
+      let built: ReturnType<typeof buildSubgraphFromSelection>;
+      try {
+        built = buildSubgraphFromSelection({
+          definitionId,
+          instanceId,
+          name,
+          nodes: state.nodes,
+          edges: state.edges,
+          selectedIds: new Set(selected.map((node) => node.id)),
+        });
+      } catch {
+        return null;
+      }
+      pushHistory();
+      set((current) => ({
+        nodes: built.nodes,
+        edges: built.edges,
+        subgraphs: {
+          ...current.subgraphs,
+          [definitionId]: built.definition,
+        },
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        execution: idleExecution(),
+      }));
+      return instanceId;
+    },
+
+    addSubgraphInstance: (definitionId, position) => {
+      const state = get();
+      const definition = state.subgraphs[definitionId];
+      if (!definition) {
+        return null;
+      }
+      const active = state.scopeStack[state.scopeStack.length - 1];
+      if (
+        active &&
+        subgraphDependsOn(state.subgraphs, definitionId, active.definitionId)
+      ) {
+        return null;
+      }
+      const id = crypto.randomUUID();
+      const node = createSubgraphInstanceNode(id, definition, position);
+      pushHistory();
+      set((current) => ({
+        nodes: [
+          ...current.nodes.map((candidate) =>
+            candidate.selected
+              ? { ...candidate, selected: false }
+              : candidate,
+          ),
+          node,
+        ],
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        execution: idleExecution(),
+      }));
+      return id;
+    },
+
+    addSubgraphPort: (kind, dataType, suggestedName) => {
+      const state = get();
+      const active = state.scopeStack[state.scopeStack.length - 1];
+      if (!active) {
+        return null;
+      }
+      const managerId =
+        kind === "input"
+          ? SUBGRAPH_INPUT_NODE_ID
+          : SUBGRAPH_OUTPUT_NODE_ID;
+      const manager = state.nodes.find((node) => node.id === managerId);
+      const definition = state.subgraphs[active.definitionId];
+      if (!manager || !definition) {
+        return null;
+      }
+      const existing =
+        kind === "input"
+          ? manager.data.schema.outputs
+          : manager.data.schema.inputs;
+      const name = uniqueSubgraphPortName(
+        suggestedName ?? kind,
+        new Set(existing.map((socket) => socket.name)),
+      );
+      const port = { name, data_type: dataType };
+      const schema =
+        kind === "input"
+          ? {
+              ...manager.data.schema,
+              outputs: [...manager.data.schema.outputs, port],
+            }
+          : {
+              ...manager.data.schema,
+              inputs: [...manager.data.schema.inputs, port],
+            };
+      const inputs =
+        kind === "input" ? [...definition.inputs, port] : definition.inputs;
+      const outputs =
+        kind === "output"
+          ? [...definition.outputs, port]
+          : definition.outputs;
+      pushHistory();
+      set((current) => ({
+        nodes: current.nodes.map((node) =>
+          node.id === managerId
+            ? { ...node, data: { ...node.data, schema } }
+            : node,
+        ),
+        subgraphs: {
+          ...current.subgraphs,
+          [active.definitionId]: {
+            ...(current.subgraphs[active.definitionId] ?? definition),
+            inputs,
+            outputs,
+          },
+        },
+      }));
+      return name;
+    },
+
+    enterSubgraph: (nodeId) => {
+      const state = get();
+      const node = state.nodes.find((candidate) => candidate.id === nodeId);
+      if (!node || !isSubgraphInstanceNode(node)) {
+        return false;
+      }
+      const definitionId = node.data.subgraphId ?? "";
+      const definition = state.subgraphs[definitionId];
+      if (!definition) {
+        return false;
+      }
+      if (
+        state.scopeStack.some(
+          (scope) => scope.definitionId === definitionId,
+        )
+      ) {
+        return false;
+      }
+      const subgraphs = mergeActiveSubgraph(state);
+      const rootGraph =
+        state.scopeStack.length === 0
+          ? { nodes: state.nodes, edges: state.edges }
+          : state.rootGraph;
+      if (!rootGraph) {
+        return false;
+      }
+      const target = subgraphs[definitionId] ?? definition;
+      const graph = graphForDefinition(target);
+      set({
+        nodes: graph.nodes,
+        edges: graph.edges,
+        subgraphs,
+        rootGraph,
+        scopeStack: [
+          ...state.scopeStack,
+          {
+            definitionId,
+            instanceId: node.id,
+            name: node.data.label,
+          },
+        ],
+        past: [],
+        future: [],
+        clipboard: null,
+        historyMeta: { coalesceKey: null, coalesceAt: 0, dragging: false },
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        execution: idleExecution(),
+      });
+      return true;
+    },
+
+    exitSubgraph: () => {
+      const { scopeStack } = get();
+      if (scopeStack.length === 0) {
+        return false;
+      }
+      return get().navigateToScope(scopeStack.length - 2);
+    },
+
+    navigateToScope: (depth) => {
+      const state = get();
+      if (depth >= state.scopeStack.length - 1) {
+        return false;
+      }
+      if (depth < -1) {
+        return false;
+      }
+      const subgraphs = syncSubgraphDefinitions(
+        mergeActiveSubgraph(state),
+      );
+      let graph: RootGraph;
+      let scopeStack: SubgraphScope[];
+      if (depth < 0) {
+        if (!state.rootGraph) {
+          return false;
+        }
+        graph = {
+          nodes: syncSubgraphInstanceSchemas(
+            state.rootGraph.nodes,
+            subgraphs,
+          ),
+          edges: state.rootGraph.edges,
+        };
+        scopeStack = [];
+      } else {
+        const scope = state.scopeStack[depth];
+        const definition = scope
+          ? subgraphs[scope.definitionId]
+          : undefined;
+        if (!scope || !definition) {
+          return false;
+        }
+        graph = graphForDefinition({
+          ...definition,
+          nodes: syncSubgraphInstanceSchemas(
+            definition.nodes,
+            subgraphs,
+          ),
+        });
+        scopeStack = state.scopeStack.slice(0, depth + 1);
+      }
+      set({
+        nodes: graph.nodes.map((node) => ({ ...node, selected: false })),
+        edges: graph.edges,
+        subgraphs,
+        scopeStack,
+        rootGraph: depth < 0 ? null : state.rootGraph,
+        past: [],
+        future: [],
+        clipboard: null,
+        historyMeta: { coalesceKey: null, coalesceAt: 0, dragging: false },
+        editingNodeId: null,
+        pendingApproval: null,
+        approvalError: null,
+        execution: idleExecution(),
+      });
+      return true;
+    },
+
+    getWorkflowDocument: (name) => {
+      const state = get();
+      const graph = rootGraphFor(state);
+      return serialiseWorkflow(
+        graph.nodes,
+        graph.edges,
+        name === undefined ? state.projectName : name,
+        mergeActiveSubgraph(state),
+      );
+    },
+
+    getExecutionGraph: () => {
+      const state = get();
+      const graph = rootGraphFor(state);
+      return flattenWorkflow(
+        graph.nodes,
+        graph.edges,
+        mergeActiveSubgraph(state),
+      );
     },
 
     renameNode: (nodeId, label) => {
@@ -717,7 +2670,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
 
     resetNode: (nodeId) => {
       const node = get().nodes.find((candidate) => candidate.id === nodeId);
-      if (!node) {
+      if (!node || isSubgraphManagerNode(node) || isSubgraphInstanceNode(node)) {
         return false;
       }
       let code = SCRATCH_NODE_CODE;
@@ -793,13 +2746,37 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         return;
       }
       pushHistory();
-      set({
-        nodes: [],
-        edges: [],
-        editingNodeId: null,
-        pendingApproval: null,
-        approvalError: null,
-        execution: idleExecution(),
+      set((state) => {
+        if (state.scopeStack.length === 0) {
+          return {
+            nodes: [],
+            edges: [],
+            subgraphs: {},
+            rootGraph: null,
+            editingNodeId: null,
+            pendingApproval: null,
+            approvalError: null,
+            execution: idleExecution(),
+          };
+        }
+        const candidates = new Set(
+          state.nodes
+            .filter(isSubgraphInstanceNode)
+            .map((node) => node.data.subgraphId)
+            .filter((id): id is string => Boolean(id)),
+        );
+        return {
+          nodes: [],
+          edges: [],
+          subgraphs:
+            candidates.size > 0
+              ? pruneUnusedSubgraphs(state, [], [], candidates)
+              : state.subgraphs,
+          editingNodeId: null,
+          pendingApproval: null,
+          approvalError: null,
+          execution: idleExecution(),
+        };
       });
     },
 
@@ -822,6 +2799,9 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         future: [...future, snapshot],
         nodes: previous.nodes,
         edges: previous.edges,
+        subgraphs: previous.subgraphs,
+        scopeStack: previous.scopeStack,
+        rootGraph: previous.rootGraph,
         editingNodeId: null,
         pendingApproval: null,
         approvalError: null,
@@ -844,6 +2824,9 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         future: future.slice(0, -1),
         nodes: next.nodes,
         edges: next.edges,
+        subgraphs: next.subgraphs,
+        scopeStack: next.scopeStack,
+        rootGraph: next.rootGraph,
         editingNodeId: null,
         pendingApproval: null,
         approvalError: null,
@@ -853,41 +2836,87 @@ export const useGraphStore = create<GraphStore>((set, get) => {
 
     copySelection: () => {
       const { nodes, edges } = get();
-      const selected = nodes.filter((node) => node.selected);
+      const selected = nodes.filter(
+        (node) => node.selected && !isSubgraphManagerNode(node),
+      );
       if (selected.length === 0) {
         return false;
       }
+      const nodesById = new Map(nodes.map((node) => [node.id, node]));
       const ids = new Set(selected.map((node) => node.id));
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        for (const node of nodes) {
+          if (node.parentId && ids.has(node.parentId) && !ids.has(node.id)) {
+            ids.add(node.id);
+            expanded = true;
+          }
+        }
+      }
+      const copied = nodes
+        .filter((node) => ids.has(node.id))
+        .map((node) => {
+          if (node.parentId && !ids.has(node.parentId)) {
+            return {
+              ...node,
+              parentId: undefined,
+              extent: undefined,
+              position: absolutePosition(node, nodesById),
+              data: { ...node.data },
+            };
+          }
+          return { ...node, data: { ...node.data } };
+        });
       set({
         clipboard: {
-          nodes: selected.map((node) => ({
-            ...node,
-            data: { ...node.data },
-          })),
+          nodes: copied,
           edges: edges.filter(
             (edge) => ids.has(edge.source) && ids.has(edge.target),
           ),
+          subgraphs: mergeActiveSubgraph(get()),
+          scopeStack: get().scopeStack,
+          rootGraph: get().rootGraph,
         },
       });
       return true;
     },
 
     cutSelection: () => {
-      const { nodes } = get();
-      const selected = nodes.filter((node) => node.selected);
-      if (selected.length === 0) {
+      if (!get().copySelection()) {
         return false;
       }
-      get().copySelection();
+      const copied = get().clipboard?.nodes ?? [];
       pushHistory();
-      const removed = new Set(selected.map((node) => node.id));
-      set((state) => ({
-        nodes: state.nodes.filter((node) => !removed.has(node.id)),
-        edges: state.edges.filter(
+      const removed = new Set(copied.map((node) => node.id));
+      const candidates = new Set(
+        copied
+          .filter(isSubgraphInstanceNode)
+          .map((node) => node.data.subgraphId)
+          .filter((id): id is string => Boolean(id)),
+      );
+      set((state) => {
+        const nodes = state.nodes.filter(
+          (node) => !removed.has(node.id),
+        );
+        const edges = state.edges.filter(
           (edge) => !removed.has(edge.source) && !removed.has(edge.target),
-        ),
-        execution: pruneExecution(state.execution, removed),
-      }));
+        );
+        return {
+          nodes,
+          edges,
+          subgraphs:
+            candidates.size > 0
+              ? pruneUnusedSubgraphs(state, nodes, edges, candidates)
+              : state.subgraphs,
+          editingNodeId:
+            state.editingNodeId !== null &&
+            removed.has(state.editingNodeId)
+              ? null
+              : state.editingNodeId,
+          execution: pruneExecution(state.execution, removed),
+        };
+      });
       return true;
     },
 
@@ -898,15 +2927,21 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       }
       pushHistory();
       const templates = get().templates;
+      const clipById = new Map(clip.nodes.map((node) => [node.id, node]));
+      const absolute = new Map(
+        clip.nodes.map((node) => [
+          node.id,
+          absolutePosition(node, clipById),
+        ]),
+      );
+      const minX = Math.min(
+        ...clip.nodes.map((node) => absolute.get(node.id)?.x ?? 0),
+      );
+      const minY = Math.min(
+        ...clip.nodes.map((node) => absolute.get(node.id)?.y ?? 0),
+      );
       const offset = anchor
-        ? {
-            x:
-              anchor.x -
-              Math.min(...clip.nodes.map((node) => node.position.x)),
-            y:
-              anchor.y -
-              Math.min(...clip.nodes.map((node) => node.position.y)),
-          }
+        ? { x: anchor.x - minX, y: anchor.y - minY }
         : { x: PASTE_OFFSET, y: PASTE_OFFSET };
       const idMap = new Map<string, string>();
       for (const node of clip.nodes) {
@@ -927,17 +2962,34 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         const isOfficial = templates.some(
           (template) => template.code_hash === hash,
         );
+        const newParentId = node.parentId
+          ? idMap.get(node.parentId)
+          : undefined;
+        const position = absolute.get(node.id) ?? node.position;
+        const parentPosition = newParentId
+          ? absolute.get(node.parentId ?? "")
+          : undefined;
         newNodes.push({
           ...node,
           id: idMap.get(node.id) as string,
+          parentId: newParentId,
+          extent: newParentId ? "parent" : undefined,
           selected: true,
-          position: {
-            x: node.position.x + offset.x,
-            y: node.position.y + offset.y,
+          position: parentPosition
+            ? {
+                x: position.x - parentPosition.x,
+                y: position.y - parentPosition.y,
+              }
+            : { x: position.x + offset.x, y: position.y + offset.y },
+          data: {
+            ...node.data,
+            isTrusted: isFrameNode(node) ? true : isOfficial,
           },
-          data: { ...node.data, isTrusted: isOfficial },
         });
       }
+      newNodes.sort(
+        (a, b) => Number(Boolean(a.parentId)) - Number(Boolean(b.parentId)),
+      );
       const newEdges: AppEdge[] = clip.edges.map((edge) => {
         const source = idMap.get(edge.source) as string;
         const target = idMap.get(edge.target) as string;
@@ -968,13 +3020,20 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     onNodesChange: (changes) => {
-      const removed = changes
+      const managerIds = new Set(
+        get().nodes.filter(isSubgraphManagerNode).map((node) => node.id),
+      );
+      const safeChanges = changes.filter(
+        (change) =>
+          !(change.type === "remove" && managerIds.has(change.id)),
+      );
+      const removed = safeChanges
         .filter((change) => change.type === "remove")
         .map((change) => change.id);
-      const dragStart = changes.some(
+      const dragStart = safeChanges.some(
         (change) => change.type === "position" && change.dragging === true,
       );
-      const dragEnd = changes.some(
+      const dragEnd = safeChanges.some(
         (change) => change.type === "position" && change.dragging === false,
       );
       if (dragStart && !get().historyMeta.dragging) {
@@ -984,17 +3043,62 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         }));
       }
       set((state) => {
-        const next: Partial<GraphStore> = {
-          nodes: applyNodeChanges<AppNode>(changes, state.nodes),
-        };
+        const removedSet = new Set(removed);
+        const frames = new Map(
+          state.nodes
+            .filter(
+              (node) => removedSet.has(node.id) && isFrameNode(node),
+            )
+            .map((node) => [node.id, node]),
+        );
+        const nodesById = new Map(
+          state.nodes.map((node) => [node.id, node]),
+        );
+        const nodes = applyNodeChanges<AppNode>(safeChanges, state.nodes).map(
+          (node) => {
+            if (!node.parentId || !frames.has(node.parentId)) {
+              return node;
+            }
+            return {
+              ...node,
+              parentId: undefined,
+              extent: undefined,
+              position: absolutePosition(node, nodesById),
+            };
+          },
+        );
+        const candidates = new Set(
+          state.nodes
+            .filter(
+              (node) =>
+                removedSet.has(node.id) &&
+                isSubgraphInstanceNode(node) &&
+                node.data.subgraphId,
+            )
+            .map((node) => node.data.subgraphId as string),
+        );
+        const edges =
+          removed.length > 0
+            ? state.edges.filter(
+                (edge) =>
+                  !removedSet.has(edge.source) &&
+                  !removedSet.has(edge.target),
+              )
+            : state.edges;
+        const next: Partial<GraphStore> = { nodes };
         if (removed.length > 0) {
-          next.edges = state.edges.filter(
-            (edge) =>
-              !removed.includes(edge.source) && !removed.includes(edge.target),
-          );
+          next.edges = edges;
           next.execution = pruneExecution(
             state.execution,
-            new Set(removed),
+            removedSet,
+          );
+        }
+        if (candidates.size > 0) {
+          next.subgraphs = pruneUnusedSubgraphs(
+            state,
+            nodes,
+            edges,
+            candidates,
           );
         }
         if (dragEnd) {
@@ -1011,24 +3115,93 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     onConnect: (connection) => {
-      const { source, target, sourceHandle, targetHandle } = connection;
+      const { source, target } = connection;
+      let { sourceHandle, targetHandle } = connection;
       if (!source || !target || !sourceHandle || !targetHandle) {
         return;
       }
       if (source === target) {
         return;
       }
-      const state = get();
-      const sourceNode = state.nodes.find((node) => node.id === source);
-      const targetNode = state.nodes.find((node) => node.id === target);
+      let state = get();
+      let sourceNode = state.nodes.find((node) => node.id === source);
+      let targetNode = state.nodes.find((node) => node.id === target);
       if (!sourceNode || !targetNode) {
+        return;
+      }
+      let createdPort = false;
+      if (
+        sourceNode.data.subgraphRole === "input" &&
+        sourceHandle === NEW_SUBGRAPH_INPUT_HANDLE
+      ) {
+        if (targetNode.data.subgraphRole) {
+          return;
+        }
+        const targetSocket = resolveTargetSocket(
+          targetNode.data.schema,
+          targetHandle,
+        );
+        if (
+          !targetSocket ||
+          isInputTaken(state.edges, target, targetHandle)
+        ) {
+          return;
+        }
+        const port = get().addSubgraphPort(
+          "input",
+          targetSocket.data_type,
+          targetHandle,
+        );
+        if (!port) {
+          return;
+        }
+        sourceHandle = port;
+        createdPort = true;
+        state = get();
+        sourceNode = state.nodes.find((node) => node.id === source);
+        targetNode = state.nodes.find((node) => node.id === target);
+      } else if (
+        targetNode.data.subgraphRole === "output" &&
+        targetHandle === NEW_SUBGRAPH_OUTPUT_HANDLE
+      ) {
+        if (sourceNode.data.subgraphRole) {
+          return;
+        }
+        const sourceSocket = sourceNode.data.schema.outputs.find(
+          (socket) => socket.name === sourceHandle,
+        );
+        if (!sourceSocket) {
+          return;
+        }
+        const port = get().addSubgraphPort(
+          "output",
+          sourceSocket.data_type,
+          sourceHandle,
+        );
+        if (!port) {
+          return;
+        }
+        targetHandle = port;
+        createdPort = true;
+        state = get();
+        sourceNode = state.nodes.find((node) => node.id === source);
+        targetNode = state.nodes.find((node) => node.id === target);
+      }
+      if (!sourceNode || !targetNode) {
+        return;
+      }
+      if (
+        sourceNode.data.subgraphRole === "input" &&
+        targetNode.data.subgraphRole === "output"
+      ) {
         return;
       }
       const sourceSocket = sourceNode.data.schema.outputs.find(
         (socket) => socket.name === sourceHandle,
       );
-      const targetSocket = targetNode.data.schema.inputs.find(
-        (socket) => socket.name === targetHandle,
+      const targetSocket = resolveTargetSocket(
+        targetNode.data.schema,
+        targetHandle,
       );
       if (!sourceSocket || !targetSocket) {
         return;
@@ -1048,11 +3221,23 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         sourceHandle,
         targetHandle,
       };
-      pushHistory();
+      if (!createdPort) {
+        pushHistory();
+      }
       set((current) => ({ edges: addEdge(edge, current.edges) }));
     },
 
-    openEditor: (nodeId) => set({ editingNodeId: nodeId }),
+    openEditor: (nodeId) => {
+      const node = get().nodes.find((candidate) => candidate.id === nodeId);
+      if (
+        !node ||
+        isSubgraphManagerNode(node) ||
+        isSubgraphInstanceNode(node)
+      ) {
+        return;
+      }
+      set({ editingNodeId: nodeId });
+    },
 
     closeEditor: () => set({ editingNodeId: null }),
 
@@ -1093,6 +3278,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       set({
         pendingApproval: { nodeId, code, codeHash: hash, schema },
         approvalError: null,
+        editingNodeId: null,
       });
     },
 
@@ -1129,100 +3315,343 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       const templateByName = new Map(
         templates.map((template) => [template.name, template]),
       );
+      const savedSubgraphs = saved.subgraphs ?? {};
 
-      const built = await Promise.all(
-        saved.nodes.map(async (savedNode): Promise<AppNode> => {
-          let schema: NodeSchema;
-          try {
-            schema = await parseCode(savedNode.code, savedNode.id);
-          } catch (error) {
-            schema = {
-              ...emptySchema(savedNode.id),
-              syntax_errors: [
-                {
-                  line: 1,
-                  column: 0,
-                  message: `Failed to re-parse restored code: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-                },
-              ],
-            };
-          }
-          const template = savedNode.templateName
-            ? (templateByName.get(savedNode.templateName) ?? null)
-            : null;
-          const hash = await sha256Hex(savedNode.code);
-          const isOfficial = templates.some(
-            (candidate) => candidate.code_hash === hash,
-          );
+      const buildNode = async (
+        savedNode: SavedWorkflow["nodes"][number],
+      ): Promise<AppNode> => {
+        if (savedNode.isFrame) {
           return {
             id: savedNode.id,
             type: "complex",
             position: savedNode.position,
+            width: savedNode.width ?? FRAME_MIN_WIDTH,
+            height: savedNode.height ?? FRAME_MIN_HEIGHT,
+            parentId: savedNode.parentId,
+            extent: savedNode.parentId ? "parent" : undefined,
+            zIndex: -1,
             data: {
               label: savedNode.label,
-              templateName: template?.name ?? savedNode.templateName,
-              templateCode: template?.code ?? null,
-              code: savedNode.code,
-              schema,
-              widgetValues: mergeWidgetValues(schema, savedNode.widgetValues),
-              isTrusted: isOfficial,
+              templateName: null,
+              templateCode: null,
+              code: "",
+              schema: emptySchema(savedNode.id),
+              widgetValues: {},
+              isTrusted: true,
               color: savedNode.color ?? "default",
+              isFrame: true,
             },
           };
-        }),
-      );
+        }
+        if (savedNode.isSubgraph) {
+          const definition = savedSubgraphs[savedNode.subgraphId ?? ""];
+          if (!definition) {
+            throw new Error(
+              `Node '${savedNode.id}' references a missing subgraph.`,
+            );
+          }
+          return {
+            id: savedNode.id,
+            type: "complex",
+            position: savedNode.position,
+            parentId: savedNode.parentId,
+            extent: savedNode.parentId ? "parent" : undefined,
+            data: {
+              label: savedNode.label,
+              templateName: null,
+              templateCode: null,
+              code: "",
+              schema: emptySchema(
+                savedNode.id,
+                definition.inputs,
+                definition.outputs,
+              ),
+              widgetValues: {},
+              isTrusted: true,
+              color: savedNode.color ?? "default",
+              isSubgraph: true,
+              subgraphId: definition.id,
+            },
+          };
+        }
+        let schema: NodeSchema;
+        try {
+          schema = await parseCode(savedNode.code, savedNode.id);
+        } catch (error) {
+          schema = {
+            ...emptySchema(savedNode.id),
+            syntax_errors: [
+              {
+                line: 1,
+                column: 0,
+                message: `Failed to re-parse restored code: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              },
+            ],
+          };
+        }
+        const template = savedNode.templateName
+          ? (templateByName.get(savedNode.templateName) ?? null)
+          : null;
+        const hash = await sha256Hex(savedNode.code);
+        const isOfficial = templates.some(
+          (candidate) => candidate.code_hash === hash,
+        );
+        return {
+          id: savedNode.id,
+          type: "complex",
+          position: savedNode.position,
+          parentId: savedNode.parentId,
+          extent: savedNode.parentId ? "parent" : undefined,
+          data: {
+            label: savedNode.label,
+            templateName: template?.name ?? savedNode.templateName,
+            templateCode: template?.code ?? null,
+            code: savedNode.code,
+            schema,
+            widgetValues: mergeWidgetValues(schema, savedNode.widgetValues),
+            isTrusted: isOfficial,
+            color: savedNode.color ?? "default",
+          },
+        };
+      };
 
-      const nodeIds = new Set(built.map((node) => node.id));
-      let edges: AppEdge[] = saved.edges
-        .filter(
-          (edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
-        )
-        .map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle,
-          targetHandle: edge.targetHandle,
-        }));
-      for (const node of built) {
-        edges = reconcileEdges(edges, node.id, node.data.schema);
+      const buildGraph = async (
+        nodes: SavedWorkflow["nodes"],
+        edges: SavedWorkflow["edges"],
+        definition: boolean,
+      ): Promise<RootGraph> => {
+        const built = await Promise.all(nodes.map(buildNode));
+        built.sort(
+          (a, b) => Number(Boolean(a.parentId)) - Number(Boolean(b.parentId)),
+        );
+        const nodeIds = new Set(built.map((node) => node.id));
+        const allowed = new Set(nodeIds);
+        if (definition) {
+          allowed.add(SUBGRAPH_INPUT_NODE_ID);
+          allowed.add(SUBGRAPH_OUTPUT_NODE_ID);
+        }
+        let builtEdges: AppEdge[] = edges
+          .filter(
+            (edge) => allowed.has(edge.source) && allowed.has(edge.target),
+          )
+          .map((edge) => ({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edge.sourceHandle,
+            targetHandle: edge.targetHandle,
+          }));
+        for (const node of built) {
+          builtEdges = reconcileEdges(
+            builtEdges,
+            node.id,
+            node.data.schema,
+          );
+        }
+        return { nodes: built, edges: builtEdges };
+      };
+
+      const subgraphs: SubgraphMap = {};
+      for (const [id, definition] of Object.entries(savedSubgraphs)) {
+        const graph = await buildGraph(
+          definition.nodes,
+          definition.edges,
+          true,
+        );
+        subgraphs[id] = {
+          id: definition.id,
+          name: definition.name,
+          inputs: definition.inputs,
+          outputs: definition.outputs,
+          nodes: graph.nodes,
+          edges: graph.edges,
+          inputPosition: definition.inputPosition,
+          outputPosition: definition.outputPosition,
+        };
       }
+      const root = await buildGraph(saved.nodes, saved.edges, false);
 
-      set({
-        nodes: built,
-        edges,
+      set((state) => ({
+        nodes: root.nodes,
+        edges: root.edges,
+        subgraphs,
+        scopeStack: [],
+        rootGraph: null,
+        projectName: saved.name ?? null,
+        projectSlug: null,
+        saveDialogOpen: false,
+        saveError: null,
         editingNodeId: null,
         pendingApproval: null,
         approvalError: null,
         execution: idleExecution(),
-      });
+        windows: state.windows.map((window) =>
+          window.id === state.activeWindowId
+            ? {
+                ...window,
+                nodes: root.nodes,
+                edges: root.edges,
+                subgraphs,
+                scopeStack: [],
+                rootGraph: null,
+                execution: idleExecution(),
+                projectName: saved.name ?? null,
+                projectSlug: null,
+                title: saved.name ?? window.title,
+              }
+            : window,
+        ),
+      }));
     },
 
     restoreFromStorage: async () => {
       if (get().nodes.length > 0) {
         return;
       }
-      const saved = loadLocalWorkflow();
-      if (saved && saved.nodes.length > 0) {
-        await get().restoreWorkflow(saved);
-        set({ past: [], future: [] });
+
+      const workspace = loadLocalWorkspace();
+      if (workspace) {
+        const templates = get().templates;
+        const hydrated: WorkflowWindow[] = [];
+        for (const savedWindow of workspace.windows) {
+          try {
+            const built = await buildSavedWorkflow(
+              savedWindow.workflow,
+              templates,
+            );
+            hydrated.push({
+              id: savedWindow.id,
+              title: savedWindow.projectName ?? savedWindow.title,
+              ...emptyWindowState(),
+              ...built,
+              projectName: savedWindow.projectName,
+              projectSlug: savedWindow.projectSlug,
+              execution: idleExecution(),
+            });
+          } catch {
+            continue;
+          }
+        }
+        if (hydrated.length > 0) {
+          const active =
+            hydrated.find(
+              (window) => window.id === workspace.activeWindowId,
+            ) ?? hydrated[0];
+          if (active) {
+            set({
+              windows: hydrated,
+              activeWindowId: active.id,
+              executionWindowId: null,
+              clipboard: null,
+              ...windowTopLevel(active),
+            });
+            saveLocalWorkflow(
+              get().getWorkflowDocument(active.projectName),
+            );
+            saveLocalProjectIdentity({
+              name: active.projectName,
+              slug: active.projectSlug,
+            });
+            return;
+          }
+        }
       }
+
+      const saved = loadLocalWorkflow();
+      if (
+        saved &&
+        (saved.nodes.length > 0 ||
+          Object.keys(saved.subgraphs ?? {}).length > 0)
+      ) {
+        await get().restoreWorkflow(saved);
+        const identity = loadLocalProjectIdentity();
+        set((state) => {
+          const projectName = identity?.name ?? saved.name ?? null;
+          const projectSlug = identity?.slug ?? null;
+          return {
+            projectName,
+            projectSlug,
+            past: [],
+            future: [],
+            windows: state.windows.map((window) =>
+              window.id === state.activeWindowId
+                ? {
+                    ...window,
+                    projectName,
+                    projectSlug,
+                    title: projectName ?? window.title,
+                    past: [],
+                    future: [],
+                  }
+                : window,
+            ),
+          };
+        });
+        return;
+      }
+
+      let session: WorkspaceSession | null;
+      try {
+        session = await fetchWorkspaceSession();
+      } catch {
+        return;
+      }
+      if (
+        !session ||
+        (session.workflow.nodes.length === 0 &&
+          Object.keys(session.workflow.subgraphs ?? {}).length === 0)
+      ) {
+        return;
+      }
+      await get().restoreWorkflow(session.workflow);
+      const projectName =
+        session.project_name ?? session.workflow.name ?? null;
+      set((state) => ({
+        projectName,
+        projectSlug: session.project_slug,
+        past: [],
+        future: [],
+        windows: state.windows.map((window) =>
+          window.id === state.activeWindowId
+            ? {
+                ...window,
+                projectName,
+                projectSlug: session.project_slug,
+                title: projectName ?? window.title,
+                past: [],
+                future: [],
+              }
+            : window,
+        ),
+      }));
+      const state = get();
+      saveLocalWorkflow(state.getWorkflowDocument(projectName));
+      saveLocalProjectIdentity({
+        name: projectName,
+        slug: session.project_slug,
+      });
     },
 
     runGraph: async (targets?: string[]) => {
-      const { nodes, edges } = get();
-      const candidates = targets
-        ? nodes.filter((node) => targets.includes(node.id))
-        : nodes;
-      if (candidates.length === 0) {
-        set((state) => ({
+      const state = get();
+      if (state.execution.status === "running") {
+        return;
+      }
+      const otherRunning = state.windows.some(
+        (window) =>
+          window.id !== state.activeWindowId &&
+          window.execution.status === "running",
+      );
+      if (otherRunning) {
+        set((current) => ({
           execution: {
-            ...state.execution,
+            ...current.execution,
             status: "idle",
             error: {
-              message: "Canvas is empty — drag a template node in first.",
+              message:
+                "Another workflow window is running. Stop it or switch to that window first.",
               errorType: "LocalValidation",
               nodeId: null,
               line: null,
@@ -1232,6 +3661,67 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         }));
         return;
       }
+      if (state.scopeStack.length > 0) {
+        set((current) => ({
+          execution: {
+            ...current.execution,
+            status: "idle",
+            error: {
+              message:
+                "Exit the subgraph to run the workflow from the root canvas.",
+              errorType: "LocalValidation",
+              nodeId: null,
+              line: null,
+              traceback: "",
+            },
+          },
+        }));
+        return;
+      }
+      let flattened: FlattenedWorkflow;
+      try {
+        flattened = state.getExecutionGraph();
+      } catch (error) {
+        set((current) => ({
+          execution: {
+            ...current.execution,
+            status: "idle",
+            error: {
+              message: error instanceof Error ? error.message : String(error),
+              errorType: "Subgraph",
+              nodeId: null,
+              line: null,
+              traceback: "",
+            },
+          },
+        }));
+        return;
+      }
+      if (flattened.graph.nodes.length === 0) {
+        set((current) => ({
+          execution: {
+            ...current.execution,
+            status: "idle",
+            error: {
+              message:
+                state.nodes.length === 0
+                  ? "Canvas is empty — drag a template node in first."
+                  : "No executable nodes selected.",
+              errorType: "LocalValidation",
+              nodeId: null,
+              line: null,
+              traceback: "",
+            },
+          },
+        }));
+        return;
+      }
+      const candidates = state.nodes.filter(
+        (node) =>
+          isRunnableNode(node) &&
+          !isSubgraphInstanceNode(node) &&
+          (!targets || targets.includes(node.id)),
+      );
       const broken = candidates.find(
         (node) => node.data.schema.syntax_errors.length > 0,
       );
@@ -1254,15 +3744,29 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         return;
       }
 
-      set({ execution: { ...idleExecution(), status: "running" } });
+      set({
+        execution: { ...idleExecution(), status: "running" },
+        executionWindowId: state.activeWindowId,
+      });
+      const scopedTargets = targets?.filter((target) =>
+        flattened.graph.nodes.some((node) => node.id === target),
+      );
       try {
         const response: ExecuteResponse = await executeGraph(
-          serialiseGraph(nodes, edges),
-          targets,
+          flattened.graph,
+          scopedTargets,
+          flattened.labels,
         );
-        set((state) => ({
-          execution: { ...state.execution, status: "running", runId: response.run_id },
-        }));
+        set((state) =>
+          state.execution.status === "running"
+            ? {
+                execution: {
+                  ...state.execution,
+                  runId: state.execution.runId ?? response.run_id,
+                },
+              }
+            : {},
+        );
       } catch (error) {
         if (error instanceof ApiError) {
           const untrusted = untrustedNodesFrom(error);
@@ -1350,6 +3854,24 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     applyExecutionEvent: (event) => {
+      const current = get();
+      if (
+        current.executionWindowId !== null &&
+        current.executionWindowId !== current.activeWindowId
+      ) {
+        const target = current.windows.find(
+          (window) => window.id === current.executionWindowId,
+        );
+        if (target) {
+          const execution = reduceExecutionEvent(target.execution, event);
+          set((state) => ({
+            windows: state.windows.map((window) =>
+              window.id === target.id ? { ...window, execution } : window,
+            ),
+          }));
+          return;
+        }
+      }
       set((state) => {
         const execution = state.execution;
         switch (event.type) {
@@ -1508,6 +4030,24 @@ export const useGraphStore = create<GraphStore>((set, get) => {
     },
 
     syncRunStatus: (status) => {
+      const current = get();
+      if (
+        current.executionWindowId !== null &&
+        current.executionWindowId !== current.activeWindowId
+      ) {
+        const target = current.windows.find(
+          (window) => window.id === current.executionWindowId,
+        );
+        if (target) {
+          const execution = reduceRunStatus(target.execution, status);
+          set((state) => ({
+            windows: state.windows.map((window) =>
+              window.id === target.id ? { ...window, execution } : window,
+            ),
+          }));
+          return;
+        }
+      }
       set((state) => {
         const execution = state.execution;
         if (status.status === "running") {

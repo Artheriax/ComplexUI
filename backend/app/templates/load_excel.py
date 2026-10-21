@@ -3,7 +3,7 @@
 # ///
 import polars as pl
 
-path: str = "data.xlsx"
+path: File = ""
 sheet_id: int = 1
 
 df = pl.read_excel(path, sheet_id=sheet_id)

@@ -1,0 +1,223 @@
+"""Tests for standalone Python and Jupyter notebook exports."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from app.exporter import ExportError, export_notebook, export_python
+from app.schemas import GraphEdge, GraphNode, WorkflowGraph
+
+GENERATED_AT = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
+
+SOURCE_CODE = """# /// script
+# dependencies = ["zeta>=1", "shared>=1"]
+# ///
+import math
+
+value: int = 3
+
+result = math.ceil(value / 2)
+return result: ANY
+"""
+
+MIDDLE_CODE = """# /// script
+# dependencies = ["shared>=1", "alpha>=2"]
+# ///
+x: ANY
+offset: int = 1
+
+out = x + offset
+print("computed", out)
+return out: ANY
+"""
+
+
+def _graph() -> WorkflowGraph:
+    return WorkflowGraph(
+        nodes=[
+            GraphNode(id="source", code=SOURCE_CODE),
+            GraphNode(id="middle", code=MIDDLE_CODE),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="source",
+                source_handle="result",
+                target_node_id="middle",
+                target_handle="x",
+            )
+        ],
+    )
+
+
+def _run_exported_script(content: str, path: Path) -> subprocess.CompletedProcess[str]:
+    path.write_text(content, encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def test_python_export_is_runnable_and_deduplicates_dependencies(
+    tmp_path: Path,
+) -> None:
+    exported = export_python(
+        _graph(), generated_at=GENERATED_AT, name="Iris Demo"
+    )
+
+    assert exported.filename == "iris-demo-20261020-120000.py"
+    assert exported.media_type == "text/x-python"
+    assert "# /// script" in exported.content
+    assert '# requires-python = ">=3.12"' in exported.content
+    assert exported.content.count('"shared>=1"') == 1
+    assert exported.content.index('"alpha>=2"') < exported.content.index(
+        '"shared>=1"'
+    )
+    assert "    import math" in exported.content
+    assert "node_outputs['source']['result']" in exported.content
+    assert "offset=1" in exported.content
+    assert exported.content.index("def __node_exec_source") < exported.content.index(
+        "def __node_exec_middle"
+    )
+
+    completed = _run_exported_script(
+        exported.content, tmp_path / "workflow.py"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "computed 3" in completed.stdout
+    assert "ComplexUI workflow completed: 2 node(s)." in completed.stdout
+
+
+def test_python_export_isolates_import_aliases(tmp_path: Path) -> None:
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="math-node",
+                code=(
+                    "import math as helper\n"
+                    "value = helper.ceil(1.2)\n"
+                    "return value: ANY\n"
+                ),
+            ),
+            GraphNode(
+                id="stats-node",
+                code=(
+                    "import statistics as helper\n"
+                    "x: ANY\n"
+                    "value = helper.mean([x, 3])\n"
+                    "print('mean', value)\n"
+                    "return value: ANY\n"
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="math-node",
+                source_handle="value",
+                target_node_id="stats-node",
+                target_handle="x",
+            )
+        ],
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+    completed = _run_exported_script(
+        exported.content, tmp_path / "aliases.py"
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "mean 2.5" in completed.stdout
+
+
+def test_notebook_export_has_valid_cells_and_node_execution() -> None:
+    exported = export_notebook(_graph(), generated_at=GENERATED_AT)
+
+    assert exported.filename == "workflow-20261020-120000.ipynb"
+    assert exported.media_type == "application/x-ipynb+json"
+    notebook = json.loads(exported.content)
+    assert notebook["nbformat"] == 4
+    assert notebook["nbformat_minor"] == 5
+    assert notebook["metadata"]["kernelspec"]["name"] == "python3"
+
+    cells = notebook["cells"]
+    assert [cell["cell_type"] for cell in cells] == [
+        "markdown",
+        "code",
+        "code",
+        "code",
+        "code",
+    ]
+    assert len({cell["id"] for cell in cells}) == len(cells)
+    intro = "".join(cells[0]["source"])
+    assert "`alpha>=2`" in intro
+    assert "`shared>=1`" in intro
+    assert "`zeta>=1`" in intro
+    setup = "".join(cells[1]["source"])
+    assert "    import math" in setup
+    assert "def __node_exec_source" in setup
+    assert "node_outputs = {}" in setup
+    assert "node_outputs['source']['result']" in "".join(cells[3]["source"])
+    assert "node_outputs" in "".join(cells[-1]["source"])
+
+
+def test_export_scope_includes_only_target_ancestors() -> None:
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="first",
+                code="value = 1\nreturn value: ANY\n",
+            ),
+            GraphNode(
+                id="second",
+                code=(
+                    "x: ANY\n"
+                    "value = x + 1\n"
+                    "return value: ANY\n"
+                ),
+            ),
+            GraphNode(
+                id="third",
+                code=(
+                    "x: ANY\n"
+                    "value = x + 1\n"
+                    "return value: ANY\n"
+                ),
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="first",
+                source_handle="value",
+                target_node_id="second",
+                target_handle="x",
+            ),
+            GraphEdge(
+                source_node_id="second",
+                source_handle="value",
+                target_node_id="third",
+                target_handle="x",
+            ),
+        ],
+    )
+
+    exported = export_python(
+        graph, targets=["second"], generated_at=GENERATED_AT
+    )
+
+    assert "__node_exec_first" in exported.content
+    assert "__node_exec_second" in exported.content
+    assert "__node_exec_third" not in exported.content
+
+
+def test_empty_graph_cannot_be_exported() -> None:
+    with pytest.raises(ExportError, match="no nodes"):
+        export_python(WorkflowGraph())

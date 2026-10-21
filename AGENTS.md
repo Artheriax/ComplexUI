@@ -27,8 +27,14 @@ complex-ui/
 │   │   ├── schemas.py           # Pydantic models for Graph, Nodes, Sockets
 │   │   ├── transpiler.py        # Regex pre-processor + AST parser + wrapper
 │   │   ├── executor.py          # Topological DAG sorter + state cache
+│   │   ├── execution_host.py    # Isolated run process + timeout/memory guards
+│   │   ├── execution_worker.py  # Child-process execution entry point
+│   │   ├── exporter.py          # PEP 723 scripts + Jupyter notebooks
+│   │   ├── workspace.py         # Named projects, versions, recovery sessions
+│   │   ├── datasets.py          # Workspace uploads, validation, previews
 │   │   ├── env_manager.py       # PEP 723 parser + `uv pip install` runner
 │   │   ├── security.py          # SHA-256 template hashing & diff verifier
+│   │   ├── run_history.py       # Terminal run records + retention
 │   │   └── templates/           # Built-in ML node templates (.py files)
 │   │       ├── load_iris.py
 │   │       ├── train_test_split.py
@@ -36,17 +42,35 @@ complex-ui/
 │   │       └── evaluate_metrics.py
 │   └── tests/
 │       ├── test_transpiler.py
-│       └── test_executor.py
+│       ├── test_executor.py
+│       ├── test_workspace.py
+│       └── test_uploads.py
 └── frontend/
     ├── package.json
     ├── tsconfig.json
     ├── vite.config.ts
     └── src/
         ├── App.tsx
-        ├── store/useGraphStore.ts
+        ├── lib/
+│           ├── subgraph.ts      # Nested subgraph flattening + interface helpers
+│           ├── nodeSearchPlacement.ts
+│           └── persistence.ts
+        ├── store/
+│           ├── useGraphStore.ts
+│           └── useDatasetsStore.ts
         ├── components/
-        │   ├── Canvas.tsx
-        │   ├── ComplexNode.tsx  # Custom XYFlow node with widgets + sockets
-        │   ├── CodeModal.tsx    # Monaco Editor pop-up
-        │   └── DiffModal.tsx    # Security audit modal for untrusted code
+│           ├── Canvas.tsx
+│           ├── CanvasContextMenu.tsx  # Pane actions beside the node picker
+│           ├── ComplexNode.tsx  # widgets/sockets, frames, subgraph managers/instances
+│           ├── CodeModal.tsx    # Monaco Editor pop-up
+│           ├── DiffModal.tsx    # Security audit modal for untrusted code
+│           ├── ProjectLibrary.tsx
+│           ├── DatasetLibrary.tsx
+│           ├── DatasetPickerDialog.tsx
+│           ├── DatasetPreviewDialog.tsx
+│           ├── FileWidgetField.tsx
+│           ├── SelectionToolbar.tsx
+│           ├── RunHistoryDialog.tsx
+│           ├── SaveProjectDialog.tsx
+│           └── ProjectHistoryDialog.tsx
         └── types/graph.ts

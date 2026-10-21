@@ -1,13 +1,27 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
+import { fetchRun, fetchRuns } from "../lib/api";
 import { useGraphStore } from "../store/useGraphStore";
 import type { AppNode, NodeSchema } from "../types/graph";
 import { ExecutionPanel } from "./ExecutionPanel";
 
-afterEach(cleanup);
+vi.mock("../lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api")>();
+  return {
+    ...actual,
+    fetchRuns: vi.fn(),
+    fetchRun: vi.fn(),
+  };
+});
+
+afterEach(() => {
+  cleanup();
+  vi.mocked(fetchRuns).mockReset();
+  vi.mocked(fetchRun).mockReset();
+});
 
 const emptySchema: NodeSchema = {
   node_id: "n1",
@@ -107,6 +121,18 @@ test("renders nodes that only produced console or rich output", () => {
   expect(container.textContent).toContain("Console Node");
   expect(container.textContent).toContain("only console output");
   expect(container.textContent).toContain("print");
+});
+
+test("opens the run history dialog", async () => {
+  vi.mocked(fetchRuns).mockResolvedValue([]);
+
+  render(createElement(ExecutionPanel));
+  fireEvent.click(screen.getByRole("button", { name: "Run history" }));
+
+  expect(
+    await screen.findByRole("dialog", { name: "Run history" }),
+  ).toBeTruthy();
+  expect(fetchRuns).toHaveBeenCalledWith();
 });
 
 test("renders cancelled status hint", () => {

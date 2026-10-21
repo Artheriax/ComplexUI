@@ -75,6 +75,10 @@ export function DiffModal() {
               theme="vs-dark"
               original={originalCode ?? ""}
               modified={pendingApproval.code}
+              originalModelPath="inmemory://complexui/security-review/original.py"
+              modifiedModelPath="inmemory://complexui/security-review/modified.py"
+              keepCurrentOriginalModel
+              keepCurrentModifiedModel
               options={{
                 readOnly: true,
                 renderSideBySide: true,

@@ -136,6 +136,50 @@ test("filters to compatible templates and connects the chosen node", () => {
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+test("connects primitive outputs to compatible widget parameters", () => {
+  const valueNode = makeTemplate(
+    "float_value",
+    "Float Value",
+    makeSchema({ outputs: [{ name: "result", data_type: "FLOAT" }] }),
+  );
+  const widgetConsumer = makeTemplate(
+    "split",
+    "Split",
+    makeSchema({
+      widgets: [{ name: "test_size", data_type: "float", default: 0.2 }],
+    }),
+  );
+  useGraphStore.setState({ templates: [valueNode, widgetConsumer] });
+  const sourceId = useGraphStore
+    .getState()
+    .addNodeFromTemplate(valueNode, { x: 0, y: 0 });
+  const onClose = vi.fn();
+  render(
+    createElement(NodeSearchPopup, {
+      anchor: { x: 40, y: 60 },
+      flowPosition: { x: 240, y: 0 },
+      connection: {
+        nodeId: sourceId,
+        handleId: "result",
+        handleType: "source",
+        dataType: "FLOAT",
+      },
+      onClose,
+    }),
+  );
+
+  fireEvent.change(screen.getByRole("combobox", { name: "Search nodes" }), {
+    target: { value: "split" },
+  });
+  expect(screen.getByText("Connect to test_size · Float")).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: /Split/ }));
+
+  const edge = useGraphStore.getState().edges[0];
+  expect(edge?.source).toBe(sourceId);
+  expect(edge?.sourceHandle).toBe("result");
+  expect(edge?.targetHandle).toBe("test_size");
+});
+
 test("can show all nodes when no template is compatible", () => {
   useGraphStore.setState({ templates: [producer, incompatible] });
   const sourceId = useGraphStore

@@ -3,7 +3,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 
+import { useDatasetsStore } from "../store/useDatasetsStore";
 import { useGraphStore } from "../store/useGraphStore";
+import { useSettingsStore } from "../store/useSettingsStore";
+import { useUiStore } from "../store/useUiStore";
 import type { NodeSchema, TemplateInfo } from "../types/graph";
 import { NodePalette } from "./NodePalette";
 
@@ -37,24 +40,68 @@ beforeEach(() => {
     workflows: [],
     workflowsLoaded: true,
     workflowsError: null,
+    projects: [],
+    projectsLoaded: true,
+    projectsError: null,
   });
+  useDatasetsStore.setState({
+    datasets: [],
+    datasetsLoaded: true,
+    datasetsLoading: false,
+    datasetsError: null,
+    uploading: false,
+  });
+  useUiStore.setState({
+    sidebarPanel: null,
+    consoleOpen: false,
+    shortcutsOpen: false,
+  });
+  useSettingsStore.setState({ isOpen: false });
 });
 
-test("shows the node library by default and switches to workflows", () => {
+test("starts as a compact rail and expands a panel on demand", () => {
   render(createElement(NodePalette));
 
-  expect(screen.getByPlaceholderText("Search templates…")).toBeTruthy();
-  expect(screen.queryByPlaceholderText("Search workflows…")).toBeNull();
-
-  fireEvent.click(screen.getByText("Workflows"));
-
-  expect(screen.getByPlaceholderText("Search workflows…")).toBeTruthy();
+  expect(screen.getByRole("navigation", { name: "Workspace panels" })).toBeTruthy();
   expect(screen.queryByPlaceholderText("Search templates…")).toBeNull();
-  expect(
-    screen.getByText(/Loading a workflow replaces the canvas/),
-  ).toBeTruthy();
 
-  fireEvent.click(screen.getByText("Nodes"));
-
+  fireEvent.click(screen.getByRole("button", { name: "Nodes" }));
   expect(screen.getByPlaceholderText("Search templates…")).toBeTruthy();
+  fireEvent.click(
+    screen.getByRole("button", { name: /Preprocessing/ }),
+  );
+  expect(screen.getByText("Demo")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Nodes" }));
+  expect(screen.queryByPlaceholderText("Search templates…")).toBeNull();
 });
+
+test("switches between Workflows, templates and datasets", () => {
+  render(createElement(NodePalette));
+
+  fireEvent.click(screen.getByRole("button", { name: "Workflows" }));
+  expect(screen.getByPlaceholderText("Search workflows…")).toBeTruthy();
+  expect(screen.getByText("Refresh workflow list")).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Templates" }));
+  expect(screen.getByPlaceholderText("Search templates…")).toBeTruthy();
+  expect(screen.getByText(/Opening a template adds it as a new/)).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Datasets" }));
+  expect(screen.getByPlaceholderText("Search datasets…")).toBeTruthy();
+  expect(screen.getByLabelText("Upload dataset files")).toBeTruthy();
+});
+
+test("bottom rail buttons toggle console, shortcuts and settings", () => {
+  render(createElement(NodePalette));
+
+  fireEvent.click(screen.getByRole("button", { name: "Console" }));
+  expect(useUiStore.getState().consoleOpen).toBe(true);
+
+  fireEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
+  expect(useUiStore.getState().shortcutsOpen).toBe(true);
+
+  fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(useSettingsStore.getState().isOpen).toBe(true);
+});
+

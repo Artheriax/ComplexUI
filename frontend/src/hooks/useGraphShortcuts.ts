@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
+import { isFrameNode, isRunnableNode } from "../types/graph";
 
 export function isTextEntryTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -21,6 +22,12 @@ export function useGraphShortcuts(): void {
       if (!(event.ctrlKey || event.metaKey)) {
         return;
       }
+      const key = event.key.toLowerCase();
+      if (key === "s") {
+        event.preventDefault();
+        useGraphStore.getState().requestSave();
+        return;
+      }
       if (isTextEntryTarget(event.target)) {
         return;
       }
@@ -28,7 +35,6 @@ export function useGraphShortcuts(): void {
       if (state.editingNodeId !== null || state.pendingApproval !== null) {
         return;
       }
-      const key = event.key.toLowerCase();
       if (key === "z" && !event.shiftKey) {
         event.preventDefault();
         state.undo();
@@ -37,6 +43,31 @@ export function useGraphShortcuts(): void {
       if ((key === "z" && event.shiftKey) || key === "y") {
         event.preventDefault();
         state.redo();
+        return;
+      }
+      if (key === "a" && !event.shiftKey) {
+        if (state.nodes.length > 0) {
+          event.preventDefault();
+          state.selectAllNodes();
+        }
+        return;
+      }
+      if (key === "g") {
+        if (event.shiftKey) {
+          if (state.nodes.some((node) => node.selected && isFrameNode(node))) {
+            event.preventDefault();
+            state.ungroupSelection();
+          }
+          return;
+        }
+        const groupable = state.nodes.filter(
+          (node) =>
+            node.selected && isRunnableNode(node) && node.parentId === undefined,
+        );
+        if (groupable.length >= 2) {
+          event.preventDefault();
+          state.groupSelection();
+        }
         return;
       }
       if (key === "d") {

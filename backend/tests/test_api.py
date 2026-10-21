@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.execution_host import (
+    ENV_MAX_MEMORY_MB,
+    ENV_NODE_TIMEOUT,
+    ENV_RUN_TIMEOUT,
+)
 from app.executor import clear_cache
 from app.main import app, coordinator
 from app.security import code_hash, get_security_registry
@@ -93,9 +99,7 @@ def _run_graph(
     targets: list[str] | None = None,
 ) -> tuple[int, list[dict]]:
     with client.websocket_connect("/ws/execution") as websocket:
-        response = client.post(
-            "/api/execute", json={"graph": graph, "targets": targets}
-        )
+        response = client.post("/api/execute", json={"graph": graph, "targets": targets})
         if response.status_code != 202:
             return response.status_code, []
         events = _read_until_terminal(websocket)
@@ -115,11 +119,31 @@ def test_parse_endpoint_returns_node_schema(client: TestClient) -> None:
     assert body["dependencies"] == ["scikit-learn>=1.5"]
     assert [socket["name"] for socket in body["inputs"]] == ["train"]
     assert body["widgets"] == [
-        {"name": "k", "data_type": "int", "default": 5}
+        {"name": "k", "data_type": "int", "default": 5, "options": []}
     ]
     assert body["outputs"][0]["name"] == "k"
     assert body["outputs"][0]["data_type"] == "ANY"
     assert body["syntax_errors"] == []
+
+
+def test_parse_endpoint_returns_literal_choices(client: TestClient) -> None:
+    code = (
+        "from typing import Literal\n"
+        "level: Literal['low', 'medium', 'high'] = 'low'\n"
+        "return level: STRING\n"
+    )
+
+    response = client.post("/api/parse", json={"code": code})
+
+    assert response.status_code == 200
+    assert response.json()["widgets"] == [
+        {
+            "name": "level",
+            "data_type": "str",
+            "default": "low",
+            "options": ["low", "medium", "high"],
+        }
+    ]
 
 
 def test_parse_endpoint_reports_syntax_errors(client: TestClient) -> None:
@@ -137,9 +161,7 @@ def test_templates_endpoint_lists_official_templates(client: TestClient) -> None
     templates = {item["name"]: item for item in response.json()}
     official = get_security_registry().templates()
     assert len(templates) == len(official)
-    assert {"load_iris", "train_test_split", "knn_train", "evaluate_metrics"} <= set(
-        templates
-    )
+    assert {"load_iris", "train_test_split", "knn_train", "evaluate_metrics"} <= set(templates)
     load = templates["load_iris"]
     assert load["title"] == "Load Iris Dataset"
     assert load["category"] == "Data Loaders"
@@ -149,24 +171,19 @@ def test_templates_endpoint_lists_official_templates(client: TestClient) -> None
     assert templates["knn_train"]["hidden"] is False
     assert load["code_hash"] == code_hash(load["code"])
     assert get_security_registry().is_official(load["code"])
-    assert load["node_schema"]["outputs"] == [
-        {"name": "df", "data_type": "DATAFRAME"}
-    ]
+    assert load["node_schema"]["outputs"] == [{"name": "df", "data_type": "DATAFRAME"}]
     assert templates["train_test_split"]["category"] == "Preprocessing"
     assert templates["tensor_dataset"]["category"] == "PyTorch"
     knn = templates["knn_train"]
-    assert [widget["name"] for widget in knn["node_schema"]["widgets"]] == [
-        "n_neighbors"
-    ]
+    assert [widget["name"] for widget in knn["node_schema"]["widgets"]] == ["n_neighbors"]
 
 
 def test_websocket_runtime_backend_is_installed() -> None:
     import importlib.util
 
-    assert any(
-        importlib.util.find_spec(name) is not None
-        for name in ("websockets", "wsproto")
-    ), "uvicorn needs 'uvicorn[standard]', 'websockets' or 'wsproto' to serve /ws/execution"
+    assert any(importlib.util.find_spec(name) is not None for name in ("websockets", "wsproto")), (
+        "uvicorn needs 'uvicorn[standard]', 'websockets' or 'wsproto' to serve /ws/execution"
+    )
 
 
 def test_health_endpoint_reports_readiness(client: TestClient) -> None:
@@ -205,6 +222,64 @@ def test_workflows_endpoint_lists_validated_examples(client: TestClient) -> None
         assert {"name", "title", "description"} <= set(item)
 
 
+def test_export_endpoint_returns_python_script(client: TestClient) -> None:
+    response = client.post("/api/export", json={"graph": _chain_payload(), "format": "python"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"].endswith(".py")
+    assert body["media_type"] == "text/x-python"
+    content = body["content"]
+    assert "# /// script" in content
+    assert '"scikit-learn>=1.5"' in content
+    assert "def __node_exec_load" in content
+    assert "def __node_exec_evaluate" in content
+    assert "def main()" in content
+
+
+def test_export_endpoint_returns_notebook(client: TestClient) -> None:
+    response = client.post(
+        "/api/export",
+        json={"graph": _chain_payload(), "format": "notebook"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["filename"].endswith(".ipynb")
+    assert body["media_type"] == "application/x-ipynb+json"
+    notebook = json.loads(body["content"])
+    assert notebook["nbformat"] == 4
+    assert notebook["cells"][0]["cell_type"] == "markdown"
+    assert any(
+        "__node_exec_load" in "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    )
+
+
+def test_export_endpoint_rejects_invalid_wiring(client: TestClient) -> None:
+    templates = _templates()
+    response = client.post(
+        "/api/export",
+        json={
+            "graph": {
+                "nodes": [{"id": "knn", "code": templates["knn_train"]}],
+                "edges": [],
+            }
+        },
+    )
+
+    assert response.status_code == 422
+    assert "not connected" in response.json()["detail"]["message"]
+
+
+def test_export_endpoint_rejects_empty_workflow(client: TestClient) -> None:
+    response = client.post("/api/export", json={"graph": {}})
+
+    assert response.status_code == 422
+    assert "no nodes" in response.json()["detail"]["message"]
+
+
 def test_approve_endpoint_records_session_approval(client: TestClient) -> None:
     digest = "a" * 64
 
@@ -220,9 +295,7 @@ def test_approve_endpoint_records_session_approval(client: TestClient) -> None:
     }
     assert get_security_registry().is_approved("approve-test-node", digest)
 
-    bad = client.post(
-        "/api/approve", json={"node_id": "x", "code_hash": "not-a-hash"}
-    )
+    bad = client.post("/api/approve", json={"node_id": "x", "code_hash": "not-a-hash"})
     assert bad.status_code == 422
 
 
@@ -241,9 +314,7 @@ def test_execute_streams_events_and_completes(client: TestClient) -> None:
     assert types.count("NODE_COMPLETED") == 4
     assert types[-1] == "EXECUTION_COMPLETED"
 
-    started_nodes = [
-        event["node_id"] for event in events if event["type"] == "NODE_STARTED"
-    ]
+    started_nodes = [event["node_id"] for event in events if event["type"] == "NODE_STARTED"]
     assert started_nodes == ["load", "split", "knn", "evaluate"]
 
     final = events[-1]["data"]
@@ -276,12 +347,7 @@ def test_second_execution_is_served_from_cache(client: TestClient) -> None:
 
 
 def test_execute_streams_rich_outputs_and_replays_cache(client: TestClient) -> None:
-    code = (
-        'print("hello from node")\n'
-        'display("shown value")\n'
-        "value = 1\n"
-        "return value: ANY"
-    )
+    code = 'print("hello from node")\ndisplay("shown value")\nvalue = 1\nreturn value: ANY'
     node = {"id": "rich-api", "code": code}
     approved = client.post(
         "/api/approve",
@@ -302,9 +368,7 @@ def test_execute_streams_rich_outputs_and_replays_cache(client: TestClient) -> N
 
     status, replay_events = _run_graph(client, {"nodes": [node], "edges": []})
     assert status == 202
-    replay_completed = next(
-        event for event in replay_events if event["type"] == "NODE_COMPLETED"
-    )
+    replay_completed = next(event for event in replay_events if event["type"] == "NODE_COMPLETED")
     assert replay_completed["data"]["cached"] is True
     assert replay_completed["data"]["rich_outputs"] == completed["data"]["rich_outputs"]
 
@@ -337,9 +401,7 @@ def test_untrusted_node_flow_returns_403_then_approve(client: TestClient) -> Non
     modified_code = _templates()["load_iris"] + "\n# modified\n"
     node = {"id": "custom_load", "code": modified_code}
 
-    blocked = client.post(
-        "/api/execute", json={"graph": {"nodes": [node], "edges": []}}
-    )
+    blocked = client.post("/api/execute", json={"graph": {"nodes": [node], "edges": []}})
     assert blocked.status_code == 403
     detail = blocked.json()["detail"]
     assert detail["untrusted_nodes"] == [
@@ -364,9 +426,7 @@ def test_untrusted_node_flow_returns_403_then_approve(client: TestClient) -> Non
 def test_invalid_wiring_returns_422(client: TestClient) -> None:
     node = {"id": "knn", "code": _templates()["knn_train"]}
 
-    response = client.post(
-        "/api/execute", json={"graph": {"nodes": [node], "edges": []}}
-    )
+    response = client.post("/api/execute", json={"graph": {"nodes": [node], "edges": []}})
 
     assert response.status_code == 422
     assert "train" in response.json()["detail"]["message"]
@@ -434,12 +494,69 @@ def test_execute_with_targets_ignores_out_of_scope_broken_node(
 
 
 def test_execute_with_unknown_target_returns_422(client: TestClient) -> None:
-    response = client.post(
-        "/api/execute", json={"graph": _chain_payload(), "targets": ["ghost"]}
-    )
+    response = client.post("/api/execute", json={"graph": _chain_payload(), "targets": ["ghost"]})
 
     assert response.status_code == 422
     assert "Unknown target" in response.json()["detail"]["message"]
+
+
+def test_node_timeout_terminates_the_worker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = "import time\ntime.sleep(2)\nvalue = 1\nreturn value: ANY"
+    approved = client.post("/api/approve", json={"node_id": "slow", "code_hash": code_hash(code)})
+    assert approved.status_code == 200
+    monkeypatch.setenv(ENV_NODE_TIMEOUT, "0.25")
+    monkeypatch.setenv(ENV_RUN_TIMEOUT, "10")
+    monkeypatch.setenv(ENV_MAX_MEMORY_MB, "0")
+
+    status, events = _run_graph(client, {"nodes": [{"id": "slow", "code": code}]})
+
+    assert status == 202
+    assert events[-1]["type"] == "EXECUTION_FAILED"
+    assert events[-1]["data"]["error_type"] == "NodeTimeout"
+    assert events[-1]["data"]["node_id"] == "slow"
+
+
+def test_run_timeout_terminates_the_worker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code = "import time\ntime.sleep(2)\nvalue = 1\nreturn value: ANY"
+    approved = client.post("/api/approve", json={"node_id": "slow", "code_hash": code_hash(code)})
+    assert approved.status_code == 200
+    monkeypatch.setenv(ENV_NODE_TIMEOUT, "0")
+    monkeypatch.setenv(ENV_RUN_TIMEOUT, "0.25")
+    monkeypatch.setenv(ENV_MAX_MEMORY_MB, "0")
+
+    status, events = _run_graph(client, {"nodes": [{"id": "slow", "code": code}]})
+
+    assert status == 202
+    assert events[-1]["type"] == "EXECUTION_FAILED"
+    assert events[-1]["data"]["error_type"] == "RunTimeout"
+
+
+def test_crashed_worker_reports_failure_and_recovers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crash_code = "import os\nos._exit(7)\nvalue = 1\nreturn value: ANY"
+    approved = client.post(
+        "/api/approve",
+        json={"node_id": "crash", "code_hash": code_hash(crash_code)},
+    )
+    assert approved.status_code == 200
+    monkeypatch.setenv(ENV_NODE_TIMEOUT, "5")
+    monkeypatch.setenv(ENV_RUN_TIMEOUT, "10")
+    monkeypatch.setenv(ENV_MAX_MEMORY_MB, "0")
+
+    status, events = _run_graph(client, {"nodes": [{"id": "crash", "code": crash_code}]})
+
+    assert status == 202
+    assert events[-1]["type"] == "EXECUTION_FAILED"
+    assert events[-1]["data"]["error_type"] == "WorkerCrashed"
+
+    status, recovered = _run_graph(client, _chain_payload())
+    assert status == 202
+    assert recovered[-1]["type"] == "EXECUTION_COMPLETED"
 
 
 def test_cancel_endpoint_returns_409_when_idle(client: TestClient) -> None:
@@ -450,9 +567,7 @@ def test_cancel_endpoint_returns_409_when_idle(client: TestClient) -> None:
 
 
 def test_cancel_interrupts_between_nodes(client: TestClient) -> None:
-    slow_code = (
-        "import time\n\ndelay: float = 0.3\ntime.sleep(delay)\nreturn delay: ANY"
-    )
+    slow_code = "import time\n\ndelay: float = 0.3\ntime.sleep(delay)\nreturn delay: ANY"
     fast_code = "value: ANY\nreturn value: ANY"
     for node_id, code in (("slow", slow_code), ("fast", fast_code)):
         approved = client.post(

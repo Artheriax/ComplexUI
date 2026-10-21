@@ -1,14 +1,121 @@
 import type {
   BackendRunStatus,
   ExecuteResponse,
+  ExportFormat,
+  ExportedWorkflow,
   NodeSchema,
+  PreviewValue,
+  RichOutput,
   TemplateInfo,
   UntrustedNodeRef,
   WorkflowGraphPayload,
   WorkflowTemplateInfo,
 } from "../types/graph";
+import type { SavedWorkflow } from "./persistence";
 
 const API_BASE = "/api";
+
+export interface ProjectSummary {
+  slug: string;
+  name: string;
+  saved_at: string;
+  node_count: number;
+  edge_count: number;
+  version_count: number;
+}
+
+export interface ProjectDetail extends ProjectSummary {
+  workflow: SavedWorkflow;
+}
+
+export interface ProjectSaveResult {
+  status: "created" | "updated";
+  project: ProjectSummary;
+}
+
+export interface ProjectVersionInfo {
+  version: string;
+  saved_at: string;
+  node_count: number;
+  edge_count: number;
+  size_bytes: number;
+}
+
+export interface ProjectVersionDetail extends ProjectVersionInfo {
+  workflow: SavedWorkflow;
+}
+
+export interface WorkspaceSession {
+  saved_at: string;
+  project_slug: string | null;
+  project_name: string | null;
+  workflow: SavedWorkflow;
+}
+
+export type RunStatus = "completed" | "failed" | "cancelled";
+export type RunNodeStatus = "pending" | "completed" | "error";
+
+export interface RunErrorRecord {
+  message: string;
+  error_type: string;
+  node_id: string | null;
+  line: number | null;
+  traceback: string;
+}
+
+export interface RunNodeRecord {
+  node_id: string;
+  label: string;
+  status: RunNodeStatus;
+  duration_ms: number | null;
+  cached: boolean;
+  previews: Record<string, PreviewValue>;
+  rich_outputs: RichOutput[];
+  rich_outputs_truncated: boolean;
+  error: RunErrorRecord | null;
+}
+
+export interface RunSummary {
+  run_id: string;
+  status: RunStatus;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  node_count: number;
+  completed_count: number;
+  cached_count: number;
+  error_type: string | null;
+}
+
+export interface RunDetail extends RunSummary {
+  order: string[];
+  targets: string[] | null;
+  node_labels: Record<string, string>;
+  nodes: RunNodeRecord[];
+  error: RunErrorRecord | null;
+}
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  path: string;
+  format: string;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface DatasetPreview {
+  dataset: DatasetSummary;
+  columns: string[];
+  rows: unknown[][];
+  truncated: boolean;
+  row_limit: number;
+}
+
+export interface DatasetUploadResult {
+  status: "uploaded";
+  dataset: DatasetSummary;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -78,11 +185,152 @@ export function approveNode(
 export function executeGraph(
   graph: WorkflowGraphPayload,
   targets?: string[],
+  nodeLabels?: Record<string, string>,
 ): Promise<ExecuteResponse> {
   return requestJson<ExecuteResponse>("/execute", {
     method: "POST",
-    body: JSON.stringify({ graph, targets: targets ?? null }),
+    body: JSON.stringify({
+      graph,
+      targets: targets ?? null,
+      node_labels: nodeLabels ?? null,
+    }),
   });
+}
+
+export function exportWorkflow(
+  graph: WorkflowGraphPayload,
+  format: ExportFormat,
+  targets?: string[],
+): Promise<ExportedWorkflow> {
+  return requestJson<ExportedWorkflow>("/export", {
+    method: "POST",
+    body: JSON.stringify({ graph, format, targets: targets ?? null }),
+  });
+}
+
+export function fetchProjects(): Promise<ProjectSummary[]> {
+  return requestJson<ProjectSummary[]>("/projects");
+}
+
+export function createProject(
+  name: string,
+  workflow: SavedWorkflow,
+  overwrite = false,
+): Promise<ProjectSaveResult> {
+  return requestJson<ProjectSaveResult>("/projects", {
+    method: "POST",
+    body: JSON.stringify({ name, workflow, overwrite }),
+  });
+}
+
+export function updateProject(
+  slug: string,
+  name: string,
+  workflow: SavedWorkflow,
+): Promise<ProjectSaveResult> {
+  return requestJson<ProjectSaveResult>(`/projects/${encodeURIComponent(slug)}`, {
+    method: "PUT",
+    body: JSON.stringify({ name, workflow }),
+  });
+}
+
+export function deleteProject(slug: string): Promise<{ status: string; slug: string }> {
+  return requestJson(`/projects/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchProject(slug: string): Promise<ProjectDetail> {
+  return requestJson<ProjectDetail>(`/projects/${encodeURIComponent(slug)}`);
+}
+
+export function fetchProjectVersions(
+  slug: string,
+): Promise<ProjectVersionInfo[]> {
+  return requestJson<ProjectVersionInfo[]>(
+    `/projects/${encodeURIComponent(slug)}/versions`,
+  );
+}
+
+export function fetchProjectVersion(
+  slug: string,
+  version: string,
+): Promise<ProjectVersionDetail> {
+  return requestJson<ProjectVersionDetail>(
+    `/projects/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`,
+  );
+}
+
+export function fetchWorkspaceSession(): Promise<WorkspaceSession | null> {
+  return requestJson<WorkspaceSession | null>("/session");
+}
+
+export function saveWorkspaceSession(
+  workflow: SavedWorkflow,
+  projectSlug: string | null,
+  projectName: string | null,
+  options: { keepalive?: boolean } = {},
+): Promise<void> {
+  const keepalive = options.keepalive ?? false;
+  const body = JSON.stringify({
+    workflow,
+    project_slug: projectSlug,
+    project_name: projectName,
+  });
+  if (keepalive) {
+    try {
+      void fetch(`${API_BASE}/session`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true,
+      }).catch(() => undefined);
+    } catch {
+      // The localStorage autosave remains the primary recovery path.
+    }
+    return Promise.resolve();
+  }
+  return requestJson("/session", { method: "PUT", body }).then(() => undefined);
+}
+
+export function fetchDatasets(): Promise<DatasetSummary[]> {
+  return requestJson<DatasetSummary[]>("/uploads");
+}
+
+export function fetchDatasetPreview(
+  datasetId: string,
+  limit = 20,
+): Promise<DatasetPreview> {
+  return requestJson<DatasetPreview>(
+    `/uploads/${encodeURIComponent(datasetId)}/preview?limit=${limit}`,
+  );
+}
+
+export function deleteDataset(
+  datasetId: string,
+): Promise<{ status: string; dataset: DatasetSummary }> {
+  return requestJson(`/uploads/${encodeURIComponent(datasetId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function uploadDataset(file: File): Promise<DatasetUploadResult> {
+  const form = new FormData();
+  form.append("file", file);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/uploads`, {
+      method: "POST",
+      body: form,
+    });
+  } catch (cause) {
+    throw new ApiError(0, "Backend unreachable — is uvicorn running?", cause);
+  }
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiError(response.status, describeError(response.status, body), body);
+  }
+  return body as DatasetUploadResult;
 }
 
 export function cancelExecution(): Promise<{ status: string }> {
@@ -91,6 +339,20 @@ export function cancelExecution(): Promise<{ status: string }> {
 
 export function fetchRunStatus(): Promise<BackendRunStatus> {
   return requestJson<BackendRunStatus>("/status");
+}
+
+export function fetchRuns(limit = 50): Promise<RunSummary[]> {
+  return requestJson<RunSummary[]>(`/runs?limit=${limit}`);
+}
+
+export function fetchRun(runId: string): Promise<RunDetail> {
+  return requestJson<RunDetail>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+export function deleteRun(runId: string): Promise<{ status: string; run_id: string }> {
+  return requestJson(`/runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function untrustedNodesFrom(error: ApiError): UntrustedNodeRef[] {

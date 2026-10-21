@@ -1,16 +1,19 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import { Canvas } from "./components/Canvas";
 import { ExecutionPanel } from "./components/ExecutionPanel";
 import { NodePalette } from "./components/NodePalette";
+import { SaveProjectDialog } from "./components/SaveProjectDialog";
 import { SettingsModal } from "./components/SettingsModal";
-import { Toolbar } from "./components/Toolbar";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { WindowTabs } from "./components/WindowTabs";
 import { SpinnerIcon } from "./components/icons";
 import { useExecutionSocket } from "./hooks/useExecutionSocket";
 import { useGraphShortcuts } from "./hooks/useGraphShortcuts";
 import { useWorkflowAutosave } from "./hooks/useWorkflowAutosave";
 import { useGraphStore } from "./store/useGraphStore";
 import { useSettingsStore } from "./store/useSettingsStore";
+import { useUiStore } from "./store/useUiStore";
 
 const CodeModal = lazy(async () => {
   const module = await import("./components/CodeModal");
@@ -39,15 +42,31 @@ export default function App() {
   const hasPendingApproval = useGraphStore(
     (state) => state.pendingApproval !== null,
   );
+  const saveDialogOpen = useGraphStore((state) => state.saveDialogOpen);
+  const activeWindowId = useGraphStore((state) => state.activeWindowId);
   const settingsOpen = useSettingsStore((state) => state.isOpen);
+  const consoleOpen = useUiStore((state) => state.consoleOpen);
+  const shortcutsOpen = useUiStore((state) => state.shortcutsOpen);
+
+  const [ready, setReady] = useState(false);
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    if (startedRef.current) {
+      return;
+    }
+    startedRef.current = true;
     void (async () => {
-      await Promise.all([
-        loadTemplates(),
-        useGraphStore.getState().loadWorkflowTemplates(),
-      ]);
-      await useGraphStore.getState().restoreFromStorage();
+      try {
+        await Promise.all([
+          loadTemplates(),
+          useGraphStore.getState().loadWorkflowTemplates(),
+          useGraphStore.getState().loadProjects(),
+        ]);
+        await useGraphStore.getState().restoreFromStorage();
+      } finally {
+        setReady(true);
+      }
     })();
   }, [loadTemplates]);
 
@@ -55,15 +74,26 @@ export default function App() {
   useWorkflowAutosave();
   useGraphShortcuts();
 
+  if (!ready) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-zinc-950">
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-xs text-zinc-300">
+          <SpinnerIcon className="h-4 w-4 animate-spin text-cyan-400" />
+          Restoring workspace…
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col">
-      <Toolbar />
+      <WindowTabs />
       <div className="flex min-h-0 flex-1">
         <NodePalette />
         <main aria-label="Workflow canvas" className="relative min-w-0 flex-1">
-          <Canvas />
+          <Canvas key={activeWindowId} />
         </main>
-        <ExecutionPanel />
+        {consoleOpen && <ExecutionPanel />}
       </div>
       {editingNodeId && (
         <Suspense fallback={<ModalLoading />}>
@@ -76,6 +106,8 @@ export default function App() {
         </Suspense>
       )}
       {settingsOpen && <SettingsModal />}
+      {shortcutsOpen && <ShortcutsDialog />}
+      {saveDialogOpen && <SaveProjectDialog />}
     </div>
   );
 }

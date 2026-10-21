@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pickle
 import re
 import time
 import traceback
 from collections import OrderedDict, deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -42,15 +44,21 @@ from .schemas import (
     SocketType,
     WorkflowGraph,
     serialize_rich_outputs,
+    socket_types_compatible,
+    widget_choice_allowed,
+    widget_socket_type,
 )
 from .security import SecurityRegistry, UntrustedNodeError, code_hash, get_security_registry
 from .transpiler import TranspileError, parse_node, transpile_node
+from .workspace import workspace_root
 
 __all__ = [
     "EventSink",
     "ExecutionCancelled",
     "ExecutionResult",
+    "FileAccessError",
     "GraphCycleError",
+    "WidgetChoiceError",
     "GraphError",
     "GraphPlan",
     "GraphValidationError",
@@ -58,9 +66,12 @@ __all__ = [
     "MAX_CACHE_ENTRIES",
     "NodeExecutionError",
     "build_output_preview",
+    "cache_snapshot",
     "clear_cache",
     "execute_graph",
+    "restore_cache",
     "topological_sort",
+    "transferable_cache",
     "validate_graph",
 ]
 
@@ -87,6 +98,36 @@ def clear_cache() -> None:
     global _CACHE_BYTES
     _CACHE.clear()
     _CACHE_BYTES = 0
+
+
+def cache_snapshot() -> OrderedDict[str, _CacheEntry]:
+    """Return a copy of the current cache for transfer to an executor process."""
+    return OrderedDict(_CACHE.items())
+
+
+def restore_cache(entries: dict[str, _CacheEntry] | None) -> None:
+    """Replace the current cache with entries received from an executor process."""
+    global _CACHE_BYTES
+    _CACHE.clear()
+    _CACHE_BYTES = 0
+    for node_id, entry in (entries or {}).items():
+        _CACHE[node_id] = entry
+        _CACHE_BYTES += entry.size
+
+
+def transferable_cache(
+    entries: dict[str, _CacheEntry] | None = None,
+) -> OrderedDict[str, _CacheEntry]:
+    """Drop cache entries whose runtime outputs cannot cross a process boundary."""
+    source = _CACHE if entries is None else entries
+    transferable: OrderedDict[str, _CacheEntry] = OrderedDict()
+    for node_id, entry in source.items():
+        try:
+            pickle.dumps(entry)
+        except Exception:
+            continue
+        transferable[node_id] = entry
+    return transferable
 
 
 class GraphError(Exception):
@@ -129,6 +170,14 @@ class _OutputContractError(Exception):
     """Raised when a node's return value does not match its output sockets."""
 
 
+class FileAccessError(Exception):
+    """Raised when a File widget points outside the workspace."""
+
+
+class WidgetChoiceError(Exception):
+    """Raised when a widget value is outside its declared Literal choices."""
+
+
 @dataclass(slots=True)
 class ExecutionResult:
     outputs: dict[str, tuple[Any, ...]] = field(default_factory=dict)
@@ -168,7 +217,7 @@ def validate_graph(
     untrusted = [
         (node.id, code_hash(node.code))
         for node in nodes
-        if not registry.is_trusted(node.id, node.code)
+        if not registry.is_trusted(node.approval_id or node.id, node.code)
     ]
     return GraphPlan(order=order, schemas=schemas, untrusted=untrusted)
 
@@ -201,9 +250,7 @@ def _scope_to_targets(
         raise GraphValidationError("targets must not be empty")
     unknown = [node_id for node_id in target_list if node_id not in nodes_by_id]
     if unknown:
-        raise GraphValidationError(
-            f"Unknown target node(s): {', '.join(sorted(unknown))}"
-        )
+        raise GraphValidationError(f"Unknown target node(s): {', '.join(sorted(unknown))}")
     incoming: dict[str, list[str]] = {node_id: [] for node_id in nodes_by_id}
     for edge in edges:
         if edge.target_node_id in incoming:
@@ -270,12 +317,12 @@ def execute_graph(
         node = nodes_by_id[node_id]
         schema = schemas[node_id]
         upstream_hashes = [
-            state_hashes[incoming[node_id][handle].source_node_id]
+            f"{handle}:{state_hashes[incoming[node_id][handle].source_node_id]}"
             for handle in sorted(incoming[node_id])
         ]
         state_hash = _node_state_hash(node.code, node.widget_values, upstream_hashes)
 
-        if not registry.is_trusted(node_id, node.code):
+        if not registry.is_trusted(node.approval_id or node_id, node.code):
             raise UntrustedNodeError(node_id, code_hash(node.code))
 
         cached_entry = _cache_lookup(node_id, state_hash)
@@ -296,9 +343,7 @@ def execute_graph(
                     data={
                         "cached": True,
                         "outputs": result.previews[node_id],
-                        "rich_outputs": serialize_rich_outputs(
-                            result.rich_outputs[node_id]
-                        ),
+                        "rich_outputs": serialize_rich_outputs(result.rich_outputs[node_id]),
                         "duration_ms": 0.0,
                     },
                 )
@@ -309,8 +354,7 @@ def execute_graph(
         if missing:
             if not allow_installs:
                 error = DependencyInstallError(
-                    f"Node '{node_id}' requires missing dependencies: "
-                    f"{', '.join(missing)}"
+                    f"Node '{node_id}' requires missing dependencies: {', '.join(missing)}"
                 )
                 _emit_dependency_error(sink, node_id, error)
                 raise error
@@ -331,29 +375,49 @@ def execute_graph(
                 _emit_dependency_error(sink, node_id, exc)
                 raise
             if should_stop is not None and should_stop():
-                raise ExecutionCancelled(
-                    "Execution cancelled after dependency install"
-                )
+                raise ExecutionCancelled("Execution cancelled after dependency install")
 
         sink(ExecutionEvent(type=EventType.NODE_STARTED, node_id=node_id, data={}))
         node_started = time.perf_counter()
         transpiled = transpile_node(node.code, node_id)
 
-        kwargs: dict[str, Any] = {
-            widget.name: widget.default for widget in schema.widgets
-        }
-        kwargs.update(
-            {
-                key: value
-                for key, value in node.widget_values.items()
-                if key in kwargs
-            }
-        )
+        kwargs: dict[str, Any] = {widget.name: widget.default for widget in schema.widgets}
+        kwargs.update({key: value for key, value in node.widget_values.items() if key in kwargs})
         for handle in sorted(incoming[node_id]):
             edge = incoming[node_id][handle]
-            kwargs[handle] = result.outputs_by_name[edge.source_node_id][
-                edge.source_handle
-            ]
+            kwargs[handle] = result.outputs_by_name[edge.source_node_id][edge.source_handle]
+        try:
+            for widget in schema.widgets:
+                if widget.data_type.strip().lower() == "file":
+                    kwargs[widget.name] = _resolve_widget_file(kwargs.get(widget.name))
+                if widget.options and not widget_choice_allowed(
+                    kwargs.get(widget.name), widget.options
+                ):
+                    raise WidgetChoiceError(
+                        f"Widget '{widget.name}' on node '{node_id}' must be "
+                        f"one of {widget.options!r}"
+                    )
+        except (FileAccessError, WidgetChoiceError) as exc:
+            sink(
+                ExecutionEvent(
+                    type=EventType.NODE_ERROR,
+                    node_id=node_id,
+                    data={
+                        "line": None,
+                        "message": str(exc),
+                        "error_type": type(exc).__name__,
+                        "traceback": "",
+                        "rich_outputs": [],
+                    },
+                )
+            )
+            raise NodeExecutionError(
+                node_id,
+                line=None,
+                message=str(exc),
+                error_type=type(exc).__name__,
+                traceback_text="",
+            ) from exc
 
         capture = OutputCapture()
         try:
@@ -361,9 +425,7 @@ def execute_graph(
                 value = transpiled.func(**kwargs)
             outputs = _normalize_outputs(value, len(schema.outputs), node_id)
         except Exception as exc:
-            line, traceback_text = _localize_failure(
-                exc, node_id, transpiled.line_offset
-            )
+            line, traceback_text = _localize_failure(exc, node_id, transpiled.line_offset)
             sink(
                 ExecutionEvent(
                     type=EventType.NODE_ERROR,
@@ -388,9 +450,7 @@ def execute_graph(
         rich_outputs = tuple(capture.outputs)
         _cache_store(node_id, state_hash, outputs, rich_outputs)
         state_hashes[node_id] = state_hash
-        _record_outputs(
-            result, node_id, schema, outputs, rich_outputs, cached=False
-        )
+        _record_outputs(result, node_id, schema, outputs, rich_outputs, cached=False)
         sink(
             ExecutionEvent(
                 type=EventType.NODE_COMPLETED,
@@ -398,12 +458,8 @@ def execute_graph(
                 data={
                     "cached": False,
                     "outputs": result.previews[node_id],
-                    "rich_outputs": serialize_rich_outputs(
-                        result.rich_outputs[node_id]
-                    ),
-                    "duration_ms": round(
-                        (time.perf_counter() - node_started) * 1000, 1
-                    ),
+                    "rich_outputs": serialize_rich_outputs(result.rich_outputs[node_id]),
+                    "duration_ms": round((time.perf_counter() - node_started) * 1000, 1),
                 },
             )
         )
@@ -438,9 +494,7 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
             )
         if data_type is SocketType.ML_MODEL:
             if hasattr(value, "get_params"):
-                return _jsonable(
-                    {"class": type(value).__name__, "params": value.get_params()}
-                )
+                return _jsonable({"class": type(value).__name__, "params": value.get_params()})
             if hasattr(value, "state_dict"):
                 state = value.state_dict()
                 parameters = (
@@ -467,6 +521,13 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
             )
         if data_type is SocketType.METRICS:
             return _jsonable(value)
+        if data_type in {
+            SocketType.INT,
+            SocketType.FLOAT,
+            SocketType.BOOL,
+            SocketType.STRING,
+        }:
+            return _jsonable(value)
     except Exception:
         return repr(value)[:200]
     return repr(value)[:200]
@@ -475,11 +536,7 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
 def _tensor_sample(value: Any, count: int = 5) -> list[float]:
     """Return the first ``count`` scalar values of a tensor-like object."""
     try:
-        flat = (
-            value.detach().reshape(-1)
-            if hasattr(value, "detach")
-            else value.reshape(-1)
-        )
+        flat = value.detach().reshape(-1) if hasattr(value, "detach") else value.reshape(-1)
         sliced = flat[:count]
         items = sliced.tolist() if hasattr(sliced, "tolist") else list(sliced)
         return [float(item) for item in items]
@@ -491,9 +548,7 @@ def _noop(event: ExecutionEvent) -> None:
     return None
 
 
-def _emit_dependency_error(
-    sink: EventSink, node_id: str, exc: Exception
-) -> None:
+def _emit_dependency_error(sink: EventSink, node_id: str, exc: Exception) -> None:
     sink(
         ExecutionEvent(
             type=EventType.NODE_ERROR,
@@ -535,9 +590,7 @@ def _cache_store(
     )
     _CACHE_BYTES += size
     _CACHE.move_to_end(node_id)
-    while _CACHE and (
-        len(_CACHE) > MAX_CACHE_ENTRIES or _CACHE_BYTES > MAX_CACHE_BYTES
-    ):
+    while _CACHE and (len(_CACHE) > MAX_CACHE_ENTRIES or _CACHE_BYTES > MAX_CACHE_BYTES):
         _, evicted = _CACHE.popitem(last=False)
         _CACHE_BYTES -= evicted.size
 
@@ -551,9 +604,7 @@ def _index_nodes(graph: WorkflowGraph) -> dict[str, GraphNode]:
     return nodes_by_id
 
 
-def _topological_order(
-    nodes_by_id: dict[str, GraphNode], edges: list[GraphEdge]
-) -> list[str]:
+def _topological_order(nodes_by_id: dict[str, GraphNode], edges: list[GraphEdge]) -> list[str]:
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes_by_id}
     indegree: dict[str, int] = {node_id: 0 for node_id in nodes_by_id}
     for edge in edges:
@@ -568,9 +619,7 @@ def _topological_order(
         adjacency[edge.source_node_id].append(edge.target_node_id)
         indegree[edge.target_node_id] += 1
 
-    queue: deque[str] = deque(
-        node_id for node_id in nodes_by_id if indegree[node_id] == 0
-    )
+    queue: deque[str] = deque(node_id for node_id in nodes_by_id if indegree[node_id] == 0)
     order: list[str] = []
     while queue:
         current = queue.popleft()
@@ -582,15 +631,11 @@ def _topological_order(
 
     if len(order) != len(nodes_by_id):
         cyclic = sorted(set(nodes_by_id) - set(order))
-        raise GraphCycleError(
-            f"Workflow graph contains a cycle involving: {', '.join(cyclic)}"
-        )
+        raise GraphCycleError(f"Workflow graph contains a cycle involving: {', '.join(cyclic)}")
     return order
 
 
-def _plan(
-    nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]
-) -> dict[str, NodeSchema]:
+def _plan(nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]) -> dict[str, NodeSchema]:
     schemas: dict[str, NodeSchema] = {}
     for node in nodes:
         schema = parse_node(node.code, node.id)
@@ -602,21 +647,48 @@ def _plan(
     wired: dict[str, set[str]] = {}
     for edge in edges:
         source_schema = schemas[edge.source_node_id]
-        if edge.source_handle not in {
-            socket.name for socket in source_schema.outputs
-        }:
+        source_socket = next(
+            (
+                socket
+                for socket in source_schema.outputs
+                if socket.name == edge.source_handle
+            ),
+            None,
+        )
+        if source_socket is None:
             raise GraphValidationError(
-                f"Node '{edge.source_node_id}' has no output socket "
-                f"'{edge.source_handle}'"
+                f"Node '{edge.source_node_id}' has no output socket '{edge.source_handle}'"
             )
         target_schema = schemas[edge.target_node_id]
-        target_handles = {
-            socket.name for socket in target_schema.inputs
-        } | {widget.name for widget in target_schema.widgets}
-        if edge.target_handle not in target_handles:
+        target_socket = next(
+            (
+                socket
+                for socket in target_schema.inputs
+                if socket.name == edge.target_handle
+            ),
+            None,
+        )
+        target_widget = next(
+            (
+                widget
+                for widget in target_schema.widgets
+                if widget.name == edge.target_handle
+            ),
+            None,
+        )
+        if target_socket is not None:
+            target_type = target_socket.data_type
+        elif target_widget is not None:
+            target_type = widget_socket_type(target_widget.data_type)
+        else:
             raise GraphValidationError(
-                f"Node '{edge.target_node_id}' has no input socket or widget "
-                f"'{edge.target_handle}'"
+                f"Node '{edge.target_node_id}' has no input socket or widget '{edge.target_handle}'"
+            )
+        if not socket_types_compatible(source_socket.data_type, target_type):
+            raise GraphValidationError(
+                f"Type mismatch {source_socket.data_type.value} -> "
+                f"{target_type.value} for {edge.source_node_id}."
+                f"{edge.source_handle} -> {edge.target_node_id}.{edge.target_handle}"
             )
         key = (edge.target_node_id, edge.target_handle)
         if key in connected:
@@ -632,18 +704,26 @@ def _plan(
         for socket in schemas[node.id].inputs:
             if socket.name not in handles:
                 raise GraphValidationError(
-                    f"Required input '{socket.name}' of node '{node.id}' "
-                    f"is not connected"
+                    f"Required input '{socket.name}' of node '{node.id}' is not connected"
                 )
     return schemas
 
 
-def _node_state_hash(
-    code: str, widget_values: dict[str, Any], upstream_hashes: list[str]
-) -> str:
+def _resolve_widget_file(value: Any) -> Any:
+    """Resolve workspace-relative ``File`` widget paths inside the workspace."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    root = workspace_root().expanduser().resolve()
+    path = Path(value).expanduser()
+    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise FileAccessError("File widgets may only access files inside the workspace.")
+    return str(resolved)
+
+
+def _node_state_hash(code: str, widget_values: dict[str, Any], upstream_hashes: list[str]) -> str:
     payload = (
-        f"{code}{json.dumps(widget_values, sort_keys=True, default=str)}"
-        f"{''.join(upstream_hashes)}"
+        f"{code}{json.dumps(widget_values, sort_keys=True, default=str)}{''.join(upstream_hashes)}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -655,8 +735,7 @@ def _normalize_outputs(value: Any, expected: int, node_id: str) -> tuple[Any, ..
         return value
     if isinstance(value, tuple):
         raise _OutputContractError(
-            f"Node declared {expected} output socket(s) but returned "
-            f"{len(value)} value(s)"
+            f"Node declared {expected} output socket(s) but returned {len(value)} value(s)"
         )
     raise _OutputContractError(
         f"Node declared {expected} output socket(s) but returned a "
@@ -675,8 +754,7 @@ def _record_outputs(
 ) -> None:
     result.outputs[node_id] = outputs
     result.outputs_by_name[node_id] = {
-        socket.name: value
-        for socket, value in zip(schema.outputs, outputs, strict=False)
+        socket.name: value for socket, value in zip(schema.outputs, outputs, strict=False)
     }
     result.previews[node_id] = {
         socket.name: build_output_preview(socket.data_type, value)
@@ -686,9 +764,7 @@ def _record_outputs(
     result.cached[node_id] = cached
 
 
-def _localize_failure(
-    exc: Exception, node_id: str, line_offset: int
-) -> tuple[int | None, str]:
+def _localize_failure(exc: Exception, node_id: str, line_offset: int) -> tuple[int | None, str]:
     filename = f"<node:{node_id}>"
     raw_line: int | None = None
     tb = exc.__traceback__
@@ -698,14 +774,10 @@ def _localize_failure(
         tb = tb.tb_next
     if raw_line is not None and raw_line < 1:
         raw_line = None
-    text = "".join(
-        traceback.format_exception(type(exc), exc, exc.__traceback__)
-    )
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     pattern = re.compile(rf'File "{re.escape(filename)}", line (\d+)')
     text = pattern.sub(
-        lambda match: (
-            f'File "{filename}", line {max(int(match.group(1)) - line_offset, 1)}'
-        ),
+        lambda match: f'File "{filename}", line {max(int(match.group(1)) - line_offset, 1)}',
         text,
     )
     return raw_line, text

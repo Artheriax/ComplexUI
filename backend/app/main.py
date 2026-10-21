@@ -1,8 +1,8 @@
 """FastAPI entry point: REST endpoints and WebSocket execution streaming.
 
 ``POST /api/execute`` accepts a workflow graph, runs a synchronous pre-flight
-(parse + wiring + trust validation) and then starts the execution in a worker
-thread so the event loop stays responsive. Telemetry flows through
+(parse + wiring + trust validation) and then executes it in an isolated child
+process while the event loop stays responsive. Telemetry flows through
 :class:`ConnectionManager` to every client connected to ``/ws/execution``.
 """
 
@@ -14,44 +14,107 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .datasets import (
+    MAX_UPLOAD_REQUEST_BYTES,
+    DatasetNotFound,
+    DatasetPreviewError,
+    DatasetTooLarge,
+    InvalidDataset,
+    get_dataset_store,
+)
+from .execution_host import (
+    WorkerHandle,
+    execution_limits,
+    process_memory_bytes,
+    start_worker,
+    stop_worker,
+)
 from .executor import (
-    ExecutionCancelled,
-    ExecutionResult,
     GraphError,
     GraphPlan,
-    NodeExecutionError,
-    execute_graph,
+    restore_cache,
     validate_graph,
 )
-from .logging_setup import configure_logging
+from .exporter import (
+    ExportError,
+    export_notebook,
+    export_python,
+)
+from .logging_setup import (
+    FileFormatter,
+    configure_logging,
+    resolve_log_dir,
+)
 from .network_security import (
     RequestSizeLimitMiddleware,
     configured_allowed_hosts,
     origin_is_allowed,
 )
+from .run_history import (
+    InvalidRunId,
+    RunHistoryError,
+    RunNotFound,
+    RunRecorder,
+    get_run_history_store,
+)
 from .schemas import (
+    DEFAULT_DATASET_PREVIEW_ROWS,
+    MAX_DATASET_PREVIEW_ROWS,
+    RUN_HISTORY_RETENTION,
     ApproveRequest,
     ApproveResponse,
+    DatasetDeleteResponse,
+    DatasetPreview,
+    DatasetSummary,
+    DatasetUploadResponse,
     EventType,
     ExecuteRequest,
     ExecuteResponse,
     ExecutionEvent,
     ExecutionStatusResponse,
+    ExportFormat,
+    ExportRequest,
+    ExportResponse,
     NodeSchema,
     ParseRequest,
+    ProjectCreateRequest,
+    ProjectDeleteResponse,
+    ProjectDetail,
+    ProjectSaveResponse,
+    ProjectSummary,
+    ProjectUpdateRequest,
+    ProjectVersionDetail,
+    ProjectVersionInfo,
+    RunDeleteResponse,
+    RunDetail,
+    RunErrorRecord,
+    RunStatus,
+    RunSummary,
     TemplateInfo,
     WorkflowGraph,
+    WorkspaceSession,
+    WorkspaceSessionRequest,
+    WorkspaceSessionResponse,
 )
-from .security import UntrustedNodeError, get_security_registry
+from .security import get_security_registry
 from .template_catalog import template_meta
 from .transpiler import TranspileError, parse_node
 from .workflow_catalog import (
@@ -59,10 +122,22 @@ from .workflow_catalog import (
     WorkflowTemplateInfo,
     get_workflows,
 )
+from .workspace import (
+    InvalidProjectDocument,
+    InvalidProjectSlug,
+    ProjectAlreadyExists,
+    ProjectNotFound,
+    WorkspaceError,
+    get_project_store,
+)
 
 __all__ = ["app", "coordinator", "manager"]
 
-configure_logging(os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"))
+_LOG_DIR = resolve_log_dir()
+configure_logging(
+    os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"),
+    log_dir=_LOG_DIR,
+)
 logger = logging.getLogger("complexui.server")
 
 _SEND_TIMEOUT_SECONDS = 2.0
@@ -179,8 +254,9 @@ class ExecutionCoordinator:
             self._stop_event = None
 
 
-def _log_event(event: ExecutionEvent) -> None:
-    """Narrate every execution telemetry event on the console."""
+def _log_event(event: ExecutionEvent, *, target: logging.Logger | None = None) -> None:
+    """Narrate every execution telemetry event on the console or a run log."""
+    log = target if target is not None else logger
     data = event.data
     run_id = str(data.get("run_id", ""))
     short_run = run_id[:12]
@@ -191,16 +267,14 @@ def _log_event(event: ExecutionEvent) -> None:
     if event.type is EventType.EXECUTION_STARTED:
         order = data.get("order")
         node_count = len(order) if isinstance(order, list) else 0
-        logger.info(
-            "run %s started: %d node(s)", short_run, node_count, extra=extra
-        )
-        logger.debug("run %s order: %s", short_run, order, extra=extra)
+        log.info("run %s started: %d node(s)", short_run, node_count, extra=extra)
+        log.debug("run %s order: %s", short_run, order, extra=extra)
     elif event.type is EventType.NODE_STARTED:
-        logger.info("  [start] %s", event.node_id, extra=extra)
+        log.info("  [start] %s", event.node_id, extra=extra)
     elif event.type is EventType.INSTALLING_DEPS:
         dependencies = data.get("dependencies") or []
         extra["dependencies"] = dependencies
-        logger.info(
+        log.info(
             "  [deps ] %s installing: %s",
             event.node_id,
             ", ".join(str(dep) for dep in dependencies),
@@ -210,18 +284,16 @@ def _log_event(event: ExecutionEvent) -> None:
         cached = bool(data.get("cached"))
         extra["cached"] = cached
         if cached:
-            logger.info("  [done ] %s (cached)", event.node_id, extra=extra)
+            log.info("  [done ] %s (cached)", event.node_id, extra=extra)
         else:
             duration = data.get("duration_ms")
             if isinstance(duration, (int, float)):
                 extra["duration_ms"] = duration
-            logger.info(
-                "  [done ] %s in %sms", event.node_id, duration, extra=extra
-            )
+            log.info("  [done ] %s in %sms", event.node_id, duration, extra=extra)
     elif event.type is EventType.NODE_ERROR:
         extra["error_type"] = data.get("error_type")
         extra["line"] = data.get("line")
-        logger.error(
+        log.error(
             "  [error] %s: %s (line %s): %s",
             event.node_id,
             data.get("error_type"),
@@ -237,7 +309,7 @@ def _log_event(event: ExecutionEvent) -> None:
         extra["cached"] = cached_count
         if isinstance(duration, (int, float)):
             extra["duration_ms"] = duration
-            logger.info(
+            log.info(
                 "run %s completed in %sms: %d node(s), %d cached",
                 short_run,
                 duration,
@@ -246,7 +318,7 @@ def _log_event(event: ExecutionEvent) -> None:
                 extra=extra,
             )
         else:
-            logger.info(
+            log.info(
                 "run %s completed: %d node(s), %d cached",
                 short_run,
                 len(cached_map),
@@ -260,7 +332,7 @@ def _log_event(event: ExecutionEvent) -> None:
         duration = data.get("duration_ms")
         if isinstance(duration, (int, float)):
             extra["duration_ms"] = duration
-        logger.error(
+        log.error(
             "run %s failed%s: %s",
             short_run,
             f" at {failed_node}" if failed_node else "",
@@ -269,18 +341,14 @@ def _log_event(event: ExecutionEvent) -> None:
         )
         traceback_text = data.get("traceback")
         if isinstance(traceback_text, str) and traceback_text:
-            logger.debug(
-                "run %s traceback:\n%s", short_run, traceback_text, extra=extra
-            )
+            log.debug("run %s traceback:\n%s", short_run, traceback_text, extra=extra)
     elif event.type is EventType.EXECUTION_CANCELLED:
         duration = data.get("duration_ms")
         if isinstance(duration, (int, float)):
             extra["duration_ms"] = duration
-        logger.warning("run %s cancelled", short_run, extra=extra)
+        log.warning("run %s cancelled", short_run, extra=extra)
     else:
-        logger.debug(
-            "event %s node=%s", event.type.value, event.node_id, extra=extra
-        )
+        log.debug("event %s node=%s", event.type.value, event.node_id, extra=extra)
 
 
 _ALLOWED_HOSTS = configured_allowed_hosts()
@@ -297,7 +365,10 @@ app.add_middleware(
     allowed_hosts=_ALLOWED_HOSTS,
     www_redirect=False,
 )
-app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    overrides={"/api/uploads": MAX_UPLOAD_REQUEST_BYTES},
+)
 
 manager = ConnectionManager()
 coordinator = ExecutionCoordinator()
@@ -308,6 +379,9 @@ logger.info(
     len(get_security_registry().templates()),
     ", ".join(_ALLOWED_HOSTS),
 )
+if _LOG_DIR is not None:
+    logger.info("daily logs: %s", _LOG_DIR)
+logger.info("workspace: %s", get_project_store().root)
 if "*" in _ALLOWED_HOSTS:
     logger.warning(
         "network mode is enabled: Host validation accepts any hostname and "
@@ -386,13 +460,52 @@ def status_endpoint() -> ExecutionStatusResponse:
     )
 
 
+@app.get("/api/runs", response_model=list[RunSummary])
+def list_runs_endpoint(
+    limit: Annotated[int, Query(ge=1, le=200)] = RUN_HISTORY_RETENTION,
+) -> list[RunSummary]:
+    """Return retained terminal runs, newest first."""
+    try:
+        return get_run_history_store().list_runs(limit)
+    except RunHistoryError as exc:
+        logger.error("run history list failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/runs/{run_id}", response_model=RunDetail)
+def get_run_endpoint(run_id: str) -> RunDetail:
+    """Load one retained run with per-node outputs and errors."""
+    try:
+        return get_run_history_store().get(run_id)
+    except InvalidRunId as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RunHistoryError as exc:
+        logger.error("run history read failed for %s: %s", run_id[:12], exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/runs/{run_id}", response_model=RunDeleteResponse)
+def delete_run_endpoint(run_id: str) -> RunDeleteResponse:
+    """Delete one retained run record."""
+    try:
+        get_run_history_store().delete(run_id)
+    except InvalidRunId as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RunNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RunHistoryError as exc:
+        logger.error("run history delete failed for %s: %s", run_id[:12], exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return RunDeleteResponse(status="deleted", run_id=run_id)
+
+
 @app.post("/api/approve", response_model=ApproveResponse)
 def approve_endpoint(payload: ApproveRequest) -> ApproveResponse:
     """Approve custom/modified node code for the current session."""
     get_security_registry().approve(payload.node_id, payload.code_hash)
-    logger.info(
-        "approved node '%s' (hash %s…)", payload.node_id, payload.code_hash[:12]
-    )
+    logger.info("approved node '%s' (hash %s…)", payload.node_id, payload.code_hash[:12])
     return ApproveResponse(
         status="approved",
         node_id=payload.node_id,
@@ -400,14 +513,260 @@ def approve_endpoint(payload: ApproveRequest) -> ApproveResponse:
     )
 
 
+@app.post("/api/export", response_model=ExportResponse)
+def export_endpoint(payload: ExportRequest) -> ExportResponse:
+    """Render the workflow as a standalone Python script or notebook."""
+    try:
+        if payload.format is ExportFormat.NOTEBOOK:
+            exported = export_notebook(payload.graph, targets=payload.targets)
+        else:
+            exported = export_python(payload.graph, targets=payload.targets)
+    except TranspileError as exc:
+        logger.error(
+            "export rejected: syntax error in node '%s' (line %d)",
+            exc.schema.node_id,
+            exc.schema.syntax_errors[0].line if exc.schema.syntax_errors else 0,
+        )
+        raise HTTPException(status_code=422, detail=exc.schema.model_dump(mode="json")) from exc
+    except (GraphError, ExportError) as exc:
+        logger.error("export rejected: %s", exc)
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
+
+    logger.info(
+        "export: format=%s nodes=%d filename=%s bytes=%d",
+        payload.format.value,
+        len(payload.graph.nodes),
+        exported.filename,
+        len(exported.content.encode("utf-8")),
+    )
+    return ExportResponse(
+        filename=exported.filename,
+        media_type=exported.media_type,
+        content=exported.content,
+    )
+
+
+def _dataset_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, DatasetNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, DatasetTooLarge):
+        return HTTPException(status_code=413, detail=str(exc))
+    if isinstance(exc, (InvalidDataset, DatasetPreviewError)):
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/uploads", response_model=list[DatasetSummary])
+def list_uploads_endpoint() -> list[DatasetSummary]:
+    """List datasets stored in the workspace upload directory."""
+    try:
+        return get_dataset_store().list_datasets()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/uploads", response_model=DatasetUploadResponse)
+async def upload_dataset_endpoint(
+    file: Annotated[UploadFile, File()],
+) -> DatasetUploadResponse:
+    """Stream one dataset into the workspace with a size cap."""
+    if not file.filename:
+        raise HTTPException(status_code=422, detail="Upload requires a filename")
+    store = get_dataset_store()
+    try:
+        dataset = await run_in_threadpool(store.save, file.filename, file.file)
+    except (DatasetNotFound, DatasetTooLarge, InvalidDataset) as exc:
+        raise _dataset_http_error(exc) from exc
+    except OSError as exc:
+        logger.error("dataset upload failed: %s", exc)
+        raise _dataset_http_error(exc) from exc
+    finally:
+        await file.close()
+    logger.info(
+        "dataset uploaded: '%s' (%d bytes, path=%s)",
+        dataset.name,
+        dataset.size_bytes,
+        dataset.path,
+    )
+    return DatasetUploadResponse(status="uploaded", dataset=dataset)
+
+
+@app.get("/api/uploads/{file_id}", response_model=DatasetSummary)
+def get_upload_endpoint(file_id: str) -> DatasetSummary:
+    """Return metadata for one uploaded dataset."""
+    try:
+        return get_dataset_store().get_dataset(file_id)
+    except (DatasetNotFound, InvalidDataset, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+
+
+@app.get("/api/uploads/{file_id}/preview", response_model=DatasetPreview)
+def preview_upload_endpoint(
+    file_id: str,
+    limit: int = Query(
+        default=DEFAULT_DATASET_PREVIEW_ROWS,
+        ge=1,
+        le=MAX_DATASET_PREVIEW_ROWS,
+    ),
+) -> DatasetPreview:
+    """Return a bounded table preview for one uploaded dataset."""
+    try:
+        return get_dataset_store().preview(file_id, limit=limit)
+    except (DatasetNotFound, DatasetPreviewError, InvalidDataset, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+
+
+@app.delete("/api/uploads/{file_id}", response_model=DatasetDeleteResponse)
+def delete_upload_endpoint(file_id: str) -> DatasetDeleteResponse:
+    """Delete one uploaded dataset."""
+    try:
+        dataset = get_dataset_store().delete(file_id)
+    except (DatasetNotFound, InvalidDataset, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+    logger.info("dataset deleted: %s", file_id)
+    return DatasetDeleteResponse(status="deleted", dataset=dataset)
+
+
+@app.get("/api/projects", response_model=list[ProjectSummary])
+def list_projects_endpoint() -> list[ProjectSummary]:
+    """List named projects stored in the workspace."""
+    return get_project_store().list_projects()
+
+
+@app.post("/api/projects", response_model=ProjectSaveResponse)
+def create_project_endpoint(payload: ProjectCreateRequest) -> ProjectSaveResponse:
+    """Create a named project, optionally replacing an existing one."""
+    try:
+        project, created = get_project_store().create_project(
+            payload.name, payload.workflow, overwrite=payload.overwrite
+        )
+    except ProjectAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info(
+        "project %s: '%s' (%d node(s), slug=%s)",
+        "created" if created else "overwritten",
+        payload.name,
+        len(payload.workflow.nodes),
+        project.slug,
+    )
+    return ProjectSaveResponse(status="created" if created else "updated", project=project)
+
+
+@app.get("/api/projects/{slug}", response_model=ProjectDetail)
+def get_project_endpoint(slug: str) -> ProjectDetail:
+    """Load a project document by slug."""
+    try:
+        return get_project_store().get_project(slug)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidProjectDocument as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.put("/api/projects/{slug}", response_model=ProjectSaveResponse)
+def update_project_endpoint(slug: str, payload: ProjectUpdateRequest) -> ProjectSaveResponse:
+    """Overwrite a project and retain its previous contents as a snapshot."""
+    try:
+        project = get_project_store().update_project(slug, payload.name, payload.workflow)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info(
+        "project saved: '%s' (%d node(s), slug=%s, %d version(s))",
+        project.name,
+        project.node_count,
+        project.slug,
+        project.version_count,
+    )
+    return ProjectSaveResponse(status="updated", project=project)
+
+
+@app.delete("/api/projects/{slug}", response_model=ProjectDeleteResponse)
+def delete_project_endpoint(slug: str) -> ProjectDeleteResponse:
+    """Move a project and its snapshots to the workspace trash."""
+    try:
+        get_project_store().delete_project(slug)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info("project deleted: slug=%s", slug)
+    return ProjectDeleteResponse(status="deleted", slug=slug)
+
+
+@app.get("/api/projects/{slug}/versions", response_model=list[ProjectVersionInfo])
+def list_project_versions_endpoint(slug: str) -> list[ProjectVersionInfo]:
+    """List retained version snapshots for a project."""
+    try:
+        return get_project_store().list_versions(slug)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get(
+    "/api/projects/{slug}/versions/{version}",
+    response_model=ProjectVersionDetail,
+)
+def get_project_version_endpoint(slug: str, version: str) -> ProjectVersionDetail:
+    """Load one retained snapshot."""
+    try:
+        return get_project_store().get_version(slug, version)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidProjectSlug as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidProjectDocument as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/session", response_model=WorkspaceSession | None)
+def get_session_endpoint() -> WorkspaceSession | None:
+    """Return the latest close/visibility autosave for recovery."""
+    return get_project_store().load_session()
+
+
+@app.put("/api/session", response_model=WorkspaceSessionResponse)
+def save_session_endpoint(
+    payload: WorkspaceSessionRequest,
+) -> WorkspaceSessionResponse:
+    """Persist the canvas when the page is hidden or closed."""
+    try:
+        session = get_project_store().save_session(payload)
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.debug(
+        "session autosave: %d node(s), project=%s",
+        len(payload.workflow.nodes),
+        payload.project_slug or "<unsaved>",
+    )
+    return WorkspaceSessionResponse(status="saved", saved_at=session.saved_at)
+
+
 @app.post("/api/execute", status_code=202, response_model=ExecuteResponse)
 async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
     """Pre-flight a workflow graph and start async execution + WS streaming."""
     if coordinator.running:
         logger.warning("execute rejected: a run is already in progress")
-        raise HTTPException(
-            status_code=409, detail="An execution is already running"
-        )
+        raise HTTPException(status_code=409, detail="An execution is already running")
 
     try:
         plan = validate_graph(payload.graph, targets=payload.targets)
@@ -415,18 +774,12 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
         logger.error(
             "execute rejected: syntax error in node '%s' (line %d)",
             exc.schema.node_id,
-            exc.schema.syntax_errors[0].line
-            if exc.schema.syntax_errors
-            else 0,
+            exc.schema.syntax_errors[0].line if exc.schema.syntax_errors else 0,
         )
-        raise HTTPException(
-            status_code=422, detail=exc.schema.model_dump(mode="json")
-        ) from exc
+        raise HTTPException(status_code=422, detail=exc.schema.model_dump(mode="json")) from exc
     except GraphError as exc:
         logger.error("execute rejected: %s", exc)
-        raise HTTPException(
-            status_code=422, detail={"message": str(exc)}
-        ) from exc
+        raise HTTPException(status_code=422, detail={"message": str(exc)}) from exc
 
     if plan.untrusted:
         logger.warning(
@@ -438,8 +791,7 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
             status_code=403,
             detail={
                 "message": (
-                    "Workflow contains untrusted code; approve the listed "
-                    "nodes before execution"
+                    "Workflow contains untrusted code; approve the listed nodes before execution"
                 ),
                 "untrusted_nodes": [
                     {"node_id": node_id, "code_hash": hash_value}
@@ -450,9 +802,7 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
 
     run = coordinator.try_begin()
     if run is None:  # unreachable: no await since the check above
-        raise HTTPException(
-            status_code=409, detail="An execution is already running"
-        )
+        raise HTTPException(status_code=409, detail="An execution is already running")
     run_id, stop_event = run
     targets = payload.targets
     logger.info(
@@ -464,7 +814,14 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
 
     manager.ensure_started()
     task = asyncio.create_task(
-        _run_execution(payload.graph, plan, run_id, stop_event)
+        _run_execution(
+            payload.graph,
+            plan,
+            run_id,
+            stop_event,
+            payload.targets,
+            payload.node_labels,
+        )
     )
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -497,9 +854,44 @@ async def execution_socket(websocket: WebSocket) -> None:
         pass
     finally:
         manager.disconnect(websocket)
-        logger.debug(
-            "telemetry client disconnected (%d left)", manager.connection_count
-        )
+        logger.debug("telemetry client disconnected (%d left)", manager.connection_count)
+
+
+def _open_run_log(
+    run_id: str,
+) -> tuple[logging.Logger | None, logging.FileHandler | None]:
+    """Create a per-run plain-text log when file logging is enabled."""
+    log_dir = resolve_log_dir()
+    if log_dir is None:
+        return None, None
+    path = log_dir / "runs" / f"{run_id}.txt"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("run log disabled for %s: %s", run_id[:12], exc)
+        return None, None
+    handler.setFormatter(FileFormatter())
+    run_logger = logging.getLogger(f"complexui.run.{run_id}")
+    run_logger.setLevel(logging.DEBUG)
+    run_logger.propagate = False
+    run_logger.addHandler(handler)
+    logger.debug("run %s log: %s", run_id[:12], path)
+    return run_logger, handler
+
+
+def _close_run_log(run_logger: logging.Logger | None, handler: logging.FileHandler | None) -> None:
+    if run_logger is None or handler is None:
+        return
+    run_logger.removeHandler(handler)
+    handler.close()
+
+
+def _receive_message(connection: Any, timeout: float) -> dict[str, Any] | None:
+    if not connection.poll(timeout):
+        return None
+    message = connection.recv()
+    return message if isinstance(message, dict) else None
 
 
 async def _run_execution(
@@ -507,98 +899,254 @@ async def _run_execution(
     plan: GraphPlan,
     run_id: str,
     stop_event: threading.Event,
+    targets: list[str] | None,
+    node_labels: dict[str, str] | None,
 ) -> None:
     started = time.perf_counter()
+    run_logger, run_handler = _open_run_log(run_id)
+    recorder = RunRecorder(run_id, plan, node_labels, targets)
+    limits = execution_limits()
+    handle: WorkerHandle | None = None
+    terminal: dict[str, Any] | None = None
+    abnormal: tuple[str, str, str | None] | None = None
+    current_node_id: str | None = None
+    node_started_at: float | None = None
 
-    def emit(event: ExecutionEvent) -> None:
+    def emit_event(event: ExecutionEvent) -> None:
         event.data.setdefault("run_id", run_id)
-        manager.emit_from_thread(event)
+        try:
+            recorder.observe(event)
+        except Exception as exc:
+            logger.warning("run history telemetry ignored for %s: %s", run_id[:12], exc)
+        if run_logger is not None:
+            _log_event(event, target=run_logger)
+        manager.emit(event)
+
+    async def persist_run(
+        status: RunStatus,
+        *,
+        duration_ms: float,
+        error: RunErrorRecord | None = None,
+    ) -> None:
+        try:
+            record = recorder.finish(status, duration_ms=duration_ms, error=error)
+            await asyncio.to_thread(get_run_history_store().save, record)
+        except Exception as exc:
+            logger.warning("run history write failed for %s: %s", run_id[:12], exc)
+
+    def apply_cache(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        try:
+            restore_cache(payload)
+        except Exception as exc:
+            logger.warning("cache transfer failed for %s: %s", run_id[:12], exc)
+
+    def failure_from(payload: dict[str, Any]) -> RunErrorRecord:
+        node_id = payload.get("node_id")
+        line = payload.get("line")
+        return RunErrorRecord(
+            message=str(payload.get("message", "Execution failed")),
+            error_type=str(payload.get("error_type", "Error")),
+            node_id=node_id if isinstance(node_id, str) else None,
+            line=line if isinstance(line, int) else None,
+            traceback=str(payload.get("traceback", "")),
+        )
 
     try:
-        manager.emit(
+        emit_event(
             ExecutionEvent(
                 type=EventType.EXECUTION_STARTED,
                 node_id="",
                 data={"run_id": run_id, "order": plan.order},
             )
         )
-        result: ExecutionResult = await asyncio.to_thread(
-            execute_graph,
-            graph,
-            plan=plan,
-            emit=emit,
-            should_stop=stop_event.is_set,
-        )
-        manager.emit(
-            ExecutionEvent(
-                type=EventType.EXECUTION_COMPLETED,
-                node_id="",
-                data={
-                    "run_id": run_id,
-                    "cached": result.cached,
-                    "previews": result.previews,
-                    "duration_ms": _elapsed_ms(started),
+        worker_started = time.perf_counter()
+        try:
+            handle = await asyncio.to_thread(
+                start_worker,
+                graph,
+                plan,
+                limits.max_memory_bytes,
+            )
+        except Exception as exc:
+            terminal = {
+                "kind": "failed",
+                "failure": {
+                    "error_type": type(exc).__name__,
+                    "message": f"Could not start execution process: {exc}",
+                    "node_id": None,
+                    "line": None,
+                    "traceback": "",
                 },
+            }
+
+        while handle is not None and terminal is None:
+            if stop_event.is_set():
+                handle.stop_event.set()
+            try:
+                message = await asyncio.to_thread(_receive_message, handle.connection, 0.1)
+            except EOFError:
+                abnormal = (
+                    "WorkerCrashed",
+                    "The execution process exited unexpectedly.",
+                    current_node_id,
+                )
+                break
+            if message is None:
+                now = time.perf_counter()
+                if (
+                    limits.run_timeout_seconds > 0
+                    and now - worker_started >= limits.run_timeout_seconds
+                ):
+                    abnormal = (
+                        "RunTimeout",
+                        f"Execution exceeded the {limits.run_timeout_seconds:.0f}s run timeout.",
+                        current_node_id,
+                    )
+                    break
+                if (
+                    limits.node_timeout_seconds > 0
+                    and current_node_id is not None
+                    and node_started_at is not None
+                    and now - node_started_at >= limits.node_timeout_seconds
+                ):
+                    abnormal = (
+                        "NodeTimeout",
+                        f"Node '{current_node_id}' exceeded the "
+                        f"{limits.node_timeout_seconds:.0f}s node timeout.",
+                        current_node_id,
+                    )
+                    break
+                if limits.max_memory_bytes > 0:
+                    used = process_memory_bytes(handle.process.pid)
+                    if used is not None and used > limits.max_memory_bytes:
+                        abnormal = (
+                            "MemoryLimit",
+                            "Execution exceeded the "
+                            f"{limits.max_memory_bytes // (1024 * 1024)} MiB "
+                            "memory limit.",
+                            current_node_id,
+                        )
+                        break
+                if not handle.process.is_alive():
+                    abnormal = (
+                        "WorkerCrashed",
+                        "The execution process exited unexpectedly.",
+                        current_node_id,
+                    )
+                    break
+                continue
+
+            if not isinstance(message, dict):
+                continue
+            if message.get("kind") == "event":
+                try:
+                    event = ExecutionEvent(
+                        type=EventType(str(message.get("type", ""))),
+                        node_id=str(message.get("node_id", "")),
+                        data=message.get("data") if isinstance(message.get("data"), dict) else {},
+                    )
+                except ValueError:
+                    continue
+                emit_event(event)
+                if event.type == EventType.NODE_STARTED:
+                    current_node_id = event.node_id
+                    node_started_at = time.perf_counter()
+                elif event.type in {
+                    EventType.NODE_COMPLETED,
+                    EventType.NODE_ERROR,
+                }:
+                    current_node_id = None
+                    node_started_at = None
+                continue
+            terminal = message
+
+        duration_ms = _elapsed_ms(started)
+        if terminal is None:
+            error_type, message, node_id = abnormal or (
+                "WorkerCrashed",
+                "The execution process exited unexpectedly.",
+                None,
             )
-        )
-    except ExecutionCancelled:
-        manager.emit(
-            ExecutionEvent(
-                type=EventType.EXECUTION_CANCELLED,
-                node_id="",
-                data={"run_id": run_id, "duration_ms": _elapsed_ms(started)},
-            )
-        )
-    except Exception as exc:
-        manager.emit(
-            ExecutionEvent(
-                type=EventType.EXECUTION_FAILED,
-                node_id=_failed_node_id(exc),
-                data={
-                    "run_id": run_id,
-                    **_failure_payload(exc),
-                    "duration_ms": _elapsed_ms(started),
+            terminal = {
+                "kind": "failed",
+                "failure": {
+                    "error_type": error_type,
+                    "message": message,
+                    "node_id": node_id,
+                    "line": None,
+                    "traceback": "",
                 },
+            }
+
+        kind = terminal.get("kind")
+        if kind == "completed":
+            apply_cache(terminal.get("cache"))
+            await persist_run(RunStatus.COMPLETED, duration_ms=duration_ms)
+            coordinator.finish()
+            emit_event(
+                ExecutionEvent(
+                    type=EventType.EXECUTION_COMPLETED,
+                    node_id="",
+                    data={
+                        "run_id": run_id,
+                        "cached": terminal.get("cached", {}),
+                        "previews": terminal.get("previews", {}),
+                        "duration_ms": duration_ms,
+                    },
+                )
             )
-        )
+        elif kind == "cancelled":
+            apply_cache(terminal.get("cache"))
+            await persist_run(RunStatus.CANCELLED, duration_ms=duration_ms)
+            coordinator.finish()
+            emit_event(
+                ExecutionEvent(
+                    type=EventType.EXECUTION_CANCELLED,
+                    node_id="",
+                    data={"run_id": run_id, "duration_ms": duration_ms},
+                )
+            )
+        else:
+            apply_cache(terminal.get("cache"))
+            failure = terminal.get("failure")
+            payload = failure if isinstance(failure, dict) else {}
+            error = failure_from(payload)
+            await persist_run(
+                RunStatus.FAILED,
+                duration_ms=duration_ms,
+                error=error,
+            )
+            coordinator.finish()
+            emit_event(
+                ExecutionEvent(
+                    type=EventType.EXECUTION_FAILED,
+                    node_id=error.node_id or "",
+                    data={
+                        "run_id": run_id,
+                        "error_type": error.error_type,
+                        "message": error.message,
+                        "node_id": error.node_id,
+                        "line": error.line,
+                        "traceback": error.traceback,
+                        "duration_ms": duration_ms,
+                    },
+                )
+            )
     finally:
+        if handle is not None:
+            await asyncio.to_thread(
+                stop_worker,
+                handle,
+                terminate=abnormal is not None,
+            )
+        _close_run_log(run_logger, run_handler)
         coordinator.finish()
 
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 1)
-
-
-def _failed_node_id(exc: Exception) -> str:
-    if isinstance(exc, (NodeExecutionError, UntrustedNodeError)):
-        return exc.node_id
-    return ""
-
-
-def _failure_payload(exc: Exception) -> dict[str, Any]:
-    if isinstance(exc, NodeExecutionError):
-        return {
-            "error_type": exc.error_type,
-            "message": exc.message,
-            "node_id": exc.node_id,
-            "line": exc.line,
-            "traceback": exc.traceback_text,
-        }
-    if isinstance(exc, UntrustedNodeError):
-        return {
-            "error_type": type(exc).__name__,
-            "message": str(exc),
-            "node_id": exc.node_id,
-            "line": None,
-            "traceback": "",
-        }
-    return {
-        "error_type": type(exc).__name__,
-        "message": str(exc),
-        "node_id": None,
-        "line": None,
-        "traceback": "",
-    }
 
 
 def mount_static_frontend(target: FastAPI, dist_dir: Path) -> None:

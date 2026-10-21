@@ -5,9 +5,11 @@ import {
   findCompatibleOutput,
   isInputTaken,
   matchTemplateConnection,
+  resolveTargetSocket,
   socketTypesCompatible,
 } from "./socketCompatibility";
 import type { AppEdge, NodeSchema, TemplateInfo } from "../types/graph";
+import { widgetSocketType } from "../types/graph";
 
 function makeSchema(overrides: Partial<NodeSchema> = {}): NodeSchema {
   return {
@@ -34,10 +36,23 @@ function makeTemplate(schema: NodeSchema): TemplateInfo {
   };
 }
 
+test("maps widget python types onto socket types", () => {
+  expect(widgetSocketType("int")).toBe("INT");
+  expect(widgetSocketType("float")).toBe("FLOAT");
+  expect(widgetSocketType("bool")).toBe("BOOL");
+  expect(widgetSocketType("str")).toBe("STRING");
+  expect(widgetSocketType("file")).toBe("STRING");
+  expect(widgetSocketType("path")).toBe("STRING");
+  expect(widgetSocketType("DATAFRAME")).toBe("DATAFRAME");
+  expect(widgetSocketType("unknown")).toBe("ANY");
+});
+
 test("matches exact and ANY socket types", () => {
   expect(socketTypesCompatible("DATAFRAME", "DATAFRAME")).toBe(true);
   expect(socketTypesCompatible("ANY", "ML_MODEL")).toBe(true);
   expect(socketTypesCompatible("METRICS", "ANY")).toBe(true);
+  expect(socketTypesCompatible("INT", "FLOAT")).toBe(true);
+  expect(socketTypesCompatible("FLOAT", "INT")).toBe(false);
   expect(socketTypesCompatible("METRICS", "TENSOR")).toBe(false);
 });
 
@@ -71,12 +86,65 @@ test("matches templates for both connection directions", () => {
   expect(matchTemplateConnection(template, "source", "DATAFRAME")).toEqual({
     socketName: "df",
     socketType: "DATAFRAME",
+    targetKind: "input",
   });
   expect(matchTemplateConnection(template, "target", "ANY")).toEqual({
     socketName: "metrics",
     socketType: "METRICS",
+    targetKind: "output",
   });
   expect(matchTemplateConnection(template, "source", "TENSOR")).toBeNull();
+});
+
+test("matches primitive outputs to widget parameters", () => {
+  const template = makeTemplate(
+    makeSchema({
+      widgets: [
+        { name: "test_size", data_type: "float", default: 0.2 },
+        { name: "random_state", data_type: "int", default: 42 },
+      ],
+    }),
+  );
+
+  expect(matchTemplateConnection(template, "source", "FLOAT")).toEqual({
+    socketName: "test_size",
+    socketType: "FLOAT",
+    targetKind: "widget",
+  });
+  expect(matchTemplateConnection(template, "source", "INT")).toEqual({
+    socketName: "test_size",
+    socketType: "FLOAT",
+    targetKind: "widget",
+  });
+  expect(matchTemplateConnection(template, "source", "STRING")).toBeNull();
+
+  const intTemplate = makeTemplate(
+    makeSchema({
+      widgets: [{ name: "random_state", data_type: "int", default: 42 }],
+    }),
+  );
+  expect(matchTemplateConnection(intTemplate, "source", "INT")).toEqual({
+    socketName: "random_state",
+    socketType: "INT",
+    targetKind: "widget",
+  });
+});
+
+test("resolves input and widget handles to sockets", () => {
+  const schema = makeSchema({
+    inputs: [{ name: "df", data_type: "DATAFRAME" }],
+    widgets: [{ name: "k", data_type: "int", default: 5 }],
+  });
+
+  expect(resolveTargetSocket(schema, "df")).toEqual({
+    name: "df",
+    data_type: "DATAFRAME",
+  });
+  expect(resolveTargetSocket(schema, "k")).toEqual({
+    name: "k",
+    data_type: "INT",
+  });
+  expect(resolveTargetSocket(schema, "missing")).toBeNull();
 });
 
 test("detects occupied input handles", () => {

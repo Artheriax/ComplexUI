@@ -69,9 +69,7 @@ class SecurityRegistry:
             return
         for path in sorted(self.templates_dir.glob("*.py")):
             code = path.read_text(encoding="utf-8")
-            record = TemplateRecord(
-                name=path.stem, code=code, code_hash=code_hash(code)
-            )
+            record = TemplateRecord(name=path.stem, code=code, code_hash=code_hash(code))
             self._templates_by_name[record.name] = record
             self._template_hashes[record.code_hash] = record.name
 
@@ -93,6 +91,9 @@ class SecurityRegistry:
 
     def is_approved(self, node_id: str, hash_value: str) -> bool:
         return (node_id, hash_value) in self._approvals
+
+    def approved_pairs(self) -> list[tuple[str, str]]:
+        return sorted(self._approvals)
 
     def is_trusted(self, node_id: str, code: str) -> bool:
         value = code_hash(code)

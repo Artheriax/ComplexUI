@@ -6,7 +6,45 @@ export type SocketType =
   | "ML_MODEL"
   | "METRICS"
   | "TENSOR"
+  | "INT"
+  | "FLOAT"
+  | "BOOL"
+  | "STRING"
   | "ANY";
+
+export function widgetSocketType(dataType: string): SocketType {
+  const kind = dataType.trim().toLowerCase();
+  if (kind === "int") {
+    return "INT";
+  }
+  if (kind === "float") {
+    return "FLOAT";
+  }
+  if (kind === "bool") {
+    return "BOOL";
+  }
+  if (
+    kind === "str" ||
+    kind === "string" ||
+    kind === "file" ||
+    kind === "path"
+  ) {
+    return "STRING";
+  }
+  const normalized = dataType
+    .trim()
+    .replace(/^['"]|['"]$/g, "")
+    .toUpperCase();
+  return ["DATAFRAME", "DATASET", "ML_MODEL", "METRICS", "TENSOR"].includes(
+    normalized,
+  )
+    ? (normalized as SocketType)
+    : "ANY";
+}
+
+export function isPrimitiveSocketType(type: SocketType): boolean {
+  return type === "INT" || type === "FLOAT" || type === "BOOL" || type === "STRING";
+}
 
 export type NodeColor =
   | "default"
@@ -36,10 +74,13 @@ export interface OutputSocket {
   data_type: SocketType;
 }
 
+export type WidgetChoice = string | number | boolean;
+
 export interface WidgetParam {
   name: string;
   data_type: string;
   default: unknown;
+  options?: WidgetChoice[];
 }
 
 export interface SyntaxErrorInfo {
@@ -95,6 +136,7 @@ export interface GraphNodePayload {
   id: string;
   code: string;
   widget_values: Record<string, unknown>;
+  approval_id?: string;
 }
 
 export interface GraphEdgePayload {
@@ -107,6 +149,14 @@ export interface GraphEdgePayload {
 export interface WorkflowGraphPayload {
   nodes: GraphNodePayload[];
   edges: GraphEdgePayload[];
+}
+
+export type ExportFormat = "python" | "notebook";
+
+export interface ExportedWorkflow {
+  filename: string;
+  media_type: string;
+  content: string;
 }
 
 export interface ExecuteResponse {
@@ -172,7 +222,9 @@ export type PreviewValue =
   | ModelPreview
   | TensorPreview
   | Record<string, unknown>
-  | string;
+  | string
+  | number
+  | boolean;
 
 export interface TextRichOutput {
   kind: "text";
@@ -302,6 +354,13 @@ export function isNodeColor(value: unknown): value is NodeColor {
   );
 }
 
+export type SubgraphRole = "input" | "output";
+
+export const SUBGRAPH_INPUT_NODE_ID = "__subgraph_input__";
+export const SUBGRAPH_OUTPUT_NODE_ID = "__subgraph_output__";
+export const NEW_SUBGRAPH_INPUT_HANDLE = "__new_subgraph_input__";
+export const NEW_SUBGRAPH_OUTPUT_HANDLE = "__new_subgraph_output__";
+
 export type ComplexNodeData = {
   label: string;
   templateName: string | null;
@@ -311,10 +370,49 @@ export type ComplexNodeData = {
   widgetValues: Record<string, unknown>;
   isTrusted: boolean;
   color: NodeColor;
+  isFrame?: boolean;
+  isSubgraph?: boolean;
+  subgraphId?: string;
+  subgraphRole?: SubgraphRole;
 };
 
 export type AppNode = Node<ComplexNodeData, "complex">;
 export type AppEdge = Edge;
+
+export interface SubgraphDefinition {
+  id: string;
+  name: string;
+  inputs: InputSocket[];
+  outputs: OutputSocket[];
+  nodes: AppNode[];
+  edges: AppEdge[];
+  inputPosition: XYPosition;
+  outputPosition: XYPosition;
+}
+
+export type SubgraphMap = Record<string, SubgraphDefinition>;
+
+export interface SubgraphScope {
+  definitionId: string;
+  instanceId: string;
+  name: string;
+}
+
+export function isFrameNode(node: AppNode): boolean {
+  return node.data.isFrame === true;
+}
+
+export function isSubgraphInstanceNode(node: AppNode): boolean {
+  return node.data.isSubgraph === true;
+}
+
+export function isSubgraphManagerNode(node: AppNode): boolean {
+  return node.data.subgraphRole !== undefined;
+}
+
+export function isRunnableNode(node: AppNode): boolean {
+  return !isFrameNode(node) && !isSubgraphManagerNode(node);
+}
 
 export interface PendingApproval {
   nodeId: string;
@@ -342,6 +440,10 @@ export const SOCKET_COLORS: Record<SocketType, string> = {
   ML_MODEL: "#fbbf24",
   METRICS: "#34d399",
   TENSOR: "#fb7185",
+  INT: "#fb923c",
+  FLOAT: "#60a5fa",
+  BOOL: "#f472b6",
+  STRING: "#a3e635",
   ANY: "#a1a1aa",
 };
 
@@ -351,6 +453,10 @@ export const SOCKET_LABELS: Record<SocketType, string> = {
   ML_MODEL: "Model",
   METRICS: "Metrics",
   TENSOR: "Tensor",
+  INT: "Integer",
+  FLOAT: "Float",
+  BOOL: "Boolean",
+  STRING: "String",
   ANY: "Any",
 };
 

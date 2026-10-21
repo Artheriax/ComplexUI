@@ -14,6 +14,7 @@ from dataclasses import dataclass
 __all__ = ["CATEGORIES", "TemplateMeta", "TEMPLATE_META", "template_meta"]
 
 CATEGORIES: tuple[str, ...] = (
+    "Values",
     "Data Loaders",
     "Data Cleaning",
     "EDA",
@@ -36,6 +37,26 @@ class TemplateMeta:
 
 
 TEMPLATE_META: dict[str, TemplateMeta] = {
+    "int_value": TemplateMeta(
+        "Int Value",
+        "Values",
+        "Loose integer with adjustable step",
+    ),
+    "float_value": TemplateMeta(
+        "Float Value",
+        "Values",
+        "Loose float with adjustable step",
+    ),
+    "bool_value": TemplateMeta(
+        "Bool Value",
+        "Values",
+        "Loose boolean value",
+    ),
+    "string_value": TemplateMeta(
+        "String Value",
+        "Values",
+        "Loose string value",
+    ),
     "load_iris": TemplateMeta(
         "Load Iris Dataset",
         "Data Loaders",

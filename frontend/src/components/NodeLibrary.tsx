@@ -3,17 +3,11 @@ import type { DragEvent } from "react";
 
 import { groupTemplates } from "../lib/templateSearch";
 import { useGraphStore } from "../store/useGraphStore";
-import { useSettingsStore } from "../store/useSettingsStore";
 import { SOCKET_COLORS } from "../types/graph";
-import type { TemplateInfo } from "../types/graph";
-import { DRAG_MIME } from "./Canvas";
-import {
-  ChevronDownIcon,
-  PlusIcon,
-  SettingsIcon,
-  SpinnerIcon,
-  WarningIcon,
-} from "./icons";
+import type { SubgraphDefinition, TemplateInfo } from "../types/graph";
+import { DRAG_MIME, DRAG_SUBGRAPH_MIME } from "./Canvas";
+import { CategorySection } from "./CategorySection";
+import { PlusIcon, SpinnerIcon, SubgraphIcon, WarningIcon } from "./icons";
 
 function TemplateCard({ template }: { template: TemplateInfo }) {
   const addNodeFromTemplate = useGraphStore((state) => state.addNodeFromTemplate);
@@ -68,11 +62,55 @@ function TemplateCard({ template }: { template: TemplateInfo }) {
   );
 }
 
+function SubgraphCard({
+  definition,
+}: {
+  definition: SubgraphDefinition;
+}) {
+  const addSubgraphInstance = useGraphStore(
+    (state) => state.addSubgraphInstance,
+  );
+
+  const onDragStart = (event: DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.setData(DRAG_SUBGRAPH_MIME, definition.id);
+    event.dataTransfer.effectAllowed = "move";
+  };
+
+  const onClick = () => {
+    const nodeCount = useGraphStore.getState().nodes.length;
+    addSubgraphInstance(definition.id, {
+      x: 80 + (nodeCount % 5) * 70,
+      y: 80 + (nodeCount % 5) * 60,
+    });
+  };
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      onClick={onClick}
+      className="cursor-grab rounded-lg border border-cyan-900/70 bg-cyan-950/20 p-2.5 transition-colors hover:border-cyan-700 hover:bg-cyan-950/35 active:cursor-grabbing"
+    >
+      <div className="flex items-center gap-1.5">
+        <SubgraphIcon className="h-3.5 w-3.5 text-cyan-300" />
+        <span className="truncate text-xs font-semibold text-zinc-100">
+          {definition.name}
+        </span>
+      </div>
+      <p className="mt-0.5 text-[10px] text-zinc-500">
+        {definition.nodes.length} node
+        {definition.nodes.length === 1 ? "" : "s"} · {definition.inputs.length}{" "}
+        in · {definition.outputs.length} out
+      </p>
+    </div>
+  );
+}
+
 export function NodeLibrary() {
   const templates = useGraphStore((state) => state.templates);
   const templatesLoaded = useGraphStore((state) => state.templatesLoaded);
   const templatesError = useGraphStore((state) => state.templatesError);
-  const openSettings = useSettingsStore((state) => state.openSettings);
+  const subgraphs = useGraphStore((state) => state.subgraphs);
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -116,6 +154,21 @@ export function NodeLibrary() {
         >
           <PlusIcon /> New scratch node
         </button>
+        {Object.keys(subgraphs).length > 0 && (
+          <section>
+            <div className="mb-1 flex items-center justify-between rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              <span>Subgraphs</span>
+              <span className="rounded bg-zinc-800/80 px-1 py-px text-[9px] font-medium">
+                {Object.keys(subgraphs).length}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {Object.values(subgraphs).map((definition) => (
+                <SubgraphCard key={definition.id} definition={definition} />
+              ))}
+            </div>
+          </section>
+        )}
         {!templatesLoaded && !templatesError && (
           <div className="flex items-center gap-2 text-xs text-zinc-500">
             <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> Loading templates…
@@ -135,46 +188,21 @@ export function NodeLibrary() {
         {groups.map(({ category, items }) => {
           const isExpanded = searching || expanded.has(category);
           return (
-            <section key={category}>
-              <button
-                type="button"
-                onClick={() => toggleCategory(category)}
-                className="mb-1 flex w-full items-center justify-between rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 transition-colors hover:bg-zinc-800/50 hover:text-zinc-300"
-                title={isExpanded ? `Collapse ${category}` : `Expand ${category}`}
-              >
-                <span>{category}</span>
-                <span className="flex items-center gap-1">
-                  <span className="rounded bg-zinc-800/80 px-1 py-px text-[9px] font-medium text-zinc-500">
-                    {items.length}
-                  </span>
-                  <ChevronDownIcon
-                    className={`h-3 w-3 transition-transform ${isExpanded ? "" : "-rotate-90"}`}
-                  />
-                </span>
-              </button>
-              {isExpanded && (
-                <div className="space-y-2">
-                  {items.map((template) => (
-                    <TemplateCard key={template.name} template={template} />
-                  ))}
-                </div>
-              )}
-            </section>
+            <CategorySection
+              key={category}
+              category={category}
+              count={items.length}
+              expanded={isExpanded}
+              onToggle={() => toggleCategory(category)}
+            >
+              <div className="space-y-2">
+                {items.map((template) => (
+                  <TemplateCard key={template.name} template={template} />
+                ))}
+              </div>
+            </CategorySection>
           );
         })}
-      </div>
-      <div className="border-t border-zinc-800 p-2.5">
-        <button
-          type="button"
-          onClick={openSettings}
-          className="flex w-full items-center gap-2 rounded-lg border border-zinc-700 px-2.5 py-2 text-xs text-zinc-300 transition-colors hover:border-cyan-700 hover:bg-zinc-800/60 hover:text-cyan-200"
-        >
-          <SettingsIcon className="h-3.5 w-3.5" />
-          <span>Settings</span>
-          <span className="ml-auto text-[10px] text-zinc-600">
-            Canvas &amp; lines
-          </span>
-        </button>
       </div>
     </div>
   );

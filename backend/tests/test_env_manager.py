@@ -119,6 +119,19 @@ def test_install_dependencies_uses_cpu_index_for_torch(monkeypatch) -> None:
     assert captured[0][-1] == "torch>=2.2"
 
 
+def test_install_dependencies_rejects_option_like_requirements(monkeypatch) -> None:
+    def fake_popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("subprocess.Popen must not be called")
+
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", fake_popen)
+
+    with pytest.raises(DependencyInstallError, match="Invalid dependency"):
+        install_dependencies(["--index-url=https://example.invalid"])
+
+    with pytest.raises(DependencyInstallError, match="Invalid dependency"):
+        install_dependencies(["not a requirement !!!"])
+
+
 def test_install_dependencies_noop_for_empty_requirements(monkeypatch) -> None:
     def fake_popen(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("subprocess.Popen must not be called")
@@ -140,9 +153,7 @@ def test_install_dependencies_reports_failure_output(monkeypatch) -> None:
 
 def test_install_dependencies_times_out_and_kills_process(monkeypatch) -> None:
     process = _FakeProcess(None)
-    monkeypatch.setattr(
-        "app.env_manager.subprocess.Popen", _fake_popen(process)
-    )
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", _fake_popen(process))
 
     with pytest.raises(DependencyInstallError, match="timed out"):
         install_dependencies(["tiny-package>=0.1"], timeout=0)
@@ -153,9 +164,7 @@ def test_install_dependencies_times_out_and_kills_process(monkeypatch) -> None:
 
 def test_install_dependencies_cancels_and_kills_process(monkeypatch) -> None:
     process = _FakeProcess(None)
-    monkeypatch.setattr(
-        "app.env_manager.subprocess.Popen", _fake_popen(process)
-    )
+    monkeypatch.setattr("app.env_manager.subprocess.Popen", _fake_popen(process))
 
     with pytest.raises(DependencyInstallError, match="cancelled"):
         install_dependencies(["tiny-package>=0.1"], should_stop=lambda: True)

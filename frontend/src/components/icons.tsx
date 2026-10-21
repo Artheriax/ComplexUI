@@ -104,6 +104,14 @@ export function DuplicateIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   );
 }
 
+export function SaveIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M4.75 2A2.75 2.75 0 0 0 2 4.75v10.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25V6.414a2.75 2.75 0 0 0-.805-1.944l-1.665-1.665A2.75 2.75 0 0 0 13.586 2H4.75Zm0 1.5h2.5v4.25c0 .69.56 1.25 1.25 1.25h4.5c.69 0 1.25-.56 1.25-1.25V3.75h.336c.332 0 .65.132.884.366l1.665 1.665c.234.234.365.552.365.884V15.25c0 .69-.56 1.25-1.25 1.25h-.5v-5.25c0-.69-.56-1.25-1.25-1.25h-6.5c-.69 0-1.25.56-1.25 1.25V16.5h-.5c-.69 0-1.25-.56-1.25-1.25V4.75c0-.69.56-1.25 1.25-1.25ZM8.75 11h4.5v5.5h-4.5V11Z" />
+    </svg>
+  );
+}
+
 export function DownloadIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -182,6 +190,18 @@ export function SettingsIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   );
 }
 
+export function FileIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M4.5 2A1.5 1.5 0 0 0 3 3.5v13A1.5 1.5 0 0 0 4.5 18h11a1.5 1.5 0 0 0 1.5-1.5V7.621a1.5 1.5 0 0 0-.44-1.06l-4.12-4.122A1.5 1.5 0 0 0 11.378 2H4.5Zm2.25 8.25a.75.75 0 0 1 .75-.75h5.5a.75.75 0 0 1 0 1.5H7.5a.75.75 0 0 1-.75-.75Zm0 3a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 0 1.5H7.5a.75.75 0 0 1-.75-.75Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
 export function EyeIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -242,6 +262,174 @@ export function EyeOffIcon({ className = "h-3.5 w-3.5" }: IconProps) {
         clipRule="evenodd"
       />
       <path d="m10.748 13.93 2.523 2.523a9.987 9.987 0 0 1-3.27.547c-4.258 0-7.894-2.66-9.337-6.41a1.651 1.651 0 0 1 0-1.186A10.007 10.007 0 0 1 2.839 6.02L6.07 9.252a4 4 0 0 0 4.678 4.678Z" />
+    </svg>
+  );
+}
+
+export type ArrangeIconKind =
+  | "align-left"
+  | "align-center-x"
+  | "align-right"
+  | "align-top"
+  | "align-center-y"
+  | "align-bottom"
+  | "distribute-x"
+  | "distribute-y"
+  | "grid";
+
+const ARRANGE_PATHS: Record<ArrangeIconKind, string> = {
+  "align-left":
+    "M2.5 2.5h1.5v15H2.5zM6 4.5h9.5v4H6zM6 11.5h6.5v4H6z",
+  "align-center-x":
+    "M9.25 2.5h1.5v15h-1.5zM5 4.5h10v4H5zM6.5 11.5h7v4h-7z",
+  "align-right":
+    "M16 2.5h1.5v15H16zM4.5 4.5H14v4H4.5zM7.5 11.5H14v4H7.5z",
+  "align-top":
+    "M2.5 2.5h15v1.5h-15zM4.5 6h4v9.5h-4zM11.5 6h4v6.5h-4z",
+  "align-center-y":
+    "M2.5 9.25h15v1.5h-15zM4.5 5h4v10h-4zM11.5 6.5h4v7h-4z",
+  "align-bottom":
+    "M2.5 16h15v1.5h-15zM4.5 4.5h4V14h-4zM11.5 7.5h4V14h-4z",
+  "distribute-x":
+    "M2 5h2.5v10H2zM8.75 5h2.5v10h-2.5zM15.5 5H18v10h-2.5z",
+  "distribute-y":
+    "M5 2h10v2.5H5zM5 8.75h10v2.5H5zM5 15.5h10V18H5z",
+  grid:
+    "M2.5 2.5h6v6h-6zM11.5 2.5h6v6h-6zM2.5 11.5h6v6h-6zM11.5 11.5h6v6h-6z",
+};
+
+export function ArrangeIcon({
+  kind,
+  className = "h-3.5 w-3.5",
+}: IconProps & { kind: ArrangeIconKind }) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d={ARRANGE_PATHS[kind]} />
+    </svg>
+  );
+}
+
+export function SubgraphIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M2.5 3h6v6h-6zM11.5 11h6v6h-6zM8.5 5h3.5v2H10.5v3h-2V5Z" />
+      <path d="M11.5 3h6v6h-6z" opacity=".55" />
+    </svg>
+  );
+}
+
+export function EnterIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M3 3.5h8v2H5v9h6v2H3v-13Z" />
+      <path d="M11.8 6.3 16.5 10l-4.7 3.7v-2.4H9v-2.6h2.8V6.3Z" />
+    </svg>
+  );
+}
+
+export function FocusIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M2.5 2.5h5v1.5H4v3.5H2.5v-5Zm10 0h5v5H16V4h-3.5V2.5Zm-10 10H4V16h3.5v1.5h-5v-5Zm13.5 0H17.5v5h-5V16H16v-3.5Z" />
+    </svg>
+  );
+}
+
+export function ArrowLeftIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="m9 4.2-5.8 5.8 5.8 5.8 1.4-1.4-3.4-3.4h9.5v-2H7l3.4-3.4-1.4-1.4Z" />
+    </svg>
+  );
+}
+
+export function HistoryIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M10 2.5a7.5 7.5 0 1 0 7.14 9.79l-1.43-.46A6 6 0 1 1 10 4v2.25l3-2.75-3-2.75V2.5Zm.9 4.5v4.2l3.1 1.85-.75 1.24-3.55-2.12V7h1.2Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function GroupIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M2.5 2.5h15v15h-15v-15Zm1.5 1.5v12h12V4H4Z"
+        clipRule="evenodd"
+      />
+      <path d="M6 6h4v4H6zM10 10h4v4h-4z" />
+    </svg>
+  );
+}
+
+export function UngroupIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M2.5 2.5h7v7h-7zM10.5 10.5h7v7h-7zM11.5 2.5h6v6h-6z" opacity=".85" />
+      <path d="M2.5 11.5h6v6h-6z" opacity=".55" />
+    </svg>
+  );
+}
+
+export function GridIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M2.5 2.5h6v6h-6zM11.5 2.5h6v6h-6zM2.5 11.5h6v6h-6zM11.5 11.5h6v6h-6z" />
+    </svg>
+  );
+}
+
+export function FolderIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M2 5.5A2.5 2.5 0 0 1 4.5 3h3.19a2 2 0 0 1 1.414.586L10.414 4.9H15.5A2.5 2.5 0 0 1 18 7.4v7.1a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 14.5v-9Z" />
+    </svg>
+  );
+}
+
+export function DatabaseIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M10 2c3.314 0 6 1.12 6 2.5S13.314 7 10 7 4 5.88 4 4.5 6.686 2 10 2Z" />
+      <path d="M4 6.6c1.326.84 3.53 1.4 6 1.4s4.674-.56 6-1.4v2.2c0 1.38-2.686 2.5-6 2.5s-6-1.12-6-2.5V6.6Z" />
+      <path d="M4 11.1c1.326.84 3.53 1.4 6 1.4s4.674-.56 6-1.4v2.2c0 1.38-2.686 2.5-6 2.5s-6-1.12-6-2.5v-2.2Z" />
+      <path d="M4 15.6c1.326.84 3.53 1.4 6 1.4s4.674-.56 6-1.4V18c0 1.38-2.686 2.5-6 2.5S4 19.38 4 18v-2.4Z" opacity=".7" />
+    </svg>
+  );
+}
+
+export function TerminalIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M3.5 3A1.5 1.5 0 0 0 2 4.5v11A1.5 1.5 0 0 0 3.5 17h13a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 16.5 3h-13Z" opacity=".25" />
+      <path d="M5.22 6.72a.75.75 0 0 1 1.06 0l2.25 2.25a.75.75 0 0 1 0 1.06L6.28 12.28a.75.75 0 1 1-1.06-1.06L6.94 9.5 5.22 7.78a.75.75 0 0 1 0-1.06ZM9.5 12.5a.75.75 0 0 1 .75-.75h4a.75.75 0 0 1 0 1.5h-4a.75.75 0 0 1-.75-.75Z" />
+    </svg>
+  );
+}
+
+export function KeyboardIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path
+        fillRule="evenodd"
+        d="M2 6.5A2.5 2.5 0 0 1 4.5 4h11A2.5 2.5 0 0 1 18 6.5v7a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 2 13.5v-7ZM4.5 5.5A1 1 0 0 0 3.5 6.5v7a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1h-11Zm.75 2a.75.75 0 0 1 .75.75v.5a.75.75 0 0 1-1.5 0v-.5A.75.75 0 0 1 5.25 7.5Zm3 0a.75.75 0 0 1 .75.75v.5a.75.75 0 0 1-1.5 0v-.5a.75.75 0 0 1 .75-.75Zm3 0a.75.75 0 0 1 .75.75v.5a.75.75 0 0 1-1.5 0v-.5a.75.75 0 0 1 .75-.75Zm3 0a.75.75 0 0 1 .75.75v.5a.75.75 0 0 1-1.5 0v-.5a.75.75 0 0 1 .75-.75ZM6 10.25a.75.75 0 0 0 0 1.5h8a.75.75 0 0 0 0-1.5H6Zm-.75 2.5a.75.75 0 0 0 0 1.5h9.5a.75.75 0 0 0 0-1.5h-9.5Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
+
+export function NewWindowIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+      <path d="M3.5 3A1.5 1.5 0 0 0 2 4.5v11A1.5 1.5 0 0 0 3.5 17h13a1.5 1.5 0 0 0 1.5-1.5v-11A1.5 1.5 0 0 0 16.5 3h-13Z" opacity=".3" />
+      <path d="M10.75 6.25a.75.75 0 0 0-1.5 0v3H6.25a.75.75 0 0 0 0 1.5h3v3a.75.75 0 0 0 1.5 0v-3h3a.75.75 0 0 0 0-1.5h-3v-3Z" />
     </svg>
   );
 }

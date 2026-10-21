@@ -3,7 +3,7 @@
 # ///
 import polars as pl
 
-path: str = "data.csv"
+path: File = ""
 separator: str = ","
 has_header: bool = True
 
