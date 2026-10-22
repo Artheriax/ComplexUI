@@ -7,3 +7,10 @@
 !torchvision/.gitkeep
 !classification/
 !classification/.gitkeep
+!diffusion/
+!diffusion/.gitkeep
+!unet/
+!unet/.gitkeep
+!vae/
+!vae/.gitkeep
+

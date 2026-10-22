@@ -89,6 +89,11 @@ def _default_log_format() -> str:
     return value if value in {"text", "json"} else "text"
 
 
+def _default_accelerator() -> str:
+    value = os.environ.get("COMPLEXUI_ACCELERATOR", "auto").strip().lower()
+    return value if value in {"auto", "cpu", "cuda"} else "auto"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="launch.py",
@@ -114,6 +119,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--allow-network",
         action="store_true",
         help="allow non-loopback access (disables Host/Origin protection)",
+    )
+    parser.add_argument(
+        "--accelerator",
+        choices=("auto", "cpu", "cuda"),
+        default=_default_accelerator(),
+        help=(
+            "PyTorch accelerator target (default: auto; CUDA uses the cu130 index)"
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -209,6 +222,7 @@ def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[s
     environment = os.environ.copy()
     environment["COMPLEXUI_LOG_LEVEL"] = args.log_level
     environment["COMPLEXUI_LOG_FORMAT"] = args.log_format
+    environment["COMPLEXUI_ACCELERATOR"] = args.accelerator
     if args.no_log_file:
         environment["COMPLEXUI_LOG_DIR"] = "0"
     elif args.log_dir:

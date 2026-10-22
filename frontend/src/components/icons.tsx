@@ -59,6 +59,19 @@ export function CloseIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   );
 }
 
+export function GripIcon({ className = "h-3.5 w-3.5" }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <circle cx="5" cy="3" r="1.2" />
+      <circle cx="11" cy="3" r="1.2" />
+      <circle cx="5" cy="8" r="1.2" />
+      <circle cx="11" cy="8" r="1.2" />
+      <circle cx="5" cy="13" r="1.2" />
+      <circle cx="11" cy="13" r="1.2" />
+    </svg>
+  );
+}
+
 export function ResetIcon({ className = "h-3.5 w-3.5" }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

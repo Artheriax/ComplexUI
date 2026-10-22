@@ -387,6 +387,47 @@ describe("applyExecutionEvent", () => {
     expect(execution.nodeStates[id]?.status).toBe("completed");
   });
 
+  it("tracks node progress and clears it on completion", async () => {
+    const template = await makeTemplate();
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+
+    store.applyExecutionEvent({
+      type: "EXECUTION_STARTED",
+      node_id: "",
+      data: { run_id: "progress-run", order: [id] },
+    });
+    store.applyExecutionEvent({
+      type: "NODE_PROGRESS",
+      node_id: id,
+      data: { progress: 0.4, message: "step 4/10" },
+    });
+
+    let state = useGraphStore.getState().execution.nodeStates[id];
+    expect(state?.status).toBe("running");
+    expect(state?.progress).toBeCloseTo(0.4);
+    expect(state?.progressMessage).toBe("step 4/10");
+
+    store.applyExecutionEvent({
+      type: "NODE_PROGRESS",
+      node_id: id,
+      data: { progress: 3, message: "clamped" },
+    });
+    state = useGraphStore.getState().execution.nodeStates[id];
+    expect(state?.progress).toBe(1);
+
+    store.applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: false, outputs: { k: 1 } },
+    });
+    state = useGraphStore.getState().execution.nodeStates[id];
+    expect(state?.status).toBe("completed");
+    expect(state?.progress).toBeUndefined();
+  });
+
   it("stores rich outputs from completion and error events", async () => {
     const template = await makeTemplate();
     const id = useGraphStore
@@ -644,6 +685,98 @@ describe("runGraph", () => {
     expect(body.targets).toEqual([sourceId]);
     expect(body.node_labels).toEqual({ [sourceId]: "Demo Node" });
     expect(body.graph.nodes.map((node) => node.id)).toEqual([sourceId]);
+  });
+
+  it("saves a node as a trusted user template", async () => {
+    const template = await makeTemplate();
+    useGraphStore.setState({ templates: [template] });
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const saved = {
+      ...template,
+      name: "user_demo",
+      title: "User Demo",
+      category: "Custom",
+      description: "Saved locally",
+      source: "user" as const,
+      code_hash: "user-hash",
+    };
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify(saved), {
+          status: 201,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await useGraphStore.getState().saveNodeAsTemplate(id, {
+      name: "user_demo",
+      title: "User Demo",
+      category: "Custom",
+      description: "Saved locally",
+      code: template.code,
+    });
+    vi.unstubAllGlobals();
+
+    expect(result.name).toBe("user_demo");
+    const node = useGraphStore.getState().nodes.find((item) => item.id === id);
+    expect(node?.data.templateName).toBe("user_demo");
+    expect(node?.data.isTrusted).toBe(true);
+    expect(useGraphStore.getState().templates.some((item) => item.name === "user_demo")).toBe(true);
+  });
+
+  it("runs a sequential widget sweep and restores the original value", async () => {
+    const template = await makeTemplate({
+      node_schema: makeSchema({
+        widgets: [{ name: "seed", data_type: "int", default: 1 }],
+      }),
+    });
+    useGraphStore.setState({ templates: [template] });
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.getState().selectOnlyNode(id);
+    let runCounter = 0;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      runCounter += 1;
+      const runId = `sweep-${runCounter}`;
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        graph: { nodes: { widget_values: { seed?: number } }[] };
+      };
+      expect(body.graph.nodes[0]?.widget_values.seed).toBe(9 + runCounter);
+      queueMicrotask(() => {
+        useGraphStore.getState().applyExecutionEvent({
+          type: "EXECUTION_STARTED",
+          node_id: "",
+          data: { run_id: runId, order: [id] },
+        });
+        useGraphStore.getState().applyExecutionEvent({
+          type: "EXECUTION_COMPLETED",
+          node_id: "",
+          data: { previews: {}, cached: {} },
+        });
+      });
+      return new Response(JSON.stringify({ status: "started", run_id: runId }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await useGraphStore.getState().runSweep({
+      nodeId: id,
+      widget: "seed",
+      values: [10, 11],
+      suffixOutputs: false,
+    });
+    vi.unstubAllGlobals();
+
+    expect(result).toMatchObject({ completed: 2, total: 2, status: "completed" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      useGraphStore.getState().nodes.find((node) => node.id === id)?.data
+        .widgetValues.seed,
+    ).toBe(1);
   });
 
   it("sends null targets for whole-graph runs", async () => {
@@ -2806,3 +2939,45 @@ describe("resetNode", () => {
     expect(useGraphStore.getState().resetNode(id)).toBe(false);
   });
 });
+
+describe("seed controls", () => {
+  it("advances the seed after an uncached KSampler completion", async () => {
+    const template = await makeTemplate({
+      node_schema: makeSchema({
+        widgets: [
+          { name: "seed", data_type: "int", default: 41 },
+          {
+            name: "control_after_generate",
+            data_type: "str",
+            default: "increment",
+          },
+        ],
+      }),
+    });
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    const store = useGraphStore.getState();
+
+    store.applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: false, outputs: {} },
+    });
+    expect(
+      useGraphStore.getState().nodes.find((node) => node.id === id)?.data
+        .widgetValues.seed,
+    ).toBe(42);
+
+    useGraphStore.getState().applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: true, outputs: {} },
+    });
+    expect(
+      useGraphStore.getState().nodes.find((node) => node.id === id)?.data
+        .widgetValues.seed,
+    ).toBe(42);
+  });
+});
+

@@ -104,7 +104,9 @@ export function CanvasStatusBar() {
           }
           disabled={runDisabled}
           onClick={() => {
-            useUiStore.getState().setConsoleOpen(true);
+            if (settings.autoOpenConsole) {
+              useUiStore.getState().setConsoleOpen(true);
+            }
             void runGraph();
           }}
           className="flex items-center gap-1.5 rounded-md border border-cyan-700 bg-cyan-950/80 px-2.5 py-1 text-[10px] font-medium text-cyan-200 shadow-md transition-colors hover:bg-cyan-900/60 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"

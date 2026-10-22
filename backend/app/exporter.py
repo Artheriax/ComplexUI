@@ -80,6 +80,7 @@ def export_python(
     if prepared.future_imports:
         lines.extend(prepared.future_imports)
         lines.append("")
+    lines.extend(_runtime_helpers())
     for index, node in enumerate(prepared.nodes):
         if index > 0:
             lines.append("")
@@ -353,6 +354,19 @@ def _python_header(
     return lines
 
 
+def _runtime_helpers() -> list[str]:
+    return [
+        "def report_progress(progress: float, message: str | None = None) -> None:",
+        "    \"\"\"Standalone exports do not stream progress.\"\"\"",
+        "    pass",
+        "",
+        "def raise_if_cancelled() -> None:",
+        "    \"\"\"Standalone exports cannot be cancelled.\"\"\"",
+        "    pass",
+        "",
+    ]
+
+
 def _notebook_intro(
     prepared: _PreparedExport, *, generated_at: datetime | None
 ) -> str:
@@ -383,7 +397,8 @@ def _notebook_setup(prepared: _PreparedExport) -> str:
     lines = ["# Generated node functions and imports."]
     if prepared.future_imports:
         lines.extend(prepared.future_imports)
-        lines.append("")
+    lines.append("")
+    lines.extend(_runtime_helpers())
     for index, node in enumerate(prepared.nodes):
         if index > 0:
             lines.append("")

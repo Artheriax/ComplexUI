@@ -24,6 +24,7 @@ CATEGORIES: tuple[str, ...] = (
     "Evaluation",
     "PyTorch",
     "Computer Vision",
+    "Image Generation",
 )
 
 FALLBACK_CATEGORY = "Other"
@@ -467,6 +468,96 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Computer Vision",
         "Generated moving shapes for offline video workflow tests",
         hidden=True,
+    ),
+    "load_checkpoint": TemplateMeta(
+        "Load Checkpoint",
+        "Image Generation",
+        "Load a local SD1.5 or SDXL SafeTensors checkpoint",
+    ),
+    "clip_text_encode": TemplateMeta(
+        "CLIP Text Encode",
+        "Image Generation",
+        "Encode a prompt with CLIP; SDXL adds pooled embeddings",
+    ),
+    "empty_latent_image": TemplateMeta(
+        "Empty Latent Image",
+        "Image Generation",
+        "Create a noise latent with SD1.5 or SDXL dimensions",
+    ),
+    "ksampler": TemplateMeta(
+        "KSampler",
+        "Image Generation",
+        "Sample a latent with CFG and a DPM or Euler sampler",
+    ),
+    "vae_decode": TemplateMeta(
+        "VAE Decode",
+        "Image Generation",
+        "Decode a latent batch into images",
+    ),
+    "image_from_batch": TemplateMeta(
+        "Image From Batch",
+        "Image Generation",
+        "Select one image from an IMAGE_BATCH",
+    ),
+    "resolution": TemplateMeta(
+        "Resolution",
+        "Image Generation",
+        "Shared width and height values for 512 or 1024 output",
+    ),
+    "basic_scheduler": TemplateMeta(
+        "Basic Scheduler",
+        "Image Generation",
+        "Build a SIGMAS schedule from a diffusion model",
+    ),
+    "sampler_select": TemplateMeta(
+        "Sampler Select",
+        "Image Generation",
+        "Choose a sampler contract for advanced sampling",
+    ),
+    "noise_generator": TemplateMeta(
+        "Noise Generator",
+        "Image Generation",
+        "Euler and RES4LYF noise types for advanced sampling",
+    ),
+    "cfg_guider": TemplateMeta(
+        "CFG Guider",
+        "Image Generation",
+        "Bundle model, prompt conditioning and CFG into a guider",
+    ),
+    "sampler_custom_advanced": TemplateMeta(
+        "Sampler Custom Advanced",
+        "Image Generation",
+        "Run custom SAMPLER, SIGMAS, NOISE and GUIDER contracts",
+    ),
+    "preview_sigmas": TemplateMeta(
+        "Preview Sigmas",
+        "Image Generation",
+        "Inspect any custom SIGMAS schedule",
+    ),
+    "load_diffusion_model": TemplateMeta(
+        "Load Diffusion Model",
+        "Image Generation",
+        "Load a standalone diffusers UNet component",
+    ),
+    "load_clip": TemplateMeta(
+        "Load CLIP",
+        "Image Generation",
+        "Load a CLIP component folder with tokenizer files",
+    ),
+    "load_vae": TemplateMeta(
+        "Load VAE",
+        "Image Generation",
+        "Load a standalone diffusers VAE component",
+    ),
+    "vae_encode": TemplateMeta(
+        "VAE Encode",
+        "Image Generation",
+        "Encode a pixel image into a LATENT for img2img",
+    ),
+    "image_scale": TemplateMeta(
+        "Image Scale",
+        "Image Generation",
+        "Resize or crop an image to a target resolution",
     ),
 }
 

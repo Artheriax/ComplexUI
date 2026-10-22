@@ -77,6 +77,7 @@ __all__ = [
     "GraphValidationError",
     "MAX_CACHE_BYTES",
     "MAX_CACHE_ENTRIES",
+    "NON_CACHEABLE_SOCKET_TYPES",
     "NodeExecutionError",
     "build_output_preview",
     "cache_snapshot",
@@ -92,6 +93,12 @@ EventSink = Callable[[ExecutionEvent], None]
 
 MAX_CACHE_ENTRIES = 64
 MAX_CACHE_BYTES = 32 * 1024 * 1024
+NON_CACHEABLE_SOCKET_TYPES = {
+    SocketType.MODEL,
+    SocketType.CLIP,
+    SocketType.VAE,
+    SocketType.GUIDER,
+}
 
 
 @dataclass(slots=True)
@@ -100,6 +107,63 @@ class _CacheEntry:
     outputs: tuple[Any, ...]
     rich_outputs: tuple[RichOutput, ...]
     size: int
+
+
+@dataclass(slots=True)
+class _TensorPayload:
+    """Pickle-safe replacement for torch tensors in cross-process caches."""
+
+    data: bytes
+
+
+def _encode_cache_value(value: Any) -> Any:
+    try:
+        import torch
+    except ImportError:
+        return value
+    if isinstance(value, torch.Tensor):
+        buffer = io.BytesIO()
+        torch.save(value.detach().to("cpu").contiguous(), buffer)
+        return _TensorPayload(buffer.getvalue())
+    if isinstance(value, dict):
+        return {key: _encode_cache_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_encode_cache_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_encode_cache_value(item) for item in value)
+    return value
+
+
+def _contains_torch_module(value: Any) -> bool:
+    try:
+        import torch
+    except ImportError:
+        return False
+    if isinstance(value, torch.nn.Module):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_torch_module(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_torch_module(item) for item in value)
+    return False
+
+
+def _decode_cache_value(value: Any) -> Any:
+    if isinstance(value, _TensorPayload):
+        import torch
+
+        return torch.load(
+            io.BytesIO(value.data),
+            map_location="cpu",
+            weights_only=True,
+        )
+    if isinstance(value, dict):
+        return {key: _decode_cache_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_cache_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_decode_cache_value(item) for item in value)
+    return value
 
 
 _CACHE: OrderedDict[str, _CacheEntry] = OrderedDict()
@@ -124,8 +188,14 @@ def restore_cache(entries: dict[str, _CacheEntry] | None) -> None:
     _CACHE.clear()
     _CACHE_BYTES = 0
     for node_id, entry in (entries or {}).items():
-        _CACHE[node_id] = entry
-        _CACHE_BYTES += entry.size
+        decoded = _CacheEntry(
+            state_hash=entry.state_hash,
+            outputs=_decode_cache_value(entry.outputs),
+            rich_outputs=_decode_cache_value(entry.rich_outputs),
+            size=entry.size,
+        )
+        _CACHE[node_id] = decoded
+        _CACHE_BYTES += decoded.size
 
 
 def transferable_cache(
@@ -135,11 +205,19 @@ def transferable_cache(
     source = _CACHE if entries is None else entries
     transferable: OrderedDict[str, _CacheEntry] = OrderedDict()
     for node_id, entry in source.items():
+        encoded = _CacheEntry(
+            state_hash=entry.state_hash,
+            outputs=_encode_cache_value(entry.outputs),
+            rich_outputs=_encode_cache_value(entry.rich_outputs),
+            size=entry.size,
+        )
+        if _contains_torch_module(encoded):
+            continue
         try:
-            pickle.dumps(entry)
+            pickle.dumps(encoded)
         except Exception:
             continue
-        transferable[node_id] = entry
+        transferable[node_id] = encoded
     return transferable
 
 
@@ -468,6 +546,36 @@ def execute_graph(
         node_started = time.perf_counter()
         transpiled = transpile_node(node.code, node_id)
 
+        def report_progress(
+            fraction: float,
+            message: str | None = None,
+            *,
+            _node_id: str = node_id,
+        ) -> None:
+            try:
+                value = float(fraction)
+            except (TypeError, ValueError):
+                return
+            data: dict[str, Any] = {
+                "progress": min(1.0, max(0.0, value)),
+            }
+            if message is not None:
+                data["message"] = str(message)[:200]
+            sink(
+                ExecutionEvent(
+                    type=EventType.NODE_PROGRESS,
+                    node_id=_node_id,
+                    data=data,
+                )
+            )
+
+        def raise_if_cancelled() -> None:
+            if should_stop is not None and should_stop():
+                raise ExecutionCancelled("Execution cancelled by user")
+
+        transpiled.func.__globals__["report_progress"] = report_progress
+        transpiled.func.__globals__["raise_if_cancelled"] = raise_if_cancelled
+
         kwargs: dict[str, Any] = {widget.name: widget.default for widget in schema.widgets}
         kwargs.update({key: value for key, value in node.widget_values.items() if key in kwargs})
         for handle in sorted(incoming[node_id]):
@@ -478,6 +586,14 @@ def execute_graph(
                 widget_kind = widget.data_type.strip().lower()
                 if widget_kind in {"file", "imagefile", "videofile"}:
                     kwargs[widget.name] = _resolve_widget_file(kwargs.get(widget.name))
+                elif widget_kind in {"directory", "folder"}:
+                    kwargs[widget.name] = _resolve_widget_directory(
+                        kwargs.get(widget.name)
+                    )
+                elif widget_kind == "modelpath":
+                    kwargs[widget.name] = _resolve_widget_model_path(
+                        kwargs.get(widget.name)
+                    )
                 elif widget_kind == "outputfile":
                     kwargs[widget.name] = _resolve_output_file(kwargs.get(widget.name))
                 elif widget_kind == "modelselector":
@@ -519,6 +635,8 @@ def execute_graph(
             with capture.activate(transpiled.func):
                 value = transpiled.func(**kwargs)
             outputs = _normalize_outputs(value, len(schema.outputs), node_id)
+        except ExecutionCancelled:
+            raise
         except Exception as exc:
             line, traceback_text = _localize_failure(exc, node_id, transpiled.line_offset)
             sink(
@@ -543,7 +661,11 @@ def execute_graph(
             ) from exc
 
         rich_outputs = tuple(capture.outputs)
-        _cache_store(node_id, state_hash, outputs, rich_outputs)
+        if all(
+            socket.data_type not in NON_CACHEABLE_SOCKET_TYPES
+            for socket in schema.outputs
+        ):
+            _cache_store(node_id, state_hash, outputs, rich_outputs)
         state_hashes[node_id] = state_hash
         _record_outputs(result, node_id, schema, outputs, rich_outputs, cached=False)
         sink(
@@ -622,6 +744,26 @@ def build_output_preview(data_type: SocketType, value: Any) -> Any:
             return _video_preview(value)
         if data_type is SocketType.MEDIA:
             return _media_preview(value)
+        if data_type is SocketType.IMAGE_BATCH:
+            return _image_batch_preview(value)
+        if data_type is SocketType.MODEL:
+            return _diffusion_model_preview(value)
+        if data_type is SocketType.CLIP:
+            return _clip_preview(value)
+        if data_type is SocketType.VAE:
+            return _vae_preview(value)
+        if data_type is SocketType.CONDITIONING:
+            return _conditioning_preview(value)
+        if data_type is SocketType.LATENT:
+            return _latent_preview(value)
+        if data_type is SocketType.SIGMAS:
+            return _sigmas_preview(value)
+        if data_type is SocketType.SAMPLER:
+            return _sampler_preview(value)
+        if data_type is SocketType.NOISE:
+            return _noise_preview(value)
+        if data_type is SocketType.GUIDER:
+            return _guider_preview(value)
         if data_type in {
             SocketType.DETECTION_MODEL,
             SocketType.SEGMENTATION_MODEL,
@@ -699,11 +841,235 @@ def _media_preview(value: Any) -> dict[str, Any]:
 
         if isinstance(value, Image.Image):
             return _image_preview(value)
+        if isinstance(value, (list, tuple)) and all(
+            isinstance(item, Image.Image) for item in value
+        ):
+            return _image_batch_preview(value)
     except ImportError:
         pass
     if isinstance(value, dict):
         return {"kind": "media", **_jsonable(value)}
     return {"kind": "media", "value": repr(value)[:200]}
+
+
+def _image_batch_preview(value: Any) -> dict[str, Any]:
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"kind": "image_batch", "count": 0, "thumbnail": None}
+    images = (
+        [item for item in value if isinstance(item, Image.Image)]
+        if isinstance(value, (list, tuple))
+        else []
+    )
+    first = images[0] if images else None
+    preview: dict[str, Any] = {
+        "kind": "image_batch",
+        "count": len(value) if isinstance(value, (list, tuple)) else 0,
+        "width": int(first.width) if first is not None else None,
+        "height": int(first.height) if first is not None else None,
+        "mode": str(first.mode) if first is not None else "",
+        "thumbnail": None,
+    }
+    if not images:
+        return preview
+    try:
+        cells = []
+        for image in images[:4]:
+            thumbnail = image.convert("RGB")
+            thumbnail.thumbnail((240, 240))
+            cells.append(thumbnail)
+        widths = [cell.width for cell in cells]
+        heights = [cell.height for cell in cells]
+        columns = 2 if len(cells) > 1 else 1
+        rows = (len(cells) + columns - 1) // columns
+        cell_width = max(widths)
+        cell_height = max(heights)
+        sheet = Image.new(
+            "RGB",
+            (columns * cell_width, rows * cell_height),
+            (9, 9, 11),
+        )
+        for index, cell in enumerate(cells):
+            x = (index % columns) * cell_width + (cell_width - cell.width) // 2
+            y = (index // columns) * cell_height + (cell_height - cell.height) // 2
+            sheet.paste(cell, (x, y))
+        buffer = io.BytesIO()
+        sheet.save(buffer, format="JPEG", quality=82)
+        preview["thumbnail"] = (
+            "data:image/jpeg;base64,"
+            + base64.b64encode(buffer.getvalue()).decode("ascii")
+        )
+    except Exception:
+        preview["thumbnail"] = None
+    return preview
+
+
+def _diffusion_model_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "diffusion_model", "name": repr(value)[:200]}
+    unet = value.get("unet")
+    parameters = None
+    if unet is not None and hasattr(unet, "parameters"):
+        try:
+            parameters = sum(int(param.numel()) for param in unet.parameters())
+        except Exception:
+            parameters = None
+    return {
+        "kind": "diffusion_model",
+        "arch": str(value.get("arch", "")),
+        "name": str(value.get("name", "")),
+        "class": type(unet).__name__ if unet is not None else "UNet",
+        "parameters": parameters,
+        "device": value.get("device"),
+        "dtype": str(value.get("dtype", "")),
+        "source": str(value.get("source", "local")),
+        "model_type": value.get("model_type"),
+        "path": value.get("path"),
+        "format": value.get("format"),
+        "fingerprint": value.get("fingerprint"),
+        "preset": value.get("preset"),
+        "recommended": _jsonable(value.get("recommended") or {}),
+    }
+
+
+def _clip_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "clip", "arch": "", "encoders": 0}
+    return {
+        "kind": "clip",
+        "arch": str(value.get("arch", "")),
+        "encoders": 2 if value.get("text_encoder_2") is not None else 1,
+        "device": value.get("device"),
+        "dtype": str(value.get("dtype", "")),
+    }
+
+
+def _vae_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "vae", "arch": ""}
+    return {
+        "kind": "vae",
+        "arch": str(value.get("arch", "")),
+        "scaling_factor": _optional_number(value.get("scaling_factor")),
+        "shift_factor": _optional_number(value.get("shift_factor")),
+        "device": value.get("device"),
+        "dtype": str(value.get("dtype", "")),
+    }
+
+
+def _conditioning_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {
+            "kind": "conditioning",
+            "arch": "",
+            "shape": [],
+            "pooled_shape": None,
+            "text": "",
+        }
+    tensor = value.get("cond")
+    pooled = value.get("pooled")
+    return {
+        "kind": "conditioning",
+        "arch": str(value.get("arch", "")),
+        "shape": list(getattr(tensor, "shape", ())),
+        "pooled_shape": (
+            list(getattr(pooled, "shape", ())) if pooled is not None else None
+        ),
+        "text": str(value.get("text", ""))[:200],
+    }
+
+
+def _latent_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "latent", "shape": [], "dtype": "", "device": ""}
+    tensor = value.get("samples")
+    return {
+        "kind": "latent",
+        "shape": list(getattr(tensor, "shape", ())),
+        "dtype": str(getattr(tensor, "dtype", "")),
+        "device": str(getattr(tensor, "device", "")),
+        "width": value.get("width"),
+        "height": value.get("height"),
+        "batch_size": value.get("batch_size"),
+    }
+
+
+def _sigmas_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "sigmas", "sigmas": [], "steps": 0, "scheduler": ""}
+    tensor = value.get("sigmas")
+    values: list[float] = []
+    try:
+        if isinstance(tensor, (list, tuple)):
+            values = [float(item) for item in tensor]
+        else:
+            raw = tensor.detach().cpu().flatten().tolist()
+            values = [float(item) for item in raw]
+    except Exception:
+        values = []
+    sampled = values
+    if len(values) > 64:
+        step = (len(values) - 1) / 63
+        sampled = [values[round(index * step)] for index in range(64)]
+    sigma_max = _optional_number(value.get("sigma_max"))
+    sigma_min = _optional_number(value.get("sigma_min"))
+    if sigma_max is None and values:
+        sigma_max = values[0]
+    if sigma_min is None and values:
+        sigma_min = values[-1]
+    return {
+        "kind": "sigmas",
+        "sigmas": sampled,
+        "steps": int(value.get("steps", max(len(values) - 1, 0))),
+        "scheduler": str(value.get("scheduler", "")),
+        "denoise": _optional_number(value.get("denoise")) or 1.0,
+        "sigma_max": sigma_max,
+        "sigma_min": sigma_min,
+    }
+
+
+def _sampler_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "sampler", "name": str(value)}
+    return {
+        "kind": "sampler",
+        "name": str(value.get("name", "")),
+        "custom": callable(value.get("sample")),
+    }
+
+
+def _noise_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "noise", "noise_type": str(value)}
+    return {
+        "kind": "noise",
+        "noise_type": str(value.get("noise_type", "")),
+        "seed": value.get("seed"),
+        "alpha": value.get("alpha", 1.0),
+        "k": value.get("k", 1.0),
+        "scale": value.get("scale", 0.1),
+    }
+
+
+def _guider_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"kind": "guider", "cfg": None, "model": "", "arch": ""}
+    model = value.get("model")
+    positive = value.get("positive")
+    negative = value.get("negative")
+    return {
+        "kind": "guider",
+        "cfg": value.get("cfg"),
+        "arch": str(model.get("arch", "")) if isinstance(model, dict) else "",
+        "model": str(model.get("name", "")) if isinstance(model, dict) else "",
+        "positive_text": str(positive.get("text", ""))[:200]
+        if isinstance(positive, dict)
+        else "",
+        "negative_text": str(negative.get("text", ""))[:200]
+        if isinstance(negative, dict)
+        else "",
+    }
 
 
 def _media_url(value: Any) -> str | None:
@@ -981,6 +1347,56 @@ def _plan(nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]) -> dict[str, N
     return schemas
 
 
+def _resolve_widget_model_path(value: Any) -> Any:
+    """Resolve a file or directory under the repo or model-library root."""
+    if not isinstance(value, str) or not value.strip():
+        raise FileAccessError("ModelPath widgets require a path.")
+    root = Path(__file__).resolve().parents[2]
+    models_root = get_model_store().root.resolve()
+    raw = value.strip().replace("\\", "/")
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        resolved = path.resolve()
+    elif raw.startswith("models/"):
+        resolved = (root / path).resolve()
+    elif (models_root / path).exists():
+        resolved = (models_root / path).resolve()
+    else:
+        resolved = (root / path).resolve()
+    if not resolved.exists() or not (
+        resolved.is_relative_to(root) or resolved.is_relative_to(models_root)
+    ):
+        raise FileAccessError(
+            "ModelPath widgets may only access paths inside the repo or model library."
+        )
+    return str(resolved)
+
+
+def _resolve_widget_directory(value: Any) -> Any:
+    """Resolve a Folder widget under the repo or model-library root."""
+    if not isinstance(value, str) or not value.strip():
+        raise FileAccessError("Folder widgets require a directory path.")
+    root = Path(__file__).resolve().parents[2]
+    models_root = get_model_store().root.resolve()
+    raw = value.strip().replace("\\", "/")
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        resolved = path.resolve()
+    elif raw.startswith("models/"):
+        resolved = (root / path).resolve()
+    elif (models_root / path).exists():
+        resolved = (models_root / path).resolve()
+    else:
+        resolved = (root / path).resolve()
+    if not resolved.is_dir() or not (
+        resolved.is_relative_to(root) or resolved.is_relative_to(models_root)
+    ):
+        raise FileAccessError(
+            "Folder widgets may only access directories inside the repo or model library."
+        )
+    return str(resolved)
+
+
 def _resolve_widget_file(value: Any) -> Any:
     """Resolve uploads, generated outputs, and legacy workspace files."""
     if not isinstance(value, str) or not value.strip():
@@ -1128,3 +1544,4 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_jsonable(item) for item in value]
     return repr(value)[:200]
+

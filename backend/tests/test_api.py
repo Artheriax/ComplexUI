@@ -193,7 +193,13 @@ def test_websocket_runtime_backend_is_installed() -> None:
     )
 
 
-def test_health_endpoint_reports_readiness(client: TestClient) -> None:
+def test_health_endpoint_reports_readiness(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COMPLEXUI_ACCELERATOR", "cpu")
+    monkeypatch.setattr("app.main.nvidia_available", lambda: False)
+
     response = client.get("/api/health")
 
     assert response.status_code == 200
@@ -202,6 +208,16 @@ def test_health_endpoint_reports_readiness(client: TestClient) -> None:
     assert body["version"] == app.version
     assert body["templates"] == len(get_security_registry().templates())
     assert body["workflows"] == len(get_workflows())
+    assert body["accelerator"] == "cpu"
+    assert body["effective_accelerator"] == "cpu"
+    assert "torch" in body
+    assert body["torch_cuda"] in {True, False}
+    assert body["nvidia"] is False
+    assert set(body["limits"]) == {
+        "node_timeout_seconds",
+        "run_timeout_seconds",
+        "max_memory_mb",
+    }
 
 
 def test_status_endpoint_reports_idle_and_running(client: TestClient) -> None:
@@ -378,6 +394,27 @@ def test_execute_streams_rich_outputs_and_replays_cache(client: TestClient) -> N
     replay_completed = next(event for event in replay_events if event["type"] == "NODE_COMPLETED")
     assert replay_completed["data"]["cached"] is True
     assert replay_completed["data"]["rich_outputs"] == completed["data"]["rich_outputs"]
+
+
+def test_node_progress_streams_over_websocket(client: TestClient) -> None:
+    code = "report_progress(0.5, 'half')\nvalue = 1\nreturn value: ANY"
+    node = {"id": "progress-api", "code": code}
+    approved = client.post(
+        "/api/approve",
+        json={"node_id": "progress-api", "code_hash": code_hash(code)},
+    )
+    assert approved.status_code == 200
+
+    status, events = _run_graph(client, {"nodes": [node], "edges": []})
+    assert status == 202
+    progress = [
+        event for event in events if event["type"] == "NODE_PROGRESS"
+    ]
+    assert len(progress) == 1
+    assert progress[0]["node_id"] == "progress-api"
+    assert progress[0]["data"]["progress"] == 0.5
+    assert progress[0]["data"]["message"] == "half"
+    assert progress[0]["data"]["run_id"]
 
 
 def test_node_error_streams_raw_line_numbers(client: TestClient) -> None:

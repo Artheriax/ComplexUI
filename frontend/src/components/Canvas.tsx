@@ -54,6 +54,8 @@ import { ComplexNode } from "./ComplexNode";
 import { NodeContextMenu } from "./NodeContextMenu";
 import { NodeSearchPopup } from "./NodeSearchPopup";
 import { RenameNodeDialog } from "./RenameNodeDialog";
+import { SaveTemplateDialog } from "./SaveTemplateDialog";
+import { SweepDialog } from "./SweepDialog";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { ArrowLeftIcon, SubgraphIcon } from "./icons";
 
@@ -238,6 +240,8 @@ function CanvasInner() {
   const [menuOverlay, setMenuOverlay] = useState<MenuOverlay | null>(null);
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenuOverlay | null>(null);
   const [renameNodeId, setRenameNodeId] = useState<string | null>(null);
+  const [templateNodeId, setTemplateNodeId] = useState<string | null>(null);
+  const [sweepNodeId, setSweepNodeId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const suppressPaneClickRef = useRef(false);
   const suppressNextPaneClick = useCallback(() => {
@@ -1010,12 +1014,26 @@ function CanvasInner() {
           flowPosition={menuOverlay.flowPosition}
           onClose={closeMenu}
           onRename={(nodeId) => setRenameNodeId(nodeId)}
+          onSaveTemplate={(nodeId) => setTemplateNodeId(nodeId)}
+          onSweep={(nodeId) => setSweepNodeId(nodeId)}
         />
       )}
       {renameNodeId && (
         <RenameNodeDialog
           nodeId={renameNodeId}
           onClose={() => setRenameNodeId(null)}
+        />
+      )}
+      {templateNodeId && (
+        <SaveTemplateDialog
+          nodeId={templateNodeId}
+          onClose={() => setTemplateNodeId(null)}
+        />
+      )}
+      {sweepNodeId && (
+        <SweepDialog
+          nodeId={sweepNodeId}
+          onClose={() => setSweepNodeId(null)}
         />
       )}
     </div>

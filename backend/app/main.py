@@ -9,6 +9,7 @@ process while the event loop stays responsive. Telemetry flows through
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import logging
 import mimetypes
 import os
@@ -34,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .accelerator import configured_accelerator, effective_accelerator
 from .datasets import (
     MAX_UPLOAD_REQUEST_BYTES,
     DatasetNotFound,
@@ -74,6 +76,7 @@ from .network_security import (
     configured_allowed_hosts,
     origin_is_allowed,
 )
+from .nvml import nvidia_available
 from .run_history import (
     InvalidRunId,
     RunHistoryError,
@@ -102,6 +105,8 @@ from .schemas import (
     ModelSummary,
     ModelTypeSummary,
     NodeSchema,
+    OutputDeleteResponse,
+    OutputSummary,
     ParseRequest,
     ProjectCreateRequest,
     ProjectDeleteResponse,
@@ -116,15 +121,24 @@ from .schemas import (
     RunErrorRecord,
     RunStatus,
     RunSummary,
+    SystemMetricsResponse,
+    TemplateCreateRequest,
     TemplateInfo,
     WorkflowGraph,
     WorkspaceSession,
     WorkspaceSessionRequest,
     WorkspaceSessionResponse,
 )
-from .security import get_security_registry
+from .security import code_hash, get_security_registry
+from .system_metrics import collect_system_metrics
 from .template_catalog import template_meta
 from .transpiler import TranspileError, parse_node
+from .user_templates import (
+    InvalidUserTemplate,
+    UserTemplateConflict,
+    UserTemplateError,
+    get_user_template_store,
+)
 from .workflow_catalog import (
     WORKFLOW_CATEGORIES,
     WorkflowTemplateInfo,
@@ -288,6 +302,13 @@ def _log_event(event: ExecutionEvent, *, target: logging.Logger | None = None) -
             ", ".join(str(dep) for dep in dependencies),
             extra=extra,
         )
+    elif event.type is EventType.NODE_PROGRESS:
+        log.debug(
+            "  [prog ] %s %s",
+            event.node_id,
+            data.get("message", ""),
+            extra=extra,
+        )
     elif event.type is EventType.NODE_COMPLETED:
         cached = bool(data.get("cached"))
         extra["cached"] = cached
@@ -415,24 +436,111 @@ def parse_endpoint(payload: ParseRequest) -> NodeSchema:
 
 @app.get("/api/templates", response_model=list[TemplateInfo])
 def list_templates() -> list[TemplateInfo]:
-    """Return the official templates with code, hashes and socket schemas."""
+    """Return bundled and user templates with code, hashes and schemas."""
     registry = get_security_registry()
     templates: list[TemplateInfo] = []
     for record in registry.templates():
-        meta = template_meta(record.name)
+        if registry.is_user_template(record.name):
+            user = get_user_template_store().get(record.name)
+            title, category, description = (
+                user.title,
+                user.category,
+                user.description,
+            )
+            source: str = "user"
+            hidden = False
+        else:
+            meta = template_meta(record.name)
+            title, category = meta.title, meta.category
+            description, hidden = meta.description, meta.hidden
+            source = "builtin"
         templates.append(
             TemplateInfo(
                 name=record.name,
-                title=meta.title,
-                category=meta.category,
-                description=meta.description,
-                hidden=meta.hidden,
+                title=title,
+                category=category,
+                description=description,
+                hidden=hidden,
+                source=source,
                 code=record.code,
                 code_hash=record.code_hash,
                 node_schema=parse_node(record.code, record.name),
             )
         )
     return templates
+
+
+@app.post("/api/templates", status_code=201, response_model=TemplateInfo)
+def create_template(payload: TemplateCreateRequest) -> TemplateInfo:
+    """Save a scratch node as a reusable, locally trusted user template."""
+    registry = get_security_registry()
+    if not registry.is_user_template(payload.name):
+        try:
+            registry.get_template(payload.name)
+        except KeyError:
+            pass
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"'{payload.name}' is a bundled template name",
+            )
+    schema = parse_node(payload.code, payload.name)
+    if schema.syntax_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Template code has syntax errors",
+                "syntax_errors": [
+                    error.model_dump(mode="json") for error in schema.syntax_errors
+                ],
+            },
+        )
+    try:
+        record = get_user_template_store().save(
+            name=payload.name,
+            title=payload.title,
+            category=payload.category,
+            description=payload.description,
+            code=payload.code,
+            overwrite=payload.overwrite,
+        )
+    except UserTemplateConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidUserTemplate as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except UserTemplateError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    registry.reload_templates()
+    logger.info("user template saved: %s", record.name)
+    return TemplateInfo(
+        name=record.name,
+        title=record.title,
+        category=record.category,
+        description=record.description,
+        hidden=False,
+        source="user",
+        code=record.code,
+        code_hash=code_hash(record.code),
+        node_schema=parse_node(record.code, record.name),
+    )
+
+
+@app.delete("/api/templates/{name}", status_code=200)
+def delete_template(name: str) -> dict[str, str]:
+    """Delete a user template; bundled templates cannot be removed."""
+    registry = get_security_registry()
+    if not registry.is_user_template(name):
+        raise HTTPException(
+            status_code=403,
+            detail="Only user-created templates can be deleted",
+        )
+    try:
+        get_user_template_store().delete(name)
+    except UserTemplateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    registry.reload_templates()
+    logger.info("user template deleted: %s", name)
+    return {"status": "deleted", "name": name}
 
 
 @app.get("/api/workflows", response_model=list[WorkflowTemplateInfo])
@@ -451,13 +559,34 @@ def list_workflows() -> list[WorkflowTemplateInfo]:
 @app.get("/api/health")
 def health_endpoint() -> dict[str, object]:
     """Liveness probe used by the launcher and external tools."""
+    try:
+        torch_version = importlib.metadata.version("torch")
+    except importlib.metadata.PackageNotFoundError:
+        torch_version = None
+    limits = execution_limits()
     return {
         "status": "ok",
         "version": app.version,
         "templates": len(get_security_registry().templates()),
         "workflows": len(get_workflows()),
         "models_root": str(get_model_store().root),
+        "accelerator": configured_accelerator(),
+        "effective_accelerator": effective_accelerator(),
+        "torch": torch_version,
+        "torch_cuda": bool(torch_version and "+cu" in torch_version.lower()),
+        "nvidia": nvidia_available(),
+        "limits": {
+            "node_timeout_seconds": limits.node_timeout_seconds,
+            "run_timeout_seconds": limits.run_timeout_seconds,
+            "max_memory_mb": limits.max_memory_bytes // (1024 * 1024),
+        },
     }
+
+
+@app.get("/api/system/metrics", response_model=SystemMetricsResponse)
+def system_metrics_endpoint() -> SystemMetricsResponse:
+    """Return a live CPU, memory and NVIDIA GPU snapshot."""
+    return collect_system_metrics()
 
 
 @app.get("/api/models/types", response_model=list[ModelTypeSummary])
@@ -653,6 +782,17 @@ def get_upload_raw_endpoint(file_id: str) -> FileResponse:
         raise _dataset_http_error(exc) from exc
 
 
+@app.get("/api/outputs", response_model=list[OutputSummary])
+def list_outputs_endpoint(
+    limit: int = Query(default=200, ge=1, le=500),
+) -> list[OutputSummary]:
+    """List generated images and videos, newest first."""
+    try:
+        return get_output_store().list_outputs(limit)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.get("/api/outputs/{file_id}/raw")
 def get_output_raw_endpoint(file_id: str) -> FileResponse:
     """Serve a generated image or video inline with HTTP range support."""
@@ -660,6 +800,17 @@ def get_output_raw_endpoint(file_id: str) -> FileResponse:
         return _media_response(get_output_store().media_path(file_id))
     except (DatasetNotFound, InvalidAssetPath, OSError) as exc:
         raise _dataset_http_error(exc) from exc
+
+
+@app.delete("/api/outputs/{file_id}", response_model=OutputDeleteResponse)
+def delete_output_endpoint(file_id: str) -> OutputDeleteResponse:
+    """Delete one generated image or video."""
+    try:
+        output = get_output_store().delete_output(file_id)
+    except (DatasetNotFound, InvalidAssetPath, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+    logger.info("generated output deleted: %s", file_id)
+    return OutputDeleteResponse(status="deleted", output=output)
 
 
 @app.get("/api/uploads/{file_id}/preview", response_model=DatasetPreview)

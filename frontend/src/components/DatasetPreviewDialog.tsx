@@ -9,6 +9,7 @@ import { CloseIcon, SpinnerIcon, WarningIcon } from "./icons";
 
 interface DatasetPreviewDialogProps {
   dataset: DatasetSummary;
+  rawUrl?: string;
   onClose: () => void;
 }
 
@@ -24,10 +25,12 @@ function formatCell(value: unknown): string {
 
 export function DatasetPreviewDialog({
   dataset,
+  rawUrl,
   onClose,
 }: DatasetPreviewDialogProps) {
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
   const isTable = dataset.kind === "table";
+  const mediaUrl = rawUrl ?? datasetRawUrl(dataset.id);
   const [preview, setPreview] = useState<DatasetPreview | null>(null);
   const [loading, setLoading] = useState(isTable);
   const [error, setError] = useState<string | null>(null);
@@ -110,14 +113,14 @@ export function DatasetPreviewDialog({
             <div className="flex min-h-64 items-center justify-center rounded-lg bg-zinc-950/60 p-3">
               {dataset.kind === "image" ? (
                 <img
-                  src={datasetRawUrl(dataset.id)}
+                  src={mediaUrl}
                   alt={dataset.name}
                   className="max-h-[62vh] max-w-full rounded object-contain"
                   onError={() => setError("Unable to load this image.")}
                 />
               ) : (
                 <video
-                  src={datasetRawUrl(dataset.id)}
+                  src={mediaUrl}
                   controls
                   preload="metadata"
                   className="max-h-[62vh] max-w-full rounded"
@@ -185,7 +188,9 @@ export function DatasetPreviewDialog({
                   preview.truncated ? " (more rows available)" : ""
                 }.`
               : "Previewing the first 20 rows."
-            : `${dataset.kind === "image" ? "Image" : "Video"} served inline from the workspace.`}
+            : `${dataset.kind === "image" ? "Image" : "Video"} served inline ${
+                rawUrl ? "from the output library" : "from the workspace"
+              }.`}
         </div>
       </div>
     </div>,

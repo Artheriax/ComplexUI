@@ -5,6 +5,12 @@ export type EdgeLineStyle = "bezier" | "smoothstep" | "step" | "straight";
 export type EdgeColorMode = "socket" | "single";
 export type HandleSize = "compact" | "comfortable" | "large";
 export type CanvasBackgroundVariant = "dots" | "lines" | "cross" | "none";
+export type SystemMonitorIntervalMs = 1000 | 2000 | 5000;
+
+export interface MonitorPosition {
+  x: number;
+  y: number;
+}
 
 export interface AppSettings {
   showEdges: boolean;
@@ -20,6 +26,11 @@ export interface AppSettings {
   gridSpacing: number;
   snapToGrid: boolean;
   showMiniMap: boolean;
+  showSystemMonitor: boolean;
+  systemMonitorIntervalMs: SystemMonitorIntervalMs;
+  systemMonitorPosition: MonitorPosition | null;
+  autoOpenConsole: boolean;
+  confirmClearCanvas: boolean;
 }
 
 export const SETTINGS_STORAGE_KEY = "complexui.settings.v1";
@@ -38,7 +49,18 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gridSpacing: 20,
   snapToGrid: false,
   showMiniMap: true,
+  showSystemMonitor: true,
+  systemMonitorIntervalMs: 2000,
+  systemMonitorPosition: null,
+  autoOpenConsole: true,
+  confirmClearCanvas: true,
 };
+
+export const SYSTEM_MONITOR_INTERVALS: readonly SystemMonitorIntervalMs[] = [
+  1000,
+  2000,
+  5000,
+];
 
 export const HANDLE_SIZE_VALUES: Record<HandleSize, { hit: number; dot: number }> = {
   compact: { hit: 14, dot: 10 },
@@ -92,6 +114,31 @@ function pickColor(value: unknown, fallback: string): string {
     : fallback;
 }
 
+function pickMonitorPosition(value: unknown): MonitorPosition | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.x !== "number" ||
+    !Number.isFinite(record.x) ||
+    typeof record.y !== "number" ||
+    !Number.isFinite(record.y)
+  ) {
+    return null;
+  }
+  return {
+    x: Math.min(100_000, Math.max(0, record.x)),
+    y: Math.min(100_000, Math.max(0, record.y)),
+  };
+}
+
+function pickMonitorInterval(value: unknown): SystemMonitorIntervalMs {
+  return SYSTEM_MONITOR_INTERVALS.includes(value as SystemMonitorIntervalMs)
+    ? (value as SystemMonitorIntervalMs)
+    : DEFAULT_SETTINGS.systemMonitorIntervalMs;
+}
+
 export function sanitiseSettings(value: unknown): AppSettings {
   if (typeof value !== "object" || value === null) {
     return { ...DEFAULT_SETTINGS };
@@ -137,6 +184,22 @@ export function sanitiseSettings(value: unknown): AppSettings {
     ),
     snapToGrid: pickBoolean(record.snapToGrid, DEFAULT_SETTINGS.snapToGrid),
     showMiniMap: pickBoolean(record.showMiniMap, DEFAULT_SETTINGS.showMiniMap),
+    showSystemMonitor: pickBoolean(
+      record.showSystemMonitor,
+      DEFAULT_SETTINGS.showSystemMonitor,
+    ),
+    systemMonitorIntervalMs: pickMonitorInterval(
+      record.systemMonitorIntervalMs,
+    ),
+    systemMonitorPosition: pickMonitorPosition(record.systemMonitorPosition),
+    autoOpenConsole: pickBoolean(
+      record.autoOpenConsole,
+      DEFAULT_SETTINGS.autoOpenConsole,
+    ),
+    confirmClearCanvas: pickBoolean(
+      record.confirmClearCanvas,
+      DEFAULT_SETTINGS.confirmClearCanvas,
+    ),
   };
 }
 

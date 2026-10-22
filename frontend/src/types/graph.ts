@@ -7,8 +7,18 @@ export type SocketType =
   | "METRICS"
   | "TENSOR"
   | "IMAGE"
+  | "IMAGE_BATCH"
   | "VIDEO"
   | "MEDIA"
+  | "MODEL"
+  | "CLIP"
+  | "VAE"
+  | "CONDITIONING"
+  | "LATENT"
+  | "SIGMAS"
+  | "SAMPLER"
+  | "NOISE"
+  | "GUIDER"
   | "DETECTION_MODEL"
   | "SEGMENTATION_MODEL"
   | "CLASSIFICATION_MODEL"
@@ -28,8 +38,18 @@ const SOCKET_TYPE_NAMES = new Set<SocketType>([
   "METRICS",
   "TENSOR",
   "IMAGE",
+  "IMAGE_BATCH",
   "VIDEO",
   "MEDIA",
+  "MODEL",
+  "CLIP",
+  "VAE",
+  "CONDITIONING",
+  "LATENT",
+  "SIGMAS",
+  "SAMPLER",
+  "NOISE",
+  "GUIDER",
   "DETECTION_MODEL",
   "SEGMENTATION_MODEL",
   "CLASSIFICATION_MODEL",
@@ -59,6 +79,9 @@ export function widgetSocketType(dataType: string): SocketType {
     kind === "string" ||
     kind === "file" ||
     kind === "path" ||
+    kind === "folder" ||
+    kind === "directory" ||
+    kind === "modelpath" ||
     kind === "imagefile" ||
     kind === "videofile" ||
     kind === "outputfile"
@@ -136,6 +159,7 @@ export interface TemplateInfo {
   category: string;
   description: string;
   hidden: boolean;
+  source?: "builtin" | "user";
   code: string;
   code_hash: string;
   node_schema: NodeSchema;
@@ -209,6 +233,7 @@ export type EventType =
   | "NODE_STARTED"
   | "NODE_COMPLETED"
   | "NODE_ERROR"
+  | "NODE_PROGRESS"
   | "INSTALLING_DEPS";
 
 export interface ExecutionEvent {
@@ -268,6 +293,101 @@ export interface VideoPreview {
   poster: string | null;
 }
 
+export interface ImageBatchPreview {
+  kind: "image_batch";
+  count: number;
+  width: number | null;
+  height: number | null;
+  mode: string;
+  thumbnail: string | null;
+}
+
+export interface DiffusionModelPreview {
+  kind: "diffusion_model";
+  arch: string;
+  name: string;
+  class: string;
+  parameters: number | null;
+  device: string | null;
+  dtype: string;
+  source: string;
+  model_type: string | null;
+  path: string | null;
+  format: string | null;
+  fingerprint: string | null;
+  preset: string | null;
+  recommended: Record<string, unknown>;
+}
+
+export interface ClipPreview {
+  kind: "clip";
+  arch: string;
+  encoders: number;
+  device: string | null;
+  dtype: string;
+}
+
+export interface VaePreview {
+  kind: "vae";
+  arch: string;
+  scaling_factor: number | null;
+  shift_factor: number | null;
+  device: string | null;
+  dtype: string;
+}
+
+export interface ConditioningPreview {
+  kind: "conditioning";
+  arch: string;
+  shape: number[];
+  pooled_shape: number[] | null;
+  text: string;
+}
+
+export interface LatentPreview {
+  kind: "latent";
+  shape: number[];
+  dtype: string;
+  device: string;
+  width: number | null;
+  height: number | null;
+  batch_size: number | null;
+}
+
+export interface SigmasPreview {
+  kind: "sigmas";
+  sigmas: number[];
+  steps: number;
+  scheduler: string;
+  denoise: number;
+  sigma_max: number | null;
+  sigma_min: number | null;
+}
+
+export interface SamplerPreview {
+  kind: "sampler";
+  name: string;
+  custom: boolean;
+}
+
+export interface NoisePreview {
+  kind: "noise";
+  noise_type: string;
+  seed: number | null;
+  alpha: number;
+  k: number;
+  scale: number;
+}
+
+export interface GuiderPreview {
+  kind: "guider";
+  cfg: number | null;
+  arch: string;
+  model: string;
+  positive_text: string;
+  negative_text: string;
+}
+
 export interface VisionModelPreview {
   kind: "vision_model";
   backend: string;
@@ -306,7 +426,17 @@ export type PreviewValue =
   | ModelPreview
   | TensorPreview
   | ImagePreview
+  | ImageBatchPreview
   | VideoPreview
+  | DiffusionModelPreview
+  | ClipPreview
+  | VaePreview
+  | ConditioningPreview
+  | LatentPreview
+  | SigmasPreview
+  | SamplerPreview
+  | NoisePreview
+  | GuiderPreview
   | VisionModelPreview
   | DetectionsPreview
   | MasksPreview
@@ -392,6 +522,8 @@ export interface NodeExecutionState {
   status: NodeExecutionStatus;
   cached?: boolean;
   installing?: string[];
+  progress?: number;
+  progressMessage?: string;
   outputs?: Record<string, PreviewValue>;
   richOutputs?: RichOutput[];
   error?: {
@@ -531,8 +663,18 @@ export const SOCKET_COLORS: Record<SocketType, string> = {
   METRICS: "#34d399",
   TENSOR: "#fb7185",
   IMAGE: "#f472b6",
+  IMAGE_BATCH: "#ec4899",
   VIDEO: "#fb7185",
   MEDIA: "#c084fc",
+  MODEL: "#facc15",
+  CLIP: "#38bdf8",
+  VAE: "#2dd4bf",
+  CONDITIONING: "#c4b5fd",
+  LATENT: "#e879f9",
+  SIGMAS: "#22d3ee",
+  SAMPLER: "#fbbf24",
+  NOISE: "#a3e635",
+  GUIDER: "#fb7185",
   DETECTION_MODEL: "#f59e0b",
   SEGMENTATION_MODEL: "#10b981",
   CLASSIFICATION_MODEL: "#60a5fa",
@@ -553,8 +695,18 @@ export const SOCKET_LABELS: Record<SocketType, string> = {
   METRICS: "Metrics",
   TENSOR: "Tensor",
   IMAGE: "Image",
+  IMAGE_BATCH: "Image Batch",
   VIDEO: "Video",
   MEDIA: "Media",
+  MODEL: "Diffusion Model",
+  CLIP: "CLIP",
+  VAE: "VAE",
+  CONDITIONING: "Conditioning",
+  LATENT: "Latent",
+  SIGMAS: "Sigmas",
+  SAMPLER: "Sampler",
+  NOISE: "Noise",
+  GUIDER: "Guider",
   DETECTION_MODEL: "Detection Model",
   SEGMENTATION_MODEL: "Segmentation Model",
   CLASSIFICATION_MODEL: "Classification Model",
@@ -580,8 +732,38 @@ export function summarisePreview(value: PreviewValue): string {
     if (record.kind === "image") {
       return `image ${String(record.width)}x${String(record.height)}`;
     }
+    if (record.kind === "image_batch") {
+      return `${String(record.count)} images ${String(record.width ?? "?")}x${String(record.height ?? "?")}`;
+    }
     if (record.kind === "video") {
       return `video ${String(record.width ?? "?")}x${String(record.height ?? "?")}`;
+    }
+    if (record.kind === "diffusion_model") {
+      return `${String(record.arch)} ${String(record.name)}`;
+    }
+    if (record.kind === "clip") {
+      return `CLIP ${String(record.arch)}`;
+    }
+    if (record.kind === "vae") {
+      return `VAE ${String(record.arch)}`;
+    }
+    if (record.kind === "conditioning") {
+      return `conditioning ${JSON.stringify(record.shape)}`;
+    }
+    if (record.kind === "latent") {
+      return `latent ${JSON.stringify(record.shape)}`;
+    }
+    if (record.kind === "sigmas") {
+      return `${String(record.steps)} steps ${String(record.scheduler)}`;
+    }
+    if (record.kind === "sampler") {
+      return `sampler ${String(record.name)}`;
+    }
+    if (record.kind === "noise") {
+      return `noise ${String(record.noise_type)}`;
+    }
+    if (record.kind === "guider") {
+      return `CFG ${String(record.cfg)}`;
     }
     if (record.kind === "vision_model") {
       return `${String(record.task)} ${String(record.model)}`;

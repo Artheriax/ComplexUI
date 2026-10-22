@@ -33,12 +33,15 @@ def model_store(tmp_path: Path) -> ModelStore:
 
 
 def test_default_type_folders_are_created(model_store: ModelStore) -> None:
-    for name in ("yolo", "torchvision", "classification"):
+    for name in ("yolo", "torchvision", "classification", "diffusion", "unet", "vae"):
         assert (model_store.root / name).is_dir()
     assert [item.name for item in model_store.list_types()] == [
         "yolo",
         "torchvision",
         "classification",
+        "diffusion",
+        "unet",
+        "vae",
     ]
     assert all(item.count == 0 for item in model_store.list_types())
 

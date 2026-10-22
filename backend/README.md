@@ -10,10 +10,11 @@ FastAPI service and node-code toolchain for ComplexUI.
   are validated against it.
 - `app/executor.py` — topological DAG executor with a bounded
   content-addressable LRU cache (64 outputs / 32 MiB), trust gating,
-  cancellation checks and WebSocket-ready event streaming. `File` widgets are
-  resolved strictly inside the workspace before node code runs; `ModelSelector`
-  widgets resolve inside the repo model root and are fingerprinted into the
-  cache key.
+  cancellation checks and WebSocket-ready event streaming. Nodes receive
+  `report_progress(fraction, message)` and `raise_if_cancelled()` globals for
+  cooperative long-running work. `File` widgets are resolved strictly inside
+  the workspace before node code runs; `ModelSelector` widgets resolve inside
+  the repo model root and are fingerprinted into the cache key.
 - `app/execution_host.py` — disposable child-process execution, cache/approval
   transfer, wall-clock and memory guards, process-tree termination and recovery.
 - `app/execution_worker.py` — child-process entry point that runs the executor
@@ -21,7 +22,7 @@ FastAPI service and node-code toolchain for ComplexUI.
 - `app/datasets.py` — repo-root table/image/video uploads with sanitized,
   collision-safe names, atomic streaming writes (100 MiB tables, 500 MiB
   media), listing/deletion, bounded Polars table previews, raw media paths, and
-  generated-file resolution under repo-root `outputs/`.
+  generated-media listing/deletion/resolution under repo-root `outputs/`.
 - `app/models.py` — metadata-only scanner for the repo-root `models/` library.
   It creates `yolo/`, `torchvision/`, and `classification/`, discovers custom
   type folders, validates paths/extensions/symlinks, and returns size + mtime
@@ -36,7 +37,16 @@ FastAPI service and node-code toolchain for ComplexUI.
 - `app/output_capture.py` — best-effort capture of `print`, `display`, tables,
   images, HTML and Plotly figure side effects for each node.
 - `app/env_manager.py` — PEP 723 dependency checks and a cancellable
-  `uv pip install` runner (10-minute timeout; failures emit `NODE_ERROR`).
+  `uv pip install` runner. Torch-family packages are routed to the CPU index or
+  the cu130 CUDA index selected by `COMPLEXUI_ACCELERATOR`; switching builds
+  triggers a targeted reinstall. The dev group uses `tool.uv.sources` to pin
+  cu130 on Windows and CPU wheels on Linux, so `uv sync` preserves the intended
+  build.
+- `app/accelerator.py` — accelerator configuration, NVML-based `auto` detection,
+  and the torch CPU/CUDA wheel index selection.
+- `app/nvml.py` — best-effort NVIDIA GPU discovery through `nvidia-ml-py`.
+- `app/system_metrics.py` — `psutil` CPU/RAM metrics plus NVML GPU utilization,
+  VRAM and temperature. CPU temperature is intentionally not collected.
 - `app/security.py` — SHA-256 template registry and session approval tracking;
   flattened nested nodes may supply an `approval_id` to retain node-scoped trust.
 - `app/network_security.py` — loopback-first `Host`/WebSocket `Origin`
@@ -132,7 +142,8 @@ template.
 | `/api/parse` | POST | Parse node code into a `NodeSchema` (never executes code). |
 | `/api/templates` | GET | Official templates with code, hash, category, description, `hidden` flag and socket schema. Hidden templates are still served (workflows depend on them); the UI keeps them out of the palette. |
 | `/api/workflows` | GET | Bundled example workflows (nodes, edges, widget values, positions), ordered by category. |
-| `/api/health` | GET | Liveness probe (`status`, `version`, template/workflow counts, `models_root`) used by the launcher. |
+| `/api/health` | GET | Liveness probe (`status`, `version`, template/workflow counts, `models_root`, accelerator/torch/CUDA/NVIDIA diagnostics and active run limits) used by the launcher and Settings. |
+| `/api/system/metrics` | GET | Live CPU utilization/cores, RAM usage, and NVIDIA GPU utilization/VRAM/temperature for the system monitor. Missing sensors return `null`. |
 | `/api/models/types` | GET | List default and custom model type folders with file counts. |
 | `/api/models?type=<type>` | GET | List metadata for supported model files (optionally scoped to one type); never loads model contents. |
 | `/api/status` | GET | Execution status (`idle`/`running` + `run_id`); clients call it after a WebSocket reconnect to resync. |
@@ -151,7 +162,9 @@ template.
 | `/api/uploads` | POST | Multipart `file` upload. Accepts CSV, TSV, Parquet, XLSX/XLSM, NDJSON/JSONL (100 MiB), and PNG/JPEG/WebP/GIF/BMP/TIFF or MP4/WebM/MOV/AVI/MKV/M4V media (500 MiB); sanitizes names and suffixes collisions. |
 | `/api/uploads/{file_id}` | GET | Return metadata for one uploaded asset. |
 | `/api/uploads/{file_id}/raw` | GET | Serve an uploaded image/video inline with range support and `nosniff`. |
+| `/api/outputs` | GET | List generated images/videos from repo-root `outputs/`, newest first (`limit` 1-500, default 200). |
 | `/api/outputs/{file_id}/raw` | GET | Serve a generated image/video from repo-root `outputs/` inline with range support. |
+| `/api/outputs/{file_id}` | DELETE | Delete one generated image/video. |
 | `/api/uploads/{file_id}/preview` | GET | Return up to `limit` table rows (default 20, max 100) plus `columns`, `rows`, and `truncated`; `422` for media. |
 | `/api/uploads/{file_id}` | DELETE | Delete one uploaded asset from `inputs/`. |
 | `/api/execute` | POST | Body `{"graph": ..., "targets": [...] \| null, "node_labels": {...} \| null}`. Pre-flights (422 invalid / 403 untrusted / 409 busy), optionally scopes execution to the ancestors of `targets`, then runs the graph; returns `202` with a `run_id`. Labels are retained for run-history display. Flattened subgraph nodes may carry `approval_id` so session approvals remain scoped to the original node id. |
@@ -159,7 +172,7 @@ template.
 | `/api/runs` | GET | List the newest retained terminal run summaries (`limit` 1-200, default 50). |
 | `/api/runs/{run_id}` | GET | Load one terminal run with order, labels, per-node statuses/timings/outputs and failure details. |
 | `/api/runs/{run_id}` | DELETE | Delete one retained run record. |
-| `/ws/execution` | WS | Streams `EXECUTION_STARTED`, per-node `NODE_*` (including `rich_outputs`), and `EXECUTION_COMPLETED`/`EXECUTION_FAILED`/`EXECUTION_CANCELLED` events as JSON. |
+| `/ws/execution` | WS | Streams `EXECUTION_STARTED`, per-node `NODE_STARTED`/`NODE_PROGRESS`/`NODE_COMPLETED`/`NODE_ERROR` (including `rich_outputs`), and `EXECUTION_COMPLETED`/`EXECUTION_FAILED`/`EXECUTION_CANCELLED` events as JSON. |
 
 Requests enforce node-code, graph-size, and target-count caps; advertised
 request bodies larger than 16 MiB are rejected with `413`, except
@@ -192,9 +205,12 @@ Defaults and environment overrides:
 | --- | --- | --- |
 | `COMPLEXUI_NODE_TIMEOUT_SECONDS` | `600` | Maximum wall time from `NODE_STARTED` to completion; `0` disables |
 | `COMPLEXUI_RUN_TIMEOUT_SECONDS` | `3600` | Maximum wall time for one run including installs; `0` disables |
-| `COMPLEXUI_MAX_MEMORY_MB` | `4096` | Best-effort worker RSS limit; `0` disables |
+| `COMPLEXUI_MAX_MEMORY_MB` | `12288` | Best-effort worker RSS limit; `0` disables |
 | `COMPLEXUI_INPUT_DIR` | repo-root `inputs/` | Uploaded-input directory |
 | `COMPLEXUI_OUTPUT_DIR` | repo-root `outputs/` | Generated-output directory |
+| `COMPLEXUI_ACCELERATOR` | `auto` | `cpu`, `cuda`, or `auto` (NVML GPU detection); the launcher flag `--accelerator` overrides it |
+| `COMPLEXUI_TORCH_CUDA_INDEX` | `https://download.pytorch.org/whl/cu130` | CUDA wheel index for CUDA torch installs |
+| `COMPLEXUI_INSTALL_TIMEOUT_SECONDS` | `1200` | PEP 723 dependency install timeout |
 
 On Unix the worker also applies an address-space limit; the parent monitors
 resident memory on all platforms. Timeout, memory-limit and crash failures are
@@ -324,3 +340,4 @@ uv run --with torch --with torchvision --with ultralytics \
 
 Vision workflows use offline random weights/YAML models by default, so their
 tests do not download checkpoints.
+

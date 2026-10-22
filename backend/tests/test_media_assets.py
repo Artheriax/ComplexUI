@@ -121,6 +121,37 @@ def test_generated_outputs_are_served_and_confined(
     }
 
 
+def test_generated_outputs_are_listed_and_deleted(
+    media_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    outputs = tmp_path / "outputs"
+    outputs.mkdir(parents=True)
+    (outputs / "result.png").write_bytes(_PNG)
+    (outputs / "clip.mp4").write_bytes(b"video-bytes")
+    (outputs / "notes.txt").write_text("not media", encoding="utf-8")
+
+    listed = media_client.get("/api/outputs")
+    assert listed.status_code == 200
+    items = {item["name"]: item for item in listed.json()}
+    assert set(items) == {"result.png", "clip.mp4"}
+    assert items["result.png"]["path"] == "outputs/result.png"
+    assert items["result.png"]["kind"] == "image"
+    assert items["clip.mp4"]["kind"] == "video"
+
+    deleted = media_client.delete("/api/outputs/result.png")
+    assert deleted.status_code == 200
+    assert deleted.json()["output"]["name"] == "result.png"
+    assert not (outputs / "result.png").exists()
+    assert (outputs / "clip.mp4").exists()
+
+    assert media_client.delete("/api/outputs/missing.png").status_code == 404
+    assert media_client.delete("/api/outputs/%2E%2E%2Fsecret.png").status_code in {
+        404,
+        422,
+    }
+
+
 def test_imagefile_and_outputfile_widgets_resolve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

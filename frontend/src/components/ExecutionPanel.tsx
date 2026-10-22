@@ -65,6 +65,14 @@ export function ExecutionPanel() {
     [nodes],
   );
 
+  const runningEntry = useMemo(
+    () =>
+      Object.entries(execution.nodeStates).find(
+        ([, state]) => state.status === "running",
+      ),
+    [execution.nodeStates],
+  );
+
   const outputNodeIds = useMemo(() => {
     const ids = new Set([
       ...Object.keys(execution.previews),
@@ -126,8 +134,23 @@ export function ExecutionPanel() {
         )}
 
         {execution.status === "running" && (
-          <div className="flex items-center gap-2 text-xs text-cyan-300">
-            <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> Executing workflow…
+          <div className="text-xs text-cyan-300">
+            <div className="flex items-center gap-2">
+              <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> Executing
+              workflow…
+            </div>
+            {runningEntry && runningEntry[1].progress !== undefined && (
+              <div className="mt-1 pl-5 text-[10px] text-cyan-200/80">
+                {nodeLabels[runningEntry[0]] ?? runningEntry[0]}:{" "}
+                {Math.round(
+                  Math.min(1, Math.max(0, runningEntry[1].progress)) * 100,
+                )}
+                %
+                {runningEntry[1].progressMessage
+                  ? ` · ${runningEntry[1].progressMessage}`
+                  : ""}
+              </div>
+            )}
           </div>
         )}
 

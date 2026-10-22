@@ -1,13 +1,23 @@
 import type {
   ClassificationsPreview,
+  ClipPreview,
+  ConditioningPreview,
   DataFramePreview,
   DatasetPreview,
   DetectionsPreview,
+  DiffusionModelPreview,
+  GuiderPreview,
+  ImageBatchPreview,
   ImagePreview,
+  LatentPreview,
   MasksPreview,
+  NoisePreview,
+  SamplerPreview,
+  SigmasPreview,
   ModelPreview,
   PreviewValue,
   TensorPreview,
+  VaePreview,
   VideoPreview,
   VisionModelPreview,
 } from "../types/graph";
@@ -44,8 +54,102 @@ function isImagePreview(value: PreviewValue): value is ImagePreview {
   return typeof value === "object" && value !== null && "kind" in value && value.kind === "image";
 }
 
+function isImageBatchPreview(value: PreviewValue): value is ImageBatchPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "image_batch"
+  );
+}
+
+function isSigmasPreview(value: PreviewValue): value is SigmasPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "sigmas"
+  );
+}
+
+function isSamplerPreview(value: PreviewValue): value is SamplerPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "sampler"
+  );
+}
+
+function isNoisePreview(value: PreviewValue): value is NoisePreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "noise"
+  );
+}
+
+function isGuiderPreview(value: PreviewValue): value is GuiderPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "guider"
+  );
+}
+
 function isVideoPreview(value: PreviewValue): value is VideoPreview {
   return typeof value === "object" && value !== null && "kind" in value && value.kind === "video";
+}
+
+function isDiffusionModelPreview(
+  value: PreviewValue,
+): value is DiffusionModelPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "diffusion_model"
+  );
+}
+
+function isClipPreview(value: PreviewValue): value is ClipPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "clip"
+  );
+}
+
+function isVaePreview(value: PreviewValue): value is VaePreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "vae"
+  );
+}
+
+function isConditioningPreview(
+  value: PreviewValue,
+): value is ConditioningPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "conditioning"
+  );
+}
+
+function isLatentPreview(value: PreviewValue): value is LatentPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "latent"
+  );
 }
 
 function isVisionModelPreview(value: PreviewValue): value is VisionModelPreview {
@@ -67,6 +171,60 @@ function isClassificationsPreview(
 ): value is ClassificationsPreview {
   return (
     typeof value === "object" && value !== null && "kind" in value && value.kind === "classifications"
+  );
+}
+
+function SigmasView({
+  preview,
+  compact,
+}: {
+  preview: SigmasPreview;
+  compact: boolean;
+}) {
+  const values = preview.sigmas;
+  if (values.length < 2) {
+    return (
+      <div className="text-[10px] text-zinc-500">Sigma schedule unavailable</div>
+    );
+  }
+  const width = 240;
+  const height = compact ? 44 : 72;
+  const max = Math.max(...values, 1e-6);
+  const min = Math.min(...values);
+  const span = Math.max(max - min, 1e-6);
+  const points = values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * width;
+      const y = height - ((value - min) / span) * (height - 4) - 2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="w-full rounded border border-zinc-800 bg-zinc-950/70"
+        role="img"
+        aria-label="Sigma schedule"
+      >
+        <polyline
+          points={points}
+          fill="none"
+          stroke="#22d3ee"
+          strokeWidth="1.5"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-zinc-500">
+        <span>{preview.steps} steps</span>
+        <span className="text-cyan-300">{preview.scheduler}</span>
+        {preview.sigma_max !== null && preview.sigma_min !== null && (
+          <span>
+            {formatNumber(preview.sigma_max)} → {formatNumber(preview.sigma_min)}
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -204,6 +362,178 @@ export function PreviewValueView({
           </div>
           <div className="text-zinc-500">{value.mode}</div>
         </div>
+      </div>
+    );
+  }
+  if (isImageBatchPreview(value)) {
+    return (
+      <div
+        className={
+          fill
+            ? "flex h-full min-h-0 items-center gap-2 overflow-hidden"
+            : `flex items-center gap-2 ${compact ? "max-h-40" : ""}`
+        }
+      >
+        {value.thumbnail ? (
+          <img
+            src={value.thumbnail}
+            alt="Image batch"
+            className={
+              fill
+                ? "h-full min-h-0 w-full flex-1 rounded border border-zinc-800 object-contain"
+                : "max-h-40 max-w-full rounded border border-zinc-800 object-contain"
+            }
+          />
+        ) : (
+          <div className="rounded border border-dashed border-zinc-700 px-3 py-4 text-[10px] text-zinc-500">
+            Batch preview unavailable
+          </div>
+        )}
+        <div className="shrink-0 text-[10px] text-zinc-400">
+          <div>{value.count} images</div>
+          <div className="text-zinc-500">
+            {value.width ?? "?"}x{value.height ?? "?"}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (isDiffusionModelPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="rounded bg-amber-950/60 px-1 py-px text-[9px] font-medium text-amber-300">
+            {value.arch || "diffusion"}
+          </span>
+          {value.preset && (
+            <span className="text-zinc-500">{value.preset}</span>
+          )}
+          {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
+          {value.device && (
+            <span className="text-zinc-600">{value.device}</span>
+          )}
+        </div>
+        <div className="truncate text-zinc-400">{value.name}</div>
+        <div className="mt-0.5 flex flex-wrap gap-x-3 text-zinc-500">
+          <span>{value.class}</span>
+          {value.parameters !== null && (
+            <span>{value.parameters.toLocaleString()} params</span>
+          )}
+          {value.source !== "local" && <span>{value.source}</span>}
+        </div>
+        {value.recommended && Object.keys(value.recommended).length > 0 && (
+          <div className="mt-0.5 text-zinc-600">
+            {Object.entries(value.recommended)
+              .map(([key, entry]) => `${key}=${String(entry)}`)
+              .join(" · ")}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (isClipPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="flex flex-wrap gap-x-2">
+          <span className="text-sky-300">CLIP {value.arch}</span>
+          <span className="text-zinc-500">{value.encoders} encoder(s)</span>
+          {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
+          {value.device && <span className="text-zinc-600">{value.device}</span>}
+        </div>
+      </div>
+    );
+  }
+  if (isVaePreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="flex flex-wrap gap-x-2">
+          <span className="text-teal-300">VAE {value.arch}</span>
+          {value.scaling_factor !== null && (
+            <span className="text-zinc-500">
+              scale {formatNumber(value.scaling_factor)}
+            </span>
+          )}
+          {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
+          {value.device && <span className="text-zinc-600">{value.device}</span>}
+        </div>
+      </div>
+    );
+  }
+  if (isConditioningPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="text-violet-300">
+          {value.arch} conditioning {JSON.stringify(value.shape)}
+        </div>
+        {value.pooled_shape && (
+          <div className="text-zinc-500">
+            pooled {JSON.stringify(value.pooled_shape)}
+          </div>
+        )}
+        {value.text && <div className="truncate text-zinc-500">{value.text}</div>}
+      </div>
+    );
+  }
+  if (isLatentPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="text-fuchsia-300">
+          latent {JSON.stringify(value.shape)}
+        </div>
+        <div className="flex flex-wrap gap-x-3 text-zinc-500">
+          {value.width !== null && value.height !== null && (
+            <span>
+              {value.width}x{value.height}
+            </span>
+          )}
+          {value.batch_size !== null && <span>batch {value.batch_size}</span>}
+          {value.dtype && <span>{value.dtype}</span>}
+        </div>
+      </div>
+    );
+  }
+  if (isSigmasPreview(value)) {
+    return <SigmasView preview={value} compact={compact} />;
+  }
+  if (isSamplerPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <span className="text-amber-300">{value.name || "custom"}</span>
+        {value.custom && <span className="ml-2 text-zinc-500">custom contract</span>}
+      </div>
+    );
+  }
+  if (isNoisePreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="text-lime-300">{value.noise_type}</div>
+        <div className="flex flex-wrap gap-x-2 text-zinc-500">
+          {value.seed !== null && <span>seed {value.seed}</span>}
+          {value.noise_type === "fractal" && (
+            <>
+              <span>alpha {formatNumber(value.alpha)}</span>
+              <span>k {formatNumber(value.k)}</span>
+              <span>scale {formatNumber(value.scale)}</span>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (isGuiderPreview(value)) {
+    return (
+      <div className="text-[10px] text-zinc-300">
+        <div className="flex flex-wrap gap-x-2">
+          <span className="text-rose-300">CFG {String(value.cfg ?? "?")}</span>
+          {value.arch && <span className="text-zinc-500">{value.arch}</span>}
+        </div>
+        {value.model && <div className="truncate text-zinc-400">{value.model}</div>}
+        {value.positive_text && (
+          <div className="truncate text-zinc-500">+ {value.positive_text}</div>
+        )}
+        {value.negative_text && (
+          <div className="truncate text-zinc-600">− {value.negative_text}</div>
+        )}
       </div>
     );
   }

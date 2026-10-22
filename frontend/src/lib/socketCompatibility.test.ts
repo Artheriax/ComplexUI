@@ -59,6 +59,9 @@ test("matches exact and ANY socket types", () => {
   expect(socketTypesCompatible("FLOAT", "INT")).toBe(false);
   expect(socketTypesCompatible("METRICS", "TENSOR")).toBe(false);
   expect(socketTypesCompatible("IMAGE", "MEDIA")).toBe(true);
+  expect(socketTypesCompatible("IMAGE_BATCH", "MEDIA")).toBe(true);
+  expect(socketTypesCompatible("IMAGE", "IMAGE_BATCH")).toBe(true);
+  expect(socketTypesCompatible("IMAGE_BATCH", "IMAGE")).toBe(false);
   expect(socketTypesCompatible("VIDEO", "MEDIA")).toBe(true);
   expect(socketTypesCompatible("MEDIA", "IMAGE")).toBe(false);
   expect(socketTypesCompatible("IMAGE", "VIDEO")).toBe(false);

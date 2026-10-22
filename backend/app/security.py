@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from .user_templates import get_user_template_store
+
 DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 __all__ = [
@@ -57,12 +59,20 @@ class UntrustedNodeError(Exception):
 class SecurityRegistry:
     """Loads and hashes official templates; tracks session approvals."""
 
-    def __init__(self, templates_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        templates_dir: Path | None = None,
+        *,
+        include_user_templates: bool = True,
+    ) -> None:
         self.templates_dir = templates_dir or DEFAULT_TEMPLATES_DIR
         self._templates_by_name: dict[str, TemplateRecord] = {}
         self._template_hashes: dict[str, str] = {}
+        self._user_template_names: set[str] = set()
         self._approvals: set[tuple[str, str]] = set()
         self._load_templates()
+        if include_user_templates:
+            self._load_user_templates()
 
     def _load_templates(self) -> None:
         if not self.templates_dir.is_dir():
@@ -73,8 +83,36 @@ class SecurityRegistry:
             self._templates_by_name[record.name] = record
             self._template_hashes[record.code_hash] = record.name
 
+    def _load_user_templates(self) -> None:
+        try:
+            records = get_user_template_store().list_templates()
+        except Exception:
+            return
+        for record in records:
+            if record.name in self._templates_by_name:
+                continue
+            item = TemplateRecord(
+                name=record.name,
+                code=record.code,
+                code_hash=code_hash(record.code),
+            )
+            self._templates_by_name[item.name] = item
+            self._template_hashes[item.code_hash] = item.name
+            self._user_template_names.add(item.name)
+
+    def reload_templates(self) -> None:
+        """Reload bundled and user templates while keeping session approvals."""
+        self._templates_by_name.clear()
+        self._template_hashes.clear()
+        self._user_template_names.clear()
+        self._load_templates()
+        self._load_user_templates()
+
     def templates(self) -> list[TemplateRecord]:
         return list(self._templates_by_name.values())
+
+    def is_user_template(self, name: str) -> bool:
+        return name in self._user_template_names
 
     def get_template(self, name: str) -> TemplateRecord:
         return self._templates_by_name[name]
@@ -102,5 +140,5 @@ class SecurityRegistry:
 
 @lru_cache(maxsize=1)
 def get_security_registry() -> SecurityRegistry:
-    """Process-wide registry loaded from the bundled templates directory."""
+    """Process-wide registry loaded from bundled and user templates."""
     return SecurityRegistry()

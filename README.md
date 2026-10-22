@@ -38,6 +38,29 @@ backend-specific. Models Library is a read-only Assets tab and auto-refreshes
 while open (press `R` to refresh immediately). Only add trusted model files:
 loading `.pt`/pickle models is not a sandbox, so SafeTensors/ONNX are preferred.
 
+The **System** settings tab controls a draggable, background-less system monitor
+showing CPU/GPU utilization, VRAM/RAM usage, and GPU temperature. NVIDIA GPU
+metrics come from NVML. The same tab shows read-only runtime diagnostics.
+**Execution** settings control whether the Execution panel opens on run, whether
+Canvas Clear asks for confirmation, and display the active node/run timeouts and
+memory limit. The monitor position, visibility, refresh interval, and both
+execution toggles persist in browser storage.
+
+Nodes can stream coarse step progress through `NODE_PROGRESS`; the node footer
+and Execution panel show the percentage and message, and **Stop** cancels
+cooperatively inside a running node when it calls `raise_if_cancelled()`.
+Generated images and videos saved under `outputs/` appear in the Assets
+**Outputs** tab with search, media preview, and deletion.
+
+The development environment pins `torch`/`torchvision` to the cu130 index on
+Windows and the CPU index on Linux; macOS resolves the platform's PyPI wheels.
+Node PEP 723 installs follow `COMPLEXUI_ACCELERATOR` (`auto`, `cpu`, or `cuda`)
+or the launcher's `--accelerator` flag. `cuda` uses the cu130 wheel index
+(`COMPLEXUI_TORCH_CUDA_INDEX` overrides it), and `auto` detects an NVIDIA GPU
+through NVML. Switching between CPU and CUDA torch builds reinstalls the torch
+family, and large wheel downloads use `COMPLEXUI_INSTALL_TIMEOUT_SECONDS`
+(default 1200).
+
 The bundled catalog ships **84 node templates** (74 production nodes across 10
 categories plus 10 example/synthetic helpers that stay hidden and power the
 bundled workflows) and **21 ready-to-run example workflows**. Browser-style
@@ -116,9 +139,10 @@ The Ultralytics node templates depend on the separately installed
 `ultralytics` package, which is **AGPL-3.0**. They are isolated from the
 torchvision templates so workflows that do not use YOLO do not install it.
 
-Useful flags: `--backend-port`, `--frontend-port`, `--host`, `--log-level`,
-`--log-format` (`text` or `json`), `--log-dir`, `--no-log-file`, `--no-reload`,
-`--no-color`, `--open` (e.g. `start.cmd dev --open`).
+Useful flags: `--backend-port`, `--frontend-port`, `--host`, `--accelerator`
+(`auto`, `cpu`, or `cuda`), `--log-level`, `--log-format` (`text` or `json`),
+`--log-dir`, `--no-log-file`, `--no-reload`, `--no-color`, `--open` (e.g.
+`start.cmd dev --open --accelerator cuda`).
 
 By default the backend binds loopback and accepts only loopback `Host`/`Origin`
 headers. Binding beyond loopback requires `--allow-network`, which disables that
@@ -140,7 +164,7 @@ are browsable from the Execution panel.
 
 Execution isolation uses `COMPLEXUI_NODE_TIMEOUT_SECONDS` (default 600),
 `COMPLEXUI_RUN_TIMEOUT_SECONDS` (default 3600), and
-`COMPLEXUI_MAX_MEMORY_MB` (default 4096); set any to `0` to disable that guard.
+`COMPLEXUI_MAX_MEMORY_MB` (default 12288); set any to `0` to disable that guard.
 This is crash/resource containment, not a filesystem or network sandbox: node
 code still runs with the backend user's permissions. `File` widgets are the
 exception and may only resolve files inside the workspace.
@@ -173,4 +197,5 @@ are stored as `models/<type>/<file>` and resolve against that root.
   libraries, dataset upload and preview UI, undo/redo, multi-node clipboard,
   selection alignment, resizable frame groups, reusable nested subgraphs,
   execution telemetry and run-history UI (see `frontend/README.md`).
+
 

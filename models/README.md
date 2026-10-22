@@ -7,7 +7,10 @@ files are ignored by git.
 models/
 ├── yolo/             # Ultralytics checkpoints (.pt, .onnx)
 ├── torchvision/      # torchvision state dicts / SafeTensors
-└── classification/   # torchvision classifiers (.pt/.pth/.safetensors/.onnx)
+├── classification/   # torchvision classifiers (.pt/.pth/.safetensors/.onnx)
+├── diffusion/        # SD1.5 / SDXL single-file checkpoints (.safetensors)
+├── unet/             # standalone diffusion UNets
+└── vae/              # standalone VAE components
 ```
 
 Custom type folders are also discovered. Select a model from the node's

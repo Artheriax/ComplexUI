@@ -116,6 +116,32 @@ export function outputRawUrl(path: string): string {
   return `${API_BASE}/outputs/${encodeURIComponent(name)}/raw`;
 }
 
+export interface OutputSummary {
+  id: string;
+  name: string;
+  path: string;
+  format: string;
+  kind: Exclude<AssetKind, "table">;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface OutputDeleteResult {
+  status: "deleted";
+  output: OutputSummary;
+}
+
+export function fetchOutputs(limit = 200): Promise<OutputSummary[]> {
+  return requestJson<OutputSummary[]>(`/outputs?limit=${limit}`);
+}
+
+export function deleteOutput(outputId: string): Promise<OutputDeleteResult> {
+  return requestJson<OutputDeleteResult>(
+    `/outputs/${encodeURIComponent(outputId)}`,
+    { method: "DELETE" },
+  );
+}
+
 export interface ModelSummary {
   id: string;
   name: string;
@@ -147,6 +173,63 @@ export interface DatasetPreview {
 export interface DatasetUploadResult {
   status: "uploaded";
   dataset: DatasetSummary;
+}
+
+export type AcceleratorMode = "auto" | "cpu" | "cuda";
+
+export interface CpuMetrics {
+  utilization: number | null;
+  cores: number | null;
+}
+
+export interface MemoryMetrics {
+  total_bytes: number;
+  used_bytes: number;
+  utilization: number;
+}
+
+export interface GpuMetrics {
+  index: number;
+  name: string;
+  utilization: number | null;
+  vram_total_bytes: number | null;
+  vram_used_bytes: number | null;
+  temperature_c: number | null;
+}
+
+export interface SystemMetrics {
+  cpu: CpuMetrics;
+  memory: MemoryMetrics;
+  gpus: GpuMetrics[];
+  timestamp: string;
+}
+
+export interface RuntimeLimits {
+  node_timeout_seconds: number;
+  run_timeout_seconds: number;
+  max_memory_mb: number;
+}
+
+export interface HealthInfo {
+  status: string;
+  version: string;
+  templates: number;
+  workflows: number;
+  models_root: string;
+  accelerator: AcceleratorMode;
+  effective_accelerator: "cpu" | "cuda";
+  torch: string | null;
+  torch_cuda: boolean;
+  nvidia: boolean;
+  limits: RuntimeLimits;
+}
+
+export function fetchSystemMetrics(signal?: AbortSignal): Promise<SystemMetrics> {
+  return requestJson<SystemMetrics>("/system/metrics", { signal });
+}
+
+export function fetchHealth(): Promise<HealthInfo> {
+  return requestJson<HealthInfo>("/health");
 }
 
 export class ApiError extends Error {
@@ -196,8 +279,32 @@ export function parseCode(code: string, nodeId = ""): Promise<NodeSchema> {
   });
 }
 
+export interface TemplateCreatePayload {
+  name: string;
+  title: string;
+  category: string;
+  description: string;
+  code: string;
+  overwrite?: boolean;
+}
+
 export function fetchTemplates(): Promise<TemplateInfo[]> {
   return requestJson<TemplateInfo[]>("/templates");
+}
+
+export function createTemplate(
+  payload: TemplateCreatePayload,
+): Promise<TemplateInfo> {
+  return requestJson<TemplateInfo>("/templates", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteTemplate(name: string): Promise<{ status: string; name: string }> {
+  return requestJson(`/templates/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
 }
 
 export function fetchWorkflowTemplates(): Promise<WorkflowTemplateInfo[]> {

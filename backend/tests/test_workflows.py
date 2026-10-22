@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,10 @@ EXPECTED_WORKFLOWS = {
     "diabetes_ridge_regression",
     "digits_xgboost_classifier",
     "eda_iris_report",
+    "imagegen_sd15_advanced",
+    "imagegen_sd15_dreamshaper",
+    "imagegen_sd15_img2img",
+    "imagegen_sdxl_lightning",
     "iris_knn_classification",
     "messy_data_cleaning_pipeline",
     "pca_kmeans_segmentation",
@@ -55,6 +60,13 @@ OPTIONAL_MODULES = {
     "vision_video_segmentation": "ultralytics",
     "vision_yolo_detection": "ultralytics",
     "vision_yolo_segmentation": "ultralytics",
+}
+
+GENERATION_WORKFLOWS = {
+    "imagegen_sd15_advanced",
+    "imagegen_sd15_dreamshaper",
+    "imagegen_sd15_img2img",
+    "imagegen_sdxl_lightning",
 }
 
 ACCURACY_FLOORS = {
@@ -461,6 +473,10 @@ def test_video_workflows_emit_annotated_media() -> None:
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_WORKFLOWS))
 def test_every_workflow_runs_end_to_end(name: str) -> None:
+    if name in GENERATION_WORKFLOWS and os.getenv(
+        "COMPLEXUI_TEST_GENERATION"
+    ) != "1":
+        pytest.skip("set COMPLEXUI_TEST_GENERATION=1 to run diffusion workflows")
     module = OPTIONAL_MODULES.get(name)
     if module is not None:
         pytest.importorskip(module)

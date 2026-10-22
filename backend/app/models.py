@@ -35,7 +35,14 @@ __all__ = [
 
 MODELS_ENV = "COMPLEXUI_MODELS_DIR"
 MODEL_LIBRARY_PREFIX = "models"
-DEFAULT_MODEL_TYPES: tuple[str, ...] = ("yolo", "torchvision", "classification")
+DEFAULT_MODEL_TYPES: tuple[str, ...] = (
+    "yolo",
+    "torchvision",
+    "classification",
+    "diffusion",
+    "unet",
+    "vae",
+)
 MODEL_FORMATS: dict[str, str] = {
     ".pt": "PyTorch",
     ".pth": "PyTorch",

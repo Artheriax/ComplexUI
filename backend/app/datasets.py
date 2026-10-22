@@ -32,6 +32,7 @@ from .schemas import (
     AssetKind,
     DatasetPreview,
     DatasetSummary,
+    OutputSummary,
 )
 
 __all__ = [
@@ -432,6 +433,47 @@ class OutputStore:
                 continue
             return (_RELATIVE_OUTPUT_DIR / relative).as_posix()
         return None
+
+    def _summary(self, path: Path) -> OutputSummary:
+        suffix = path.suffix.lower()
+        fmt, kind = ASSET_FORMATS[suffix]
+        return OutputSummary(
+            id=path.name,
+            name=path.name,
+            path=(_RELATIVE_OUTPUT_DIR / path.name).as_posix(),
+            format=fmt,
+            kind=kind,
+            size_bytes=path.stat().st_size,
+            modified_at=_modified_at(path),
+        )
+
+    def list_outputs(self, limit: int = 200) -> list[OutputSummary]:
+        """List generated images and videos, newest first."""
+        if not self.outputs_dir.is_dir():
+            return []
+        bounded = max(1, min(limit, 500))
+        candidates: list[Path] = []
+        for path in self.outputs_dir.iterdir():
+            if not path.is_file() or path.is_symlink():
+                continue
+            suffix = path.suffix.lower()
+            if suffix not in {*IMAGE_FORMATS, *VIDEO_FORMATS}:
+                continue
+            if (
+                len(path.name) > MAX_DATASET_NAME_CHARS
+                or not _OUTPUT_NAME.fullmatch(path.name)
+            ):
+                continue
+            candidates.append(path)
+        candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        return [self._summary(path) for path in candidates[:bounded]]
+
+    def delete_output(self, file_id: str) -> OutputSummary:
+        """Delete one generated image or video and return its metadata."""
+        path = self.media_path(file_id)
+        summary = self._summary(path)
+        path.unlink()
+        return summary
 
 
 @lru_cache(maxsize=1)

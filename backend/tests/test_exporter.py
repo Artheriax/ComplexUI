@@ -82,6 +82,8 @@ def test_python_export_is_runnable_and_deduplicates_dependencies(
         '"shared>=1"'
     )
     assert "    import math" in exported.content
+    assert "def report_progress" in exported.content
+    assert "def raise_if_cancelled" in exported.content
     assert "node_outputs['source']['result']" in exported.content
     assert "offset=1" in exported.content
     assert exported.content.index("def __node_exec_source") < exported.content.index(
@@ -95,6 +97,34 @@ def test_python_export_is_runnable_and_deduplicates_dependencies(
     assert completed.returncode == 0, completed.stderr
     assert "computed 3" in completed.stdout
     assert "ComplexUI workflow completed: 2 node(s)." in completed.stdout
+
+
+def test_export_keeps_future_imports_before_runtime_helpers() -> None:
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="future",
+                code=(
+                    "from __future__ import annotations\n"
+                    "value = 1\n"
+                    "return value: ANY\n"
+                ),
+            )
+        ]
+    )
+
+    content = export_python(graph, generated_at=GENERATED_AT).content
+    assert content.index("from __future__ import annotations") < content.index(
+        "def report_progress"
+    )
+
+    notebook = json.loads(
+        export_notebook(graph, generated_at=GENERATED_AT).content
+    )
+    setup = "".join(notebook["cells"][1]["source"])
+    assert setup.index("from __future__ import annotations") < setup.index(
+        "def report_progress"
+    )
 
 
 def test_python_export_isolates_import_aliases(tmp_path: Path) -> None:
@@ -165,6 +195,8 @@ def test_notebook_export_has_valid_cells_and_node_execution() -> None:
     assert "    import math" in setup
     assert "def __node_exec_source" in setup
     assert "node_outputs = {}" in setup
+    assert "def report_progress" in setup
+    assert "def raise_if_cancelled" in setup
     assert "node_outputs['source']['result']" in "".join(cells[3]["source"])
     assert "node_outputs" in "".join(cells[-1]["source"])
 

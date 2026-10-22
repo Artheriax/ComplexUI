@@ -55,6 +55,51 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByTitle("Backend streaming connected")).toBeVisible();
 });
 
+test("shows and hides the system monitor from settings", async ({ page }) => {
+  await expect(
+    page.getByRole("region", { name: "System monitor" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  await settings.getByRole("tab", { name: "System" }).click();
+  const toggle = settings.getByRole("switch", {
+    name: "Show system monitor",
+  });
+  await expect(toggle).toHaveAttribute("aria-checked", "true");
+  await toggle.click();
+  await settings.getByRole("button", { name: "Close settings" }).click();
+  await expect(
+    page.getByRole("region", { name: "System monitor" }),
+  ).toBeHidden();
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  const reopened = page.getByRole("dialog", { name: "Settings" });
+  await reopened.getByRole("tab", { name: "System" }).click();
+  await reopened
+    .getByRole("switch", { name: "Show system monitor" })
+    .click();
+  await reopened.getByRole("button", { name: "Close settings" }).click();
+  await expect(
+    page.getByRole("region", { name: "System monitor" }),
+  ).toBeVisible();
+});
+
+test("lists generated media in the Assets Outputs tab", async ({ page }) => {
+  await openWorkflow(page, /Vision Media Smoke Test/);
+  await canvasStatus(page).getByRole("button", { name: "Run workflow" }).click();
+  await expect(executionPanel(page).getByRole("status")).toHaveText(
+    "completed",
+    { timeout: 60_000 },
+  );
+
+  await page.getByRole("button", { name: "Assets" }).click();
+  await page.getByRole("tab", { name: "Outputs" }).click();
+  await expect(
+    page.getByRole("button", { name: "Preview vision-demo.png" }),
+  ).toBeVisible();
+});
+
 test("loads a bundled workflow, updates settings, and runs it", async ({
   page,
 }) => {

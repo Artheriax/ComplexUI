@@ -7,6 +7,7 @@ import { useGraphStore } from "../store/useGraphStore";
 import type { NodeColor } from "../types/graph";
 import { isFrameNode, NODE_COLOR_ORDER, NODE_COLORS } from "../types/graph";
 import {
+  BoltIcon,
   CopyIcon,
   CutIcon,
   DuplicateIcon,
@@ -15,6 +16,7 @@ import {
   PencilIcon,
   PlayIcon,
   ResetIcon,
+  SaveIcon,
   TrashIcon,
   UngroupIcon,
 } from "./icons";
@@ -25,6 +27,8 @@ interface NodeContextMenuProps {
   flowPosition: XYPosition;
   onClose: () => void;
   onRename: (nodeId: string) => void;
+  onSaveTemplate: (nodeId: string) => void;
+  onSweep: (nodeId: string) => void;
 }
 
 const MENU_WIDTH = 224;
@@ -75,6 +79,8 @@ export function NodeContextMenu({
   flowPosition,
   onClose,
   onRename,
+  onSaveTemplate,
+  onSweep,
 }: NodeContextMenuProps) {
   const nodes = useGraphStore((state) => state.nodes);
   const templates = useGraphStore((state) => state.templates);
@@ -330,6 +336,26 @@ export function NodeContextMenu({
           disabled={running}
           onClick={() => {
             void runGraph([nodeId]);
+            onClose();
+          }}
+        />
+      )}
+      {!frame && !subgraph && (
+        <MenuItem
+          icon={<BoltIcon className="h-3.5 w-3.5" />}
+          label="Sweep…"
+          onClick={() => {
+            onSweep(nodeId);
+            onClose();
+          }}
+        />
+      )}
+      {!frame && !subgraph && (
+        <MenuItem
+          icon={<SaveIcon className="h-3.5 w-3.5" />}
+          label="Save as template…"
+          onClick={() => {
+            onSaveTemplate(nodeId);
             onClose();
           }}
         />

@@ -1,4 +1,4 @@
-"""Tests for the PEP 723 dependency manager (CPU torch index routing)."""
+"""Tests for the PEP 723 dependency manager (accelerator-aware torch routing)."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from app.env_manager import (
     DependencyInstallError,
     build_install_command,
     install_dependencies,
+    install_timeout_seconds,
 )
 
 _CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+_CUDA_INDEX = "https://download.pytorch.org/whl/cu130"
 _PYPI_INDEX = "https://pypi.org/simple"
 
 
@@ -67,16 +69,90 @@ def test_plain_requirements_use_environment_indices() -> None:
 
 
 def test_torch_requirements_route_to_cpu_index() -> None:
-    command = build_install_command(["torch>=2.2"])
+    command = build_install_command(
+        ["torch>=2.2"],
+        accelerator="cpu",
+        reinstall=False,
+    )
 
     assert command[:5] == ["uv", "pip", "install", "--index", _CPU_INDEX]
     assert command[5:7] == ["--index", _PYPI_INDEX]
     assert command[-1] == "torch>=2.2"
 
 
+def test_torch_requirements_route_to_cuda_index() -> None:
+    command = build_install_command(
+        ["torch>=2.2"],
+        accelerator="cuda",
+        reinstall=False,
+    )
+
+    assert command[:5] == ["uv", "pip", "install", "--index", _CUDA_INDEX]
+    assert command[5:7] == ["--index", _PYPI_INDEX]
+    assert command[-1] == "torch>=2.2"
+
+
+def test_cuda_index_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_TORCH_CUDA_INDEX", "https://example.invalid/cu999")
+
+    command = build_install_command(
+        ["torch>=2.2"],
+        accelerator="cuda",
+        reinstall=False,
+    )
+
+    assert "https://example.invalid/cu999" in command
+
+
+@pytest.mark.parametrize(("available", "expected"), [(True, _CUDA_INDEX), (False, _CPU_INDEX)])
+def test_auto_accelerator_uses_nvidia_detection(
+    monkeypatch: pytest.MonkeyPatch,
+    available: bool,
+    expected: str,
+) -> None:
+    monkeypatch.setattr("app.accelerator.nvidia_available", lambda: available)
+
+    command = build_install_command(
+        ["torch>=2.2"],
+        accelerator="auto",
+        reinstall=False,
+    )
+
+    assert expected in command
+
+
+def test_cuda_install_reinstalls_cpu_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.env_manager._installed_version", lambda _name: "2.14.1+cpu")
+
+    command = build_install_command(["torch>=2.2"], accelerator="cuda")
+
+    assert command.count("--reinstall-package") == 1
+    assert command[command.index("--reinstall-package") + 1] == "torch"
+
+
+def test_cuda_install_keeps_matching_cuda_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.env_manager._installed_version", lambda _name: "2.14.1+cu130")
+
+    command = build_install_command(["torch>=2.2"], accelerator="cuda")
+
+    assert "--reinstall-package" not in command
+
+
+def test_cpu_install_reinstalls_cuda_torch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.env_manager._installed_version", lambda _name: "2.14.1+cu130")
+
+    command = build_install_command(["torch>=2.2"], accelerator="cpu")
+
+    assert "--reinstall-package" in command
+
+
 def test_torch_family_names_are_detected_case_insensitively() -> None:
     for raw in ("Torch", "torchvision==0.19.0", "torchaudio >= 2", "torch"):
-        command = build_install_command([raw])
+        command = build_install_command(
+            [raw],
+            accelerator="cpu",
+            reinstall=False,
+        )
         assert "--index" in command, raw
 
 
@@ -87,26 +163,51 @@ def test_non_torch_family_names_are_not_routed() -> None:
 
 
 def test_invalid_torch_requirement_still_routed() -> None:
-    command = build_install_command(["torch>="])
+    command = build_install_command(
+        ["torch>="],
+        accelerator="cpu",
+        reinstall=False,
+    )
 
     assert "--index" in command
     assert command[-1] == "torch>="
 
 
 def test_darwin_platform_is_not_routed() -> None:
-    command = build_install_command(["torch>=2.2"], platform="darwin")
+    command = build_install_command(
+        ["torch>=2.2"],
+        platform="darwin",
+        accelerator="cuda",
+        reinstall=False,
+    )
 
     assert command == ["uv", "pip", "install", "torch>=2.2"]
 
 
 def test_linux_platform_is_routed() -> None:
-    command = build_install_command(["torch>=2.2"], platform="linux")
+    command = build_install_command(
+        ["torch>=2.2"],
+        platform="linux",
+        accelerator="cpu",
+        reinstall=False,
+    )
 
     assert command[3:7] == ["--index", _CPU_INDEX, "--index", _PYPI_INDEX]
 
 
-def test_install_dependencies_uses_cpu_index_for_torch(monkeypatch) -> None:
+def test_install_timeout_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_INSTALL_TIMEOUT_SECONDS", "42.5")
+    assert install_timeout_seconds() == 42.5
+
+    monkeypatch.setenv("COMPLEXUI_INSTALL_TIMEOUT_SECONDS", "nope")
+    assert install_timeout_seconds() == 1200.0
+
+
+def test_install_dependencies_uses_cpu_index_for_torch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: list[list[str]] = []
+    monkeypatch.setenv("COMPLEXUI_ACCELERATOR", "cpu")
     monkeypatch.setattr(
         "app.env_manager.subprocess.Popen",
         _fake_popen(_FakeProcess(0), captured=captured),
@@ -119,7 +220,9 @@ def test_install_dependencies_uses_cpu_index_for_torch(monkeypatch) -> None:
     assert captured[0][-1] == "torch>=2.2"
 
 
-def test_install_dependencies_rejects_option_like_requirements(monkeypatch) -> None:
+def test_install_dependencies_rejects_option_like_requirements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_popen(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("subprocess.Popen must not be called")
 

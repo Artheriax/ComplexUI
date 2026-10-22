@@ -6,6 +6,7 @@ import { NodePalette } from "./components/NodePalette";
 import { SaveProjectDialog } from "./components/SaveProjectDialog";
 import { SettingsModal } from "./components/SettingsModal";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { SystemMonitor } from "./components/SystemMonitor";
 import { WindowTabs } from "./components/WindowTabs";
 import { SpinnerIcon } from "./components/icons";
 import { useExecutionSocket } from "./hooks/useExecutionSocket";
@@ -45,6 +46,9 @@ export default function App() {
   const saveDialogOpen = useGraphStore((state) => state.saveDialogOpen);
   const activeWindowId = useGraphStore((state) => state.activeWindowId);
   const settingsOpen = useSettingsStore((state) => state.isOpen);
+  const showSystemMonitor = useSettingsStore(
+    (state) => state.settings.showSystemMonitor,
+  );
   const consoleOpen = useUiStore((state) => state.consoleOpen);
   const shortcutsOpen = useUiStore((state) => state.shortcutsOpen);
 
@@ -95,6 +99,7 @@ export default function App() {
         </main>
         {consoleOpen && <ExecutionPanel />}
       </div>
+      {showSystemMonitor && <SystemMonitor />}
       {editingNodeId && (
         <Suspense fallback={<ModalLoading />}>
           <CodeModal key={editingNodeId} nodeId={editingNodeId} />

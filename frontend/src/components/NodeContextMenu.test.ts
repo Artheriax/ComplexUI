@@ -56,6 +56,8 @@ function renderMenu(
   nodeId: string,
   onClose = vi.fn(),
   onRename = vi.fn(),
+  onSaveTemplate = vi.fn(),
+  onSweep = vi.fn(),
 ) {
   render(
     createElement(NodeContextMenu, {
@@ -64,9 +66,11 @@ function renderMenu(
       flowPosition: { x: 50, y: 60 },
       onClose,
       onRename,
+      onSaveTemplate,
+      onSweep,
     }),
   );
-  return { onClose, onRename };
+  return { onClose, onRename, onSaveTemplate, onSweep };
 }
 
 test("applies colors and opens rename for the clicked node", () => {
@@ -118,4 +122,18 @@ test("disables reset when the template is unavailable and deletes nodes", () => 
   fireEvent.click(screen.getByRole("menuitem", { name: /Delete/ }));
   expect(useGraphStore.getState().nodes).toHaveLength(0);
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+test("opens sweep and save-as-template actions", () => {
+  const id = useGraphStore
+    .getState()
+    .addNodeFromTemplate(template, { x: 0, y: 0 });
+  useGraphStore.getState().selectOnlyNode(id);
+  const { onSaveTemplate, onSweep } = renderMenu(id);
+
+  fireEvent.click(screen.getByText("Sweep…"));
+  expect(onSweep).toHaveBeenCalledWith(id);
+
+  fireEvent.click(screen.getByText("Save as template…"));
+  expect(onSaveTemplate).toHaveBeenCalledWith(id);
 });

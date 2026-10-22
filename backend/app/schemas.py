@@ -42,8 +42,18 @@ class SocketType(StrEnum):
     METRICS = "METRICS"
     TENSOR = "TENSOR"
     IMAGE = "IMAGE"
+    IMAGE_BATCH = "IMAGE_BATCH"
     VIDEO = "VIDEO"
     MEDIA = "MEDIA"
+    MODEL = "MODEL"
+    CLIP = "CLIP"
+    VAE = "VAE"
+    CONDITIONING = "CONDITIONING"
+    LATENT = "LATENT"
+    SIGMAS = "SIGMAS"
+    SAMPLER = "SAMPLER"
+    NOISE = "NOISE"
+    GUIDER = "GUIDER"
     DETECTION_MODEL = "DETECTION_MODEL"
     SEGMENTATION_MODEL = "SEGMENTATION_MODEL"
     CLASSIFICATION_MODEL = "CLASSIFICATION_MODEL"
@@ -147,6 +157,9 @@ def widget_socket_type(raw: str) -> SocketType:
         "string",
         "file",
         "path",
+        "folder",
+        "directory",
+        "modelpath",
         "imagefile",
         "videofile",
         "outputfile",
@@ -156,7 +169,12 @@ def widget_socket_type(raw: str) -> SocketType:
     return normalize_socket_type(raw)
 
 
-_MEDIA_TARGETS = {SocketType.IMAGE, SocketType.VIDEO, SocketType.MEDIA}
+_MEDIA_TARGETS = {
+    SocketType.IMAGE,
+    SocketType.IMAGE_BATCH,
+    SocketType.VIDEO,
+    SocketType.MEDIA,
+}
 
 
 def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
@@ -166,6 +184,7 @@ def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
         or source is SocketType.ANY
         or target is SocketType.ANY
         or (source is SocketType.INT and target is SocketType.FLOAT)
+        or (source is SocketType.IMAGE and target is SocketType.IMAGE_BATCH)
         or (
             source in _MEDIA_TARGETS
             and target is SocketType.MEDIA
@@ -252,6 +271,7 @@ class EventType(StrEnum):
     NODE_STARTED = "NODE_STARTED"
     NODE_COMPLETED = "NODE_COMPLETED"
     NODE_ERROR = "NODE_ERROR"
+    NODE_PROGRESS = "NODE_PROGRESS"
     INSTALLING_DEPS = "INSTALLING_DEPS"
 
 
@@ -390,6 +410,41 @@ class ExportResponse(BaseModel):
     content: str
 
 
+class CpuMetrics(BaseModel):
+    """Aggregate CPU utilization and core count."""
+
+    utilization: float | None = Field(default=None, ge=0, le=100)
+    cores: int | None = Field(default=None, ge=1)
+
+
+class MemoryMetrics(BaseModel):
+    """System RAM usage."""
+
+    total_bytes: int = Field(ge=0)
+    used_bytes: int = Field(ge=0)
+    utilization: float = Field(ge=0, le=100)
+
+
+class GpuMetrics(BaseModel):
+    """One NVIDIA GPU's utilization, VRAM usage and temperature."""
+
+    index: int = Field(ge=0)
+    name: str
+    utilization: float | None = Field(default=None, ge=0, le=100)
+    vram_total_bytes: int | None = Field(default=None, ge=0)
+    vram_used_bytes: int | None = Field(default=None, ge=0)
+    temperature_c: float | None = Field(default=None, ge=0, le=150)
+
+
+class SystemMetricsResponse(BaseModel):
+    """Live system monitor payload."""
+
+    cpu: CpuMetrics
+    memory: MemoryMetrics
+    gpus: list[GpuMetrics] = Field(default_factory=list)
+    timestamp: str
+
+
 class ModelSummary(BaseModel):
     """Metadata for one file in the repo-root local model library."""
 
@@ -424,6 +479,23 @@ class DatasetSummary(BaseModel):
     kind: AssetKind = AssetKind.TABLE
     size_bytes: int = Field(ge=0)
     modified_at: str
+
+
+class OutputSummary(BaseModel):
+    """Metadata for one generated image or video under ``outputs/``."""
+
+    id: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
+    name: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
+    path: str
+    format: str
+    kind: AssetKind = AssetKind.IMAGE
+    size_bytes: int = Field(ge=0)
+    modified_at: str
+
+
+class OutputDeleteResponse(BaseModel):
+    status: Literal["deleted"]
+    output: OutputSummary
 
 
 class DatasetPreview(BaseModel):
@@ -785,6 +857,18 @@ class TemplateInfo(BaseModel):
     category: str
     description: str
     hidden: bool = False
+    source: Literal["builtin", "user"] = "builtin"
     code: str
     code_hash: str
     node_schema: NodeSchema
+
+
+class TemplateCreateRequest(BaseModel):
+    """Save a scratch node as a reusable user template."""
+
+    name: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=120)
+    category: str = Field(default="Custom", min_length=1, max_length=64)
+    description: str = Field(default="", max_length=200)
+    code: str = Field(min_length=1, max_length=MAX_NODE_CODE_CHARS)
+    overwrite: bool = False

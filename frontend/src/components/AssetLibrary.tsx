@@ -2,8 +2,9 @@ import { useState } from "react";
 
 import { DatasetLibrary } from "./DatasetLibrary";
 import { ModelsLibrary } from "./ModelsLibrary";
+import { OutputsLibrary } from "./OutputsLibrary";
 
-type AssetTab = "files" | "models";
+type AssetTab = "files" | "outputs" | "models";
 
 export function AssetLibrary() {
   const [tab, setTab] = useState<AssetTab>("files");
@@ -17,6 +18,7 @@ export function AssetLibrary() {
         {(
           [
             ["files", "Files"],
+            ["outputs", "Outputs"],
             ["models", "Models"],
           ] as const
         ).map(([id, label]) => (
@@ -37,7 +39,9 @@ export function AssetLibrary() {
         ))}
       </div>
       <div className="flex min-h-0 flex-1 flex-col">
-        {tab === "files" ? <DatasetLibrary /> : <ModelsLibrary />}
+        {tab === "files" && <DatasetLibrary />}
+        {tab === "outputs" && <OutputsLibrary />}
+        {tab === "models" && <ModelsLibrary />}
       </div>
     </div>
   );

@@ -24,12 +24,20 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   dialog visibility.
 - `src/store/useDatasetsStore.ts` — workspace dataset list, uploads, deletion,
   loading/error state.
+- `src/store/useOutputsStore.ts` — generated-output gallery list, refresh,
+  deletion and error state.
 - `src/store/useModelsStore.ts` — repo model library cache by type, refresh
   coalescing, stale-selection lookup and load state.
 - `src/store/useEdgeDragStore.ts` / `useConnectionGuideStore.ts` — transient
   connected-input retarget drag state and compatible-handle highlighting.
 - `src/hooks/useModelsAutoRefresh.ts` — visibility-aware polling and the R
   refresh shortcut for open model views.
+- `src/hooks/useSystemMetrics.ts` — system-monitor polling with visibility
+  pausing, retry scheduling, and abort handling.
+- `src/lib/systemMetrics.ts` — byte/percent/temperature formatting for the
+  monitor.
+- `src/hooks/useHealthInfo.ts` — backend runtime diagnostics
+  (accelerator/torch/CUDA/NVIDIA/limits) for Settings.
 - `src/hooks/useExecutionSocket.ts` — `/ws/execution` streaming with
   exponential-backoff reconnect and `/api/status` resync on every open.
 - `src/hooks/useGraphShortcuts.ts` — undo/redo, clipboard, duplicate,
@@ -48,11 +56,13 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   live parsing), `DiffModal` (security review of modified code), `NodePalette`
   (square icon rail plus Nodes / Workflows / Templates / Assets drawers),
   `NodeLibrary` (searchable templates plus reusable
-  subgraphs), `AssetLibrary` (Files / Models tabs), `ModelsLibrary` (read-only
+  subgraphs), `AssetLibrary` (Files / Outputs / Models tabs), `OutputsLibrary`
+  (generated-media gallery), `ModelsLibrary` (read-only
   repo model browser with search, type filtering, refresh and auto-refresh),
   `ModelSelectorField` / `ModelPickerDialog` (type-scoped local model picker),
   `WorkflowLibrary` (collapsible example-workflow categories),
   `ProjectLibrary`, `DatasetLibrary` (upload, search, preview, delete),
+  `OutputsLibrary` (generated-media gallery, preview, delete),
   `DatasetPickerDialog`, `DatasetPreviewDialog`, `WidgetField` (typed
   parameters, fixed choices, step buttons and linked state),
   `FileWidgetField` (workspace file picker for `File` widgets),
@@ -60,7 +70,8 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   frame grouping/ungrouping and reusable subgraph creation),
   `SaveProjectDialog`, `ProjectHistoryDialog`, `ShortcutsDialog`,
   `ExecutionPanel`, `RunHistoryDialog` (retained terminal runs with per-node
-  timings and outputs), `PreviewValueView` (dataset, tensor, image, video,
+  timings and outputs), `SystemMonitor` (draggable CPU/GPU/VRAM/RAM and
+  GPU-temperature overlay), `PreviewValueView` (dataset, tensor, image, video,
   vision-model, detection, mask and classification previews), and
   `RichOutputView` (text, tables, images, sanitized HTML and
   static/interactive Plotly).
@@ -70,6 +81,12 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - A compact square-button rail expands **Nodes**, **Workflows**, **Templates**, and **Assets** drawers on demand, keeping the canvas
   wide. The same rail toggles the Execution (Console) drawer, opens the
   keyboard-shortcut reference and Settings.
+- **System monitor**: a background-less, draggable overlay with CPU/GPU
+  utilization, VRAM/RAM usage and GPU temperature. Position, visibility and
+  refresh interval persist. Settings also exposes read-only accelerator, torch
+  build, CUDA/NVIDIA and execution-limit diagnostics.
+- **Execution behavior**: Settings controls whether the Execution panel opens
+  automatically on run and whether Canvas Clear asks for confirmation.
 - Categorized node library with search and collapsible sections that start
   collapsed (production templates across values, data loaders, cleaning, EDA,
   preprocessing, imbalanced data, models, evaluation, PyTorch and Computer
@@ -90,6 +107,9 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   kind-filtered **File** widgets that pick an asset or accept an `inputs/...`
   path; uploads can also be made from the picker. Execution rejects absolute
   paths and symlink escapes outside the workspace, inputs, and outputs roots.
+- **Outputs tab**: browse generated images/videos from repo-root `outputs/`
+  with search, image thumbnails, inline media preview, deletion, and automatic
+  refresh when a run completes.
 - **Models tab**: read-only browser for the repo-root `models/<type>` library.
   It shows format, size, modified time, type and fingerprint, with search, type
   filtering, a refresh button, **R** refresh, and automatic polling while open.
@@ -196,11 +216,13 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   definitions persist in the same `.cuigraph.json` document and implicit
   interface manager nodes are reconstructed from each definition's port
   contract.
-- Live execution telemetry: per-node status, cached badges and typed previews
-  (DataFrame head, dataset shapes, model params, tensor shape/dtype/sample,
-  metrics, images, videos, vision-model descriptors, detections, masks and
-  classifications). After a socket reconnect the client asks `/api/status` and
-  marks a run interrupted if the backend is no longer executing it.
+- Live execution telemetry: per-node status, progress bars/messages, cached
+  badges and typed previews (DataFrame head, dataset shapes, model params,
+  tensor shape/dtype/sample, metrics, images, videos, vision-model descriptors,
+  detections, masks and classifications). **Stop** is cooperative inside a node
+  that checks cancellation, in addition to the between-node check. After a
+  socket reconnect the client asks `/api/status` and marks a run interrupted if
+  the backend is no longer executing it.
 - **Run history**: terminal runs (completed, failed or cancelled) persist in
   the workspace and open from the Execution (Console) drawer. Each record keeps per-node
   statuses, timings, cache badges, previews, bounded rich outputs and error

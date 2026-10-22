@@ -43,6 +43,40 @@ function nodeProps(): NodeProps<AppNode> {
   } as unknown as NodeProps<AppNode>;
 }
 
+test("renders node progress while running", () => {
+  useGraphStore.setState({
+    execution: {
+      status: "running",
+      runId: "r-progress",
+      order: ["n1"],
+      nodeStates: {
+        n1: {
+          status: "running",
+          progress: 0.5,
+          progressMessage: "step 2/4",
+        },
+      },
+      previews: {},
+      richOutputs: {},
+      cached: {},
+      error: null,
+    },
+  });
+
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, nodeProps()),
+    ),
+  );
+
+  expect(container.textContent).toContain("step 2/4");
+  expect(container.textContent).toContain("50%");
+  const progressbar = container.querySelector('[role="progressbar"]');
+  expect(progressbar?.getAttribute("aria-valuenow")).toBe("50");
+});
+
 test("renders inline rich outputs from the execution state", () => {
   useGraphStore.setState({
     execution: {

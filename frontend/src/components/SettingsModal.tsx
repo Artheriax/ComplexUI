@@ -2,16 +2,32 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
+import { useHealthInfo } from "../hooks/useHealthInfo";
+import { useGraphStore } from "../store/useGraphStore";
 import type {
   CanvasBackgroundVariant,
   EdgeColorMode,
   EdgeLineStyle,
   HandleSize,
+  SystemMonitorIntervalMs,
 } from "../store/useSettingsStore";
-import { useSettingsStore } from "../store/useSettingsStore";
-import { CloseIcon, ResetIcon, SettingsIcon } from "./icons";
+import {
+  SYSTEM_MONITOR_INTERVALS,
+  useSettingsStore,
+} from "../store/useSettingsStore";
+import {
+  CloseIcon,
+  ResetIcon,
+  SettingsIcon,
+  WarningIcon,
+} from "./icons";
 
-type SettingsCategory = "connections" | "canvas" | "general";
+type SettingsCategory =
+  | "connections"
+  | "canvas"
+  | "system"
+  | "execution"
+  | "general";
 
 const CATEGORIES: { id: SettingsCategory; label: string; description: string }[] = [
   {
@@ -25,11 +41,29 @@ const CATEGORIES: { id: SettingsCategory; label: string; description: string }[]
     description: "Background, grid and minimap preferences.",
   },
   {
+    id: "system",
+    label: "System",
+    description: "Live system monitor and backend runtime diagnostics.",
+  },
+  {
+    id: "execution",
+    label: "Execution",
+    description: "Run behavior, safety prompts and backend limits.",
+  },
+  {
     id: "general",
     label: "General",
     description: "Reset preferences and storage information.",
   },
 ];
+
+const MONITOR_INTERVAL_OPTIONS: {
+  value: SystemMonitorIntervalMs;
+  label: string;
+}[] = SYSTEM_MONITOR_INTERVALS.map((value) => ({
+  value,
+  label: `${value / 1000}s`,
+}));
 
 const ACCENT_COLORS = [
   { value: "#22d3ee", label: "Cyan" },
@@ -178,7 +212,7 @@ function ToggleRow({
   );
 }
 
-function SegmentedRow<T extends string>({
+function SegmentedRow<T extends string | number>({
   label,
   description,
   value,
@@ -306,6 +340,127 @@ function AccentColorRow({
   );
 }
 
+function formatSeconds(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  return value > 0 ? `${Math.round(value)}s` : "disabled";
+}
+
+function RuntimeDiagnostics({
+  health,
+  loading,
+  error,
+  backendConnected,
+  onRefresh,
+}: {
+  health: {
+    accelerator: string;
+    effective_accelerator: string;
+    torch: string | null;
+    torch_cuda: boolean;
+    nvidia: boolean;
+  } | null;
+  loading: boolean;
+  error: string | null;
+  backendConnected: boolean;
+  onRefresh: () => void;
+}) {
+  const rows = [
+    ["Backend", backendConnected ? "connected" : "offline"],
+    [
+      "Accelerator",
+      health
+        ? `${health.accelerator} → ${health.effective_accelerator}`
+        : "—",
+    ],
+    ["Torch", health?.torch ?? (health ? "not installed" : "—")],
+    [
+      "CUDA build",
+      health ? (health.torch_cuda ? "yes" : "no") : "—",
+    ],
+    [
+      "NVIDIA GPU",
+      health ? (health.nvidia ? "detected" : "not detected") : "—",
+    ],
+  ];
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+      <div className="flex items-center gap-2">
+        <div className="text-xs font-medium text-zinc-200">Runtime</div>
+        <button
+          type="button"
+          title="Refresh runtime information"
+          aria-label="Refresh runtime information"
+          onClick={onRefresh}
+          disabled={loading}
+          className="ml-auto flex items-center gap-1 rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait"
+        >
+          <ResetIcon className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
+      </div>
+      {error && (
+        <div className="mt-2 flex items-start gap-1.5 rounded border border-red-900/60 bg-red-950/40 p-1.5 text-[10px] text-red-300">
+          <WarningIcon className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[10px]">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-zinc-500">{label}</dt>
+            <dd className="min-w-0 truncate text-right font-mono text-zinc-300">
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-2 text-[10px] leading-relaxed text-zinc-600">
+        Accelerator changes take effect on restart; torch installs use the
+        configured CPU or cu130 wheel index.
+      </p>
+    </div>
+  );
+}
+
+function RunLimits({
+  limits,
+}: {
+  limits: {
+    node_timeout_seconds: number;
+    run_timeout_seconds: number;
+    max_memory_mb: number;
+  } | null;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+      <div className="text-xs font-medium text-zinc-200">Run limits</div>
+      <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+        Read-only values from the backend environment and launcher.
+      </p>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[10px]">
+        <dt className="text-zinc-500">Node timeout</dt>
+        <dd className="text-right font-mono text-zinc-300">
+          {formatSeconds(limits?.node_timeout_seconds)}
+        </dd>
+        <dt className="text-zinc-500">Run timeout</dt>
+        <dd className="text-right font-mono text-zinc-300">
+          {formatSeconds(limits?.run_timeout_seconds)}
+        </dd>
+        <dt className="text-zinc-500">Memory limit</dt>
+        <dd className="text-right font-mono text-zinc-300">
+          {limits && limits.max_memory_mb > 0
+            ? `${limits.max_memory_mb} MB`
+            : limits
+              ? "disabled"
+              : "—"}
+        </dd>
+      </dl>
+    </div>
+  );
+}
+
 export function SettingsModal() {
   const settings = useSettingsStore((state) => state.settings);
   const updateSetting = useSettingsStore((state) => state.updateSetting);
@@ -314,6 +469,8 @@ export function SettingsModal() {
   const [category, setCategory] = useState<SettingsCategory>("connections");
   const dialogRef = useDialogA11y<HTMLDivElement>(closeSettings);
   const activeCategory = CATEGORIES.find((item) => item.id === category) ?? CATEGORIES[0];
+  const healthState = useHealthInfo();
+  const backendConnected = useGraphStore((state) => state.wsConnected);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
@@ -331,7 +488,7 @@ export function SettingsModal() {
             Settings
           </span>
           <span className="hidden text-[11px] text-zinc-500 sm:inline">
-            Canvas and connection preferences
+            Runtime, execution, canvas and connection preferences
           </span>
           <button
             type="button"
@@ -488,6 +645,77 @@ export function SettingsModal() {
               </div>
             )}
 
+            {category === "system" && (
+              <div className="space-y-4">
+                <div>
+                  <ToggleRow
+                    label="Show system monitor"
+                    description="Display the floating CPU, GPU, VRAM and RAM monitor on the canvas."
+                    checked={settings.showSystemMonitor}
+                    onChange={(value) =>
+                      updateSetting("showSystemMonitor", value)
+                    }
+                  />
+                  <SegmentedRow
+                    label="Update interval"
+                    description="How often the monitor samples system metrics."
+                    value={settings.systemMonitorIntervalMs}
+                    options={MONITOR_INTERVAL_OPTIONS}
+                    onChange={(value) =>
+                      updateSetting("systemMonitorIntervalMs", value)
+                    }
+                  />
+                  <SettingRow
+                    label="Monitor position"
+                    description="Reset the floating monitor to its default bottom-center position."
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateSetting("systemMonitorPosition", null)
+                      }
+                      disabled={settings.systemMonitorPosition === null}
+                      className="flex items-center gap-1.5 rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <ResetIcon />
+                      Reset position
+                    </button>
+                  </SettingRow>
+                </div>
+                <RuntimeDiagnostics
+                  health={healthState.health}
+                  loading={healthState.loading}
+                  error={healthState.error}
+                  backendConnected={backendConnected}
+                  onRefresh={() => void healthState.refresh()}
+                />
+              </div>
+            )}
+
+            {category === "execution" && (
+              <div className="space-y-4">
+                <div>
+                  <ToggleRow
+                    label="Open Execution panel on run"
+                    description="Show the console automatically when a workflow starts."
+                    checked={settings.autoOpenConsole}
+                    onChange={(value) =>
+                      updateSetting("autoOpenConsole", value)
+                    }
+                  />
+                  <ToggleRow
+                    label="Confirm canvas clearing"
+                    description="Ask before the Clear action removes every node."
+                    checked={settings.confirmClearCanvas}
+                    onChange={(value) =>
+                      updateSetting("confirmClearCanvas", value)
+                    }
+                  />
+                </div>
+                <RunLimits limits={healthState.health?.limits ?? null} />
+              </div>
+            )}
+
             {category === "general" && (
               <div className="space-y-4">
                 <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
@@ -495,8 +723,8 @@ export function SettingsModal() {
                     Reset preferences
                   </div>
                   <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-                    Restore all connection and canvas settings to their defaults.
-                    Your workflow is not affected.
+                    Restore all connection, canvas, system monitor and execution
+                    settings to their defaults. Your workflow is not affected.
                   </p>
                   <button
                     type="button"

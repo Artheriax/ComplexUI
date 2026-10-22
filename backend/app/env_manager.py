@@ -14,21 +14,30 @@ from collections.abc import Callable, Sequence
 
 from packaging.requirements import InvalidRequirement, Requirement
 
+from .accelerator import (
+    PYPI_INDEX,
+    TORCH_CPU_INDEX,
+    configured_accelerator,
+    effective_accelerator,
+    torch_index,
+)
+
 logger = logging.getLogger("complexui.deps")
 
 __all__ = [
     "DependencyInstallError",
+    "INSTALL_TIMEOUT_ENV",
     "INSTALL_TIMEOUT_SECONDS",
     "build_install_command",
     "install_dependencies",
     "missing_dependencies",
 ]
 
-_TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-_PYPI_INDEX = "https://pypi.org/simple"
+_PYPI_INDEX = PYPI_INDEX
 _TORCH_PACKAGES = {"torch", "torchvision", "torchaudio"}
 _POLL_INTERVAL_SECONDS = 0.2
-INSTALL_TIMEOUT_SECONDS = 600.0
+INSTALL_TIMEOUT_ENV = "COMPLEXUI_INSTALL_TIMEOUT_SECONDS"
+INSTALL_TIMEOUT_SECONDS = 1200.0
 
 
 class DependencyInstallError(Exception):
@@ -70,20 +79,48 @@ def _requirement_name(raw: str) -> str:
         return name
 
 
-def build_install_command(requirements: Sequence[str], *, platform: str | None = None) -> list[str]:
-    """Build ``uv pip install`` args, routing torch to the CPU wheel index.
+def install_timeout_seconds() -> float:
+    """Return the configured dependency-install timeout."""
+    raw = os.environ.get(INSTALL_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return INSTALL_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return INSTALL_TIMEOUT_SECONDS
+    return value if value >= 0 else INSTALL_TIMEOUT_SECONDS
 
-    On Windows/Linux the default PyPI torch wheels bundle multi-GB CUDA
-    runtimes; the PyTorch CPU index serves a lean CPU-only build. uv's
-    first-index strategy resolves torch from the CPU index and everything else
-    (sympy, filelock, ...) from PyPI.
+
+def build_install_command(
+    requirements: Sequence[str],
+    *,
+    platform: str | None = None,
+    accelerator: str | None = None,
+    reinstall: bool | None = None,
+) -> list[str]:
+    """Build ``uv pip install`` args with accelerator-aware torch routing.
+
+    Torch-family packages use the CPU index by default, or the CUDA index
+    selected by ``COMPLEXUI_ACCELERATOR``/``COMPLEXUI_TORCH_CUDA_INDEX``. When
+    the installed torch build does not match the selected accelerator, the
+    relevant packages are reinstalled so the GPU is actually usable.
     """
     target = sys.platform if platform is None else platform
     command = ["uv", "pip", "install"]
-    if target.startswith(("win32", "linux")) and any(
-        _requirement_name(raw) in _TORCH_PACKAGES for raw in requirements
-    ):
-        command.extend(["--index", _TORCH_CPU_INDEX, "--index", _PYPI_INDEX])
+    torch_requirements = {
+        _requirement_name(raw) for raw in requirements
+    } & _TORCH_PACKAGES
+
+    if target.startswith(("win32", "linux")) and torch_requirements:
+        selected_index = torch_index(accelerator, platform=target)
+        command.extend(["--index", selected_index, "--index", _PYPI_INDEX])
+        installed = _installed_version("torch")
+        if installed is not None and reinstall is not False:
+            installed_cuda = "+cu" in installed.lower()
+            wants_cuda = selected_index != TORCH_CPU_INDEX
+            if reinstall is True or installed_cuda != wants_cuda:
+                for package in sorted(torch_requirements):
+                    command.extend(["--reinstall-package", package])
     command.extend(requirements)
     return command
 
@@ -104,7 +141,7 @@ def _validated_requirements(requirements: Sequence[str]) -> list[str]:
 def install_dependencies(
     requirements: Sequence[str],
     *,
-    timeout: float = INSTALL_TIMEOUT_SECONDS,
+    timeout: float | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> None:
     """Install missing requirements with ``uv pip install``.
@@ -116,10 +153,17 @@ def install_dependencies(
     if not requirements:
         return
     requirements = _validated_requirements(requirements)
+    if timeout is None:
+        timeout = install_timeout_seconds()
     environment = os.environ.copy()
     environment.setdefault("VIRTUAL_ENV", sys.prefix)
     command = build_install_command(requirements)
-    logger.info("installing dependencies: %s", ", ".join(requirements))
+    logger.info(
+        "installing dependencies for accelerator '%s' (effective '%s'): %s",
+        configured_accelerator(),
+        effective_accelerator(),
+        ", ".join(requirements),
+    )
     logger.debug("install command: %s", " ".join(command))
     started = time.monotonic()
     with tempfile.TemporaryFile(mode="w+b") as output:

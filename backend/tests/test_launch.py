@@ -100,6 +100,27 @@ def test_backend_environment_sets_log_format() -> None:
     assert environment["COMPLEXUI_LOG_FORMAT"] == "json"
 
 
+def test_accelerator_defaults_to_environment(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_ACCELERATOR", "cuda")
+
+    args = launch.parse_args(["backend"])
+
+    assert args.accelerator == "cuda"
+
+
+def test_backend_environment_sets_accelerator() -> None:
+    args = launch.parse_args(["backend", "--accelerator", "cpu"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_ACCELERATOR"] == "cpu"
+
+
+def test_unknown_accelerator_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        launch.parse_args(["backend", "--accelerator", "gpu"])
+
+
 def test_log_format_defaults_to_environment(monkeypatch) -> None:
     monkeypatch.setenv("COMPLEXUI_LOG_FORMAT", "json")
 

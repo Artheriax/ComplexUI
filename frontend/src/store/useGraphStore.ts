@@ -16,6 +16,7 @@ import {
   approveNode,
   cancelExecution,
   createProject as createProjectApi,
+  createTemplate as createTemplateApi,
   deleteProject as deleteProjectApi,
   executeGraph,
   fetchProject as fetchProjectApi,
@@ -30,7 +31,11 @@ import {
   untrustedNodesFrom,
   updateProject as updateProjectApi,
 } from "../lib/api";
-import type { ProjectSummary, WorkspaceSession } from "../lib/api";
+import type {
+  ProjectSummary,
+  TemplateCreatePayload,
+  WorkspaceSession,
+} from "../lib/api";
 import { sha256Hex } from "../lib/hash";
 import {
   loadLocalProjectIdentity,
@@ -264,6 +269,10 @@ interface GraphStore {
   getWindowDocument: (windowId: string) => SavedWorkflow | null;
 
   loadTemplates: () => Promise<void>;
+  saveNodeAsTemplate: (
+    nodeId: string,
+    payload: TemplateCreatePayload,
+  ) => Promise<TemplateInfo>;
   loadWorkflowTemplates: () => Promise<void>;
   loadWorkflowTemplate: (workflow: WorkflowTemplateInfo) => boolean;
   loadProjects: () => Promise<void>;
@@ -343,10 +352,28 @@ interface GraphStore {
   restoreWorkflow: (saved: SavedWorkflow) => Promise<void>;
   restoreFromStorage: () => Promise<void>;
   runGraph: (targets?: string[]) => Promise<void>;
+  runSweep: (
+    request: SweepRunRequest,
+    onProgress?: (completed: number, total: number) => void,
+  ) => Promise<SweepRunResult>;
+  setWidgetValueForSweep: (nodeId: string, name: string, value: unknown) => void;
   cancelRun: () => Promise<void>;
   applyExecutionEvent: (event: ExecutionEvent) => void;
   syncRunStatus: (status: BackendRunStatus) => void;
   setWsConnected: (connected: boolean) => void;
+}
+
+export interface SweepRunRequest {
+  nodeId: string;
+  widget: string;
+  values: Array<string | number>;
+  suffixOutputs?: boolean;
+}
+
+export interface SweepRunResult {
+  completed: number;
+  total: number;
+  status: ExecutionStatus;
 }
 
 export const SCRATCH_NODE_CODE = `# Scratch node — edit freely.
@@ -1054,6 +1081,49 @@ async function buildSavedWorkflow(
   return { nodes: root.nodes, edges: root.edges, subgraphs };
 }
 
+export function advanceSeedNodes(
+  nodes: AppNode[],
+  event: ExecutionEvent,
+): AppNode[] {
+  if (event.type !== "NODE_COMPLETED" || event.data.cached === true) {
+    return nodes;
+  }
+  const node = nodes.find((candidate) => candidate.id === event.node_id);
+  if (!node) {
+    return nodes;
+  }
+  const values = node.data.widgetValues;
+  const seed = values.seed;
+  const control = values.control_after_generate;
+  if (typeof seed !== "number" || !Number.isFinite(seed)) {
+    return nodes;
+  }
+  let nextSeed: number;
+  if (control === "increment") {
+    nextSeed = seed + 1;
+  } else if (control === "decrement") {
+    nextSeed = seed - 1;
+  } else if (control === "randomize") {
+    nextSeed = Math.floor(Math.random() * 4_294_967_295);
+  } else {
+    return nodes;
+  }
+  if (nextSeed === seed) {
+    return nodes;
+  }
+  return nodes.map((candidate) =>
+    candidate.id === node.id
+      ? {
+          ...candidate,
+          data: {
+            ...candidate.data,
+            widgetValues: { ...values, seed: nextSeed },
+          },
+        }
+      : candidate,
+  );
+}
+
 function reduceExecutionEvent(
   execution: GraphExecutionState,
   event: ExecutionEvent,
@@ -1081,6 +1151,28 @@ function reduceExecutionEvent(
           [event.node_id]: { status: "running" },
         },
       };
+    case "NODE_PROGRESS": {
+      const rawProgress =
+        typeof event.data.progress === "number" && Number.isFinite(event.data.progress)
+          ? event.data.progress
+          : 0;
+      const existing = execution.nodeStates[event.node_id];
+      return {
+        ...execution,
+        nodeStates: {
+          ...execution.nodeStates,
+          [event.node_id]: {
+            ...(existing ?? { status: "running" as const }),
+            status: "running",
+            progress: Math.min(1, Math.max(0, rawProgress)),
+            progressMessage:
+              typeof event.data.message === "string"
+                ? event.data.message
+                : undefined,
+          },
+        },
+      };
+    }
     case "INSTALLING_DEPS": {
       const installing = Array.isArray(event.data.dependencies)
         ? (event.data.dependencies as string[])
@@ -1544,6 +1636,32 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             error instanceof Error ? error.message : String(error),
         });
       }
+    },
+
+    saveNodeAsTemplate: async (nodeId, payload) => {
+      const template = await createTemplateApi(payload);
+      set((state) => ({
+        templates: [
+          ...state.templates.filter((item) => item.name !== template.name),
+          template,
+        ].sort((left, right) => left.title.localeCompare(right.title)),
+        nodes: state.nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  code: template.code,
+                  schema: template.node_schema,
+                  templateName: template.name,
+                  templateCode: template.code,
+                  isTrusted: true,
+                },
+              }
+            : node,
+        ),
+      }));
+      return template;
     },
 
     loadWorkflowTemplates: async () => {
@@ -4103,6 +4221,123 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       }
     },
 
+    runSweep: async (request, onProgress) => {
+      const initial = get();
+      if (initial.execution.status === "running") {
+        return { completed: 0, total: request.values.length, status: "failed" };
+      }
+      const target = initial.nodes.find((node) => node.id === request.nodeId);
+      if (!target) {
+        return { completed: 0, total: request.values.length, status: "failed" };
+      }
+      const originalValue = target.data.widgetValues[request.widget];
+      const saveNodes = request.suffixOutputs
+        ? initial.nodes.filter(
+            (node) =>
+              node.data.templateName === "save_media" &&
+              typeof node.data.widgetValues.path === "string",
+          )
+        : [];
+      const originalPaths = new Map(
+        saveNodes.map((node) => [node.id, node.data.widgetValues.path]),
+      );
+      let completed = 0;
+      let status: ExecutionStatus = "idle";
+      const waitForTerminal = (runId: string | null) =>
+        new Promise<ExecutionStatus>((resolve) => {
+          let unsubscribe: () => void = () => undefined;
+          const finish = (next: ExecutionStatus) => {
+            unsubscribe();
+            resolve(next);
+          };
+          unsubscribe = useGraphStore.subscribe((state) => {
+            const execution = state.execution;
+            if (
+              execution.runId === runId &&
+              (execution.status === "completed" ||
+                execution.status === "failed" ||
+                execution.status === "cancelled")
+            ) {
+              finish(execution.status);
+            }
+          });
+          const execution = useGraphStore.getState().execution;
+          if (
+            execution.runId === runId &&
+            (execution.status === "completed" ||
+              execution.status === "failed" ||
+              execution.status === "cancelled")
+          ) {
+            finish(execution.status);
+          }
+        });
+
+      try {
+        for (const [index, value] of request.values.entries()) {
+          get().setWidgetValueForSweep(request.nodeId, request.widget, value);
+          if (request.suffixOutputs) {
+            const safe = String(value)
+              .replace(/[^a-zA-Z0-9_-]+/g, "_")
+              .replace(/^_+|_+$/g, "")
+              .slice(0, 32);
+            for (const node of saveNodes) {
+              const original = String(originalPaths.get(node.id) ?? "media.png");
+              const dot = original.lastIndexOf(".");
+              const stem = dot > 0 ? original.slice(0, dot) : original;
+              const extension = dot > 0 ? original.slice(dot) : "";
+              get().setWidgetValueForSweep(
+                node.id,
+                "path",
+                `${stem}_sweep_${index + 1}_${safe || "value"}${extension}`,
+              );
+            }
+          }
+          await get().runGraph();
+          const current = get().execution;
+          if (current.status === "idle") {
+            status = "failed";
+            break;
+          }
+          if (current.runId === null) {
+            status = current.status;
+            break;
+          }
+          status = await waitForTerminal(current.runId);
+          if (status !== "completed") {
+            break;
+          }
+          completed += 1;
+          onProgress?.(completed, request.values.length);
+        }
+      } finally {
+        get().setWidgetValueForSweep(
+          request.nodeId,
+          request.widget,
+          originalValue,
+        );
+        for (const [nodeId, path] of originalPaths) {
+          get().setWidgetValueForSweep(nodeId, "path", path);
+        }
+      }
+      return { completed, total: request.values.length, status };
+    },
+
+    setWidgetValueForSweep: (nodeId, name, value) => {
+      set((state) => ({
+        nodes: state.nodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  widgetValues: { ...node.data.widgetValues, [name]: value },
+                },
+              }
+            : node,
+        ),
+      }));
+    },
+
     cancelRun: async () => {
       if (get().execution.status !== "running") {
         return;
@@ -4139,9 +4374,16 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         );
         if (target) {
           const execution = reduceExecutionEvent(target.execution, event);
+          const nodes = advanceSeedNodes(target.nodes, event);
           set((state) => ({
             windows: state.windows.map((window) =>
-              window.id === target.id ? { ...window, execution } : window,
+              window.id === target.id
+                ? {
+                    ...window,
+                    execution,
+                    ...(nodes !== target.nodes ? { nodes } : {}),
+                  }
+                : window,
             ),
           }));
           return;
@@ -4176,6 +4418,31 @@ export const useGraphStore = create<GraphStore>((set, get) => {
                 },
               },
             };
+          case "NODE_PROGRESS": {
+            const rawProgress =
+              typeof event.data.progress === "number" &&
+              Number.isFinite(event.data.progress)
+                ? event.data.progress
+                : 0;
+            const existing = execution.nodeStates[event.node_id];
+            return {
+              execution: {
+                ...execution,
+                nodeStates: {
+                  ...execution.nodeStates,
+                  [event.node_id]: {
+                    ...(existing ?? { status: "running" as const }),
+                    status: "running",
+                    progress: Math.min(1, Math.max(0, rawProgress)),
+                    progressMessage:
+                      typeof event.data.message === "string"
+                        ? event.data.message
+                        : undefined,
+                  },
+                },
+              },
+            };
+          }
           case "INSTALLING_DEPS": {
             const installing = Array.isArray(event.data.dependencies)
               ? (event.data.dependencies as string[])
@@ -4196,6 +4463,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               PreviewValue
             >;
             const richOutputs = parseRichOutputs(event.data.rich_outputs);
+            const nodes = advanceSeedNodes(state.nodes, event);
             return {
               execution: {
                 ...execution,
@@ -4221,6 +4489,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
                   },
                 },
               },
+              ...(nodes !== state.nodes ? { nodes } : {}),
             };
           }
           case "NODE_ERROR": {

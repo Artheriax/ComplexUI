@@ -103,6 +103,56 @@ def _chain_graph(n_neighbors: int = 5) -> WorkflowGraph:
 
 
 EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
+    "load_checkpoint": ([], ["model", "clip", "vae"], ["local_model", "device", "dtype"]),
+    "clip_text_encode": (["clip"], ["conditioning"], ["text"]),
+    "empty_latent_image": (["checkpoint"], ["latent"], ["width", "height", "batch_size"]),
+    "ksampler": (
+        ["model", "positive", "negative", "latent_image"],
+        ["latent"],
+        ["seed", "control_after_generate", "steps", "denoise", "cfg", "sampler", "scheduler"],
+    ),
+    "vae_decode": (["vae", "latent"], ["images"], ["tiling"]),
+    "image_from_batch": (["images"], ["image"], ["index"]),
+    "resolution": ([], ["width", "height"], ["width", "height"]),
+    "basic_scheduler": (
+        ["model"],
+        ["sigmas"],
+        ["scheduler", "steps", "denoise"],
+    ),
+    "sampler_select": ([], ["sampler"], ["sampler_name"]),
+    "noise_generator": (
+        [],
+        ["noise"],
+        ["noise_type", "seed", "control_after_generate", "alpha", "k", "scale"],
+    ),
+    "cfg_guider": (["model", "positive", "negative"], ["guider"], ["cfg"]),
+    "sampler_custom_advanced": (
+        ["guider", "sampler", "sigmas", "noise", "latent_image"],
+        ["output", "denoised"],
+        ["add_noise"],
+    ),
+    "preview_sigmas": (["sigmas"], ["sigmas"], []),
+    "load_diffusion_model": (
+        [],
+        ["model"],
+        ["component_path", "architecture", "device", "dtype"],
+    ),
+    "load_clip": (
+        [],
+        ["clip"],
+        ["clip_path", "architecture", "device", "dtype"],
+    ),
+    "load_vae": (
+        [],
+        ["vae"],
+        ["component_path", "architecture", "device", "dtype"],
+    ),
+    "vae_encode": (["vae", "image"], ["latent"], ["tiling"]),
+    "image_scale": (
+        ["image"],
+        ["scaled"],
+        ["width", "height", "method", "crop"],
+    ),
     "int_value": ([], ["result"], ["value", "step"]),
     "float_value": ([], ["result"], ["value", "step"]),
     "bool_value": ([], ["result"], ["value"]),
@@ -794,9 +844,14 @@ def test_widget_socket_types_match_python_scalars() -> None:
     assert not socket_types_compatible(SocketType.FLOAT, SocketType.INT)
     assert not socket_types_compatible(SocketType.STRING, SocketType.FLOAT)
     assert socket_types_compatible(SocketType.IMAGE, SocketType.MEDIA)
+    assert socket_types_compatible(SocketType.IMAGE_BATCH, SocketType.MEDIA)
+    assert socket_types_compatible(SocketType.IMAGE, SocketType.IMAGE_BATCH)
+    assert not socket_types_compatible(SocketType.IMAGE_BATCH, SocketType.IMAGE)
     assert socket_types_compatible(SocketType.VIDEO, SocketType.MEDIA)
     assert not socket_types_compatible(SocketType.MEDIA, SocketType.IMAGE)
     assert not socket_types_compatible(SocketType.IMAGE, SocketType.VIDEO)
+    assert not socket_types_compatible(SocketType.LATENT, SocketType.TENSOR)
+    assert socket_types_compatible(SocketType.MODEL, SocketType.MODEL)
 
 
 def test_value_nodes_execute_and_preview_primitive_values() -> None:
@@ -1176,6 +1231,57 @@ def test_cancellation_between_nodes_keeps_completed_cache() -> None:
     assert result.cached == {"load": True, "split": False}
     started = [event.node_id for event in events if event.type is EventType.NODE_STARTED]
     assert started == ["split"]
+
+
+def test_node_progress_events_are_streamed() -> None:
+    node = GraphNode(
+        id="progress",
+        code=(
+            'report_progress(0.25, "quarter")\n'
+            "report_progress(2.0, \"clamped\")\n"
+            "value = 1\n"
+            "return value: ANY\n"
+        ),
+    )
+    events: list[ExecutionEvent] = []
+
+    execute_graph(
+        WorkflowGraph(nodes=[node]),
+        security=_custom_registry(node),
+        emit=events.append,
+        allow_installs=False,
+    )
+
+    progress = [
+        event for event in events if event.type is EventType.NODE_PROGRESS
+    ]
+    assert [event.node_id for event in progress] == ["progress", "progress"]
+    assert progress[0].data == {"progress": 0.25, "message": "quarter"}
+    assert progress[1].data == {"progress": 1.0, "message": "clamped"}
+
+
+def test_raise_if_cancelled_aborts_the_running_node() -> None:
+    node = GraphNode(
+        id="cancel-me",
+        code="raise_if_cancelled()\nvalue = 1\nreturn value: ANY\n",
+    )
+    calls = {"count": 0}
+
+    def should_stop() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 1
+
+    events: list[ExecutionEvent] = []
+    with pytest.raises(ExecutionCancelled, match="cancelled"):
+        execute_graph(
+            WorkflowGraph(nodes=[node]),
+            security=_custom_registry(node),
+            emit=events.append,
+            should_stop=should_stop,
+            allow_installs=False,
+        )
+
+    assert [event.type for event in events] == [EventType.NODE_STARTED]
 
 
 def test_cancellation_before_first_node_runs_nothing() -> None:

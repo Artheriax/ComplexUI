@@ -924,11 +924,39 @@ function NodeRichOutputs({ outputs }: { outputs: RichOutput[] }) {
 
 function NodeStatusFooter({ state }: { state: NodeExecutionState }) {
   if (state.status === "running") {
+    const progress =
+      state.progress === undefined
+        ? null
+        : Math.round(Math.min(1, Math.max(0, state.progress)) * 100);
     return (
       <div className="rounded-b-lg border-t border-zinc-800 bg-cyan-950/40 px-2 py-1 text-[10px] text-cyan-300">
-        {state.installing && state.installing.length > 0
-          ? `Installing: ${state.installing.join(", ")}`
-          : "Running…"}
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 truncate">
+            {state.installing && state.installing.length > 0
+              ? `Installing: ${state.installing.join(", ")}`
+              : state.progressMessage || "Running…"}
+          </span>
+          {progress !== null && (
+            <span className="ml-auto shrink-0 font-mono text-[9px] text-cyan-200/80">
+              {progress}%
+            </span>
+          )}
+        </div>
+        {progress !== null && (
+          <div
+            role="progressbar"
+            aria-label="Node progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+            className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-800/80"
+          >
+            <div
+              className="h-full rounded-full bg-cyan-400 transition-[width] duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        )}
       </div>
     );
   }

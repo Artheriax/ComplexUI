@@ -34,6 +34,11 @@ function TemplateCard({ template }: { template: TemplateInfo }) {
     >
       <div className="flex items-center gap-1.5">
         <span className="text-xs font-semibold text-zinc-100">{template.title}</span>
+        {template.source === "user" && (
+          <span className="rounded bg-cyan-950/70 px-1 py-px text-[8px] uppercase tracking-wide text-cyan-300">
+            local
+          </span>
+        )}
       </div>
       <p className="mt-0.5 text-[11px] leading-snug text-zinc-500">
         {template.description}

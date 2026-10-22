@@ -25,7 +25,11 @@ export function socketTypesCompatible(
     source === "ANY" ||
     target === "ANY" ||
     (source === "INT" && target === "FLOAT") ||
-    ((source === "IMAGE" || source === "VIDEO") && target === "MEDIA")
+    (source === "IMAGE" && target === "IMAGE_BATCH") ||
+    ((source === "IMAGE" ||
+      source === "IMAGE_BATCH" ||
+      source === "VIDEO") &&
+      target === "MEDIA")
   );
 }
 

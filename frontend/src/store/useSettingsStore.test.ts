@@ -53,6 +53,29 @@ test("resets settings to their defaults", () => {
   expect(useSettingsStore.getState().settings).toEqual(DEFAULT_SETTINGS);
 });
 
+test("sanitises monitor and execution settings", () => {
+  const settings = sanitiseSettings({
+    showSystemMonitor: false,
+    systemMonitorIntervalMs: 1000,
+    systemMonitorPosition: { x: 12.5, y: 400 },
+    autoOpenConsole: false,
+    confirmClearCanvas: false,
+  });
+
+  expect(settings.showSystemMonitor).toBe(false);
+  expect(settings.systemMonitorIntervalMs).toBe(1000);
+  expect(settings.systemMonitorPosition).toEqual({ x: 12.5, y: 400 });
+  expect(settings.autoOpenConsole).toBe(false);
+  expect(settings.confirmClearCanvas).toBe(false);
+
+  const invalid = sanitiseSettings({
+    systemMonitorIntervalMs: 1234,
+    systemMonitorPosition: { x: "left", y: 400 },
+  });
+  expect(invalid.systemMonitorIntervalMs).toBe(2000);
+  expect(invalid.systemMonitorPosition).toBeNull();
+});
+
 test("sanitises corrupted persisted values", () => {
   expect(
     sanitiseSettings({

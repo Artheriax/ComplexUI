@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import {
   DEFAULT_SETTINGS,
@@ -9,13 +9,43 @@ import {
 } from "../store/useSettingsStore";
 import { SettingsModal } from "./SettingsModal";
 
-afterEach(cleanup);
+const health = {
+  status: "ok",
+  version: "0.1.0",
+  templates: 84,
+  workflows: 21,
+  models_root: "C:/repo/models",
+  accelerator: "cpu",
+  effective_accelerator: "cpu",
+  torch: "2.14.1+cpu",
+  torch_cuda: false,
+  nvidia: false,
+  limits: {
+    node_timeout_seconds: 600,
+    run_timeout_seconds: 3600,
+    max_memory_mb: 4096,
+  },
+};
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 beforeEach(() => {
   useSettingsStore.setState({
     settings: { ...DEFAULT_SETTINGS },
     isOpen: true,
   });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(JSON.stringify(health), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ),
+  );
 });
 
 test("renders settings categories and updates connection options", () => {
@@ -60,6 +90,57 @@ test("switches to canvas options and toggles grid snapping", () => {
 
   fireEvent.click(screen.getByRole("radio", { name: "Lines" }));
   expect(useSettingsStore.getState().settings.backgroundVariant).toBe("lines");
+});
+
+test("controls the system monitor and shows runtime diagnostics", async () => {
+  useSettingsStore.setState({
+    settings: {
+      ...DEFAULT_SETTINGS,
+      systemMonitorPosition: { x: 10, y: 20 },
+    },
+  });
+  render(createElement(SettingsModal));
+
+  fireEvent.click(screen.getByRole("tab", { name: "System" }));
+
+  const monitor = screen.getByRole("switch", {
+    name: "Show system monitor",
+  });
+  expect(monitor.getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(monitor);
+  expect(useSettingsStore.getState().settings.showSystemMonitor).toBe(false);
+
+  fireEvent.click(screen.getByRole("radio", { name: "1s" }));
+  expect(useSettingsStore.getState().settings.systemMonitorIntervalMs).toBe(1000);
+
+  fireEvent.click(screen.getByRole("button", { name: /Reset position/i }));
+  expect(useSettingsStore.getState().settings.systemMonitorPosition).toBeNull();
+
+  expect(await screen.findByText("2.14.1+cpu")).toBeTruthy();
+  expect(screen.getByText("cpu → cpu")).toBeTruthy();
+});
+
+test("controls execution behavior and shows read-only limits", async () => {
+  render(createElement(SettingsModal));
+
+  fireEvent.click(screen.getByRole("tab", { name: "Execution" }));
+
+  const autoOpen = screen.getByRole("switch", {
+    name: "Open Execution panel on run",
+  });
+  expect(autoOpen.getAttribute("aria-checked")).toBe("true");
+  fireEvent.click(autoOpen);
+  expect(useSettingsStore.getState().settings.autoOpenConsole).toBe(false);
+
+  const confirm = screen.getByRole("switch", {
+    name: "Confirm canvas clearing",
+  });
+  fireEvent.click(confirm);
+  expect(useSettingsStore.getState().settings.confirmClearCanvas).toBe(false);
+
+  expect(await screen.findByText("600s")).toBeTruthy();
+  expect(screen.getByText("3600s")).toBeTruthy();
+  expect(screen.getByText("4096 MB")).toBeTruthy();
 });
 
 test("resets all preferences from the general tab", () => {

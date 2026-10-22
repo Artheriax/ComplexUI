@@ -8,6 +8,7 @@ import {
   readWorkflowFile,
 } from "../lib/persistence";
 import { useGraphStore } from "../store/useGraphStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import { useUiStore } from "../store/useUiStore";
 import type { ExportFormat } from "../types/graph";
 
@@ -95,7 +96,10 @@ export function useWorkflowFileActions() {
       state.scopeStack.length > 0
         ? "Clear this nested subgraph canvas? You can undo this with Ctrl+Z."
         : "Clear the canvas? Autosave will also be overwritten. You can undo this with Ctrl+Z.";
-    if (window.confirm(message)) {
+    if (
+      !useSettingsStore.getState().settings.confirmClearCanvas ||
+      window.confirm(message)
+    ) {
       state.clearCanvas();
     }
   };
