@@ -97,7 +97,11 @@ class PollingAccessFilter(logging.Filter):
         if not isinstance(args, tuple) or len(args) < 5:
             return True
         method, path, status = args[1], args[2], args[4]
-        if not isinstance(method, str) or not isinstance(path, str):
+        if (
+            not isinstance(method, str)
+            or not isinstance(path, str)
+            or not isinstance(status, (int, str))
+        ):
             return True
         try:
             status_code = int(status)

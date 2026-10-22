@@ -9,7 +9,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
-from multiprocessing.connection import Connection
+from multiprocessing.connection import PipeConnection
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +36,8 @@ class ExecutionLimits:
 
 @dataclass(slots=True)
 class WorkerHandle:
-    process: multiprocessing.process.BaseProcess
-    connection: Connection
+    process: BaseProcess
+    connection: PipeConnection[Any, Any]
     stop_event: Any
 
 

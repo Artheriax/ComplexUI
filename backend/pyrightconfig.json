@@ -1,0 +1,7 @@
+{
+  "include": ["app"],
+  "exclude": ["app/templates", ".venv", "workspace"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "reportMissingTypeStubs": false
+}

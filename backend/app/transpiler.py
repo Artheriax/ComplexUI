@@ -618,14 +618,15 @@ def _extract_bindings(source: str) -> _Bindings:
     seen: dict[str, str] = {}
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            end_line = node.end_lineno or node.lineno
             hoisted_imports.append(
-                "\n".join(lines[node.lineno - 1 : node.end_lineno])
+                "\n".join(lines[node.lineno - 1 : end_line])
             )
-            blank_spans.append((node.lineno, node.end_lineno))
+            blank_spans.append((node.lineno, end_line))
             continue
         if not isinstance(node, ast.AnnAssign):
             continue
-        blank_spans.append((node.lineno, node.end_lineno))
+        blank_spans.append((node.lineno, node.end_lineno or node.lineno))
         if not isinstance(node.target, ast.Name):
             errors.append(
                 SyntaxErrorInfo(

@@ -448,7 +448,12 @@ def run_check(args: argparse.Namespace, theme: Theme, npm: str) -> int:
     require_tool("uv")
     steps: list[tuple[str, list[str], Path]] = [
         ("backend lint", ["uv", "run", "ruff", "check", "."], BACKEND_DIR),
-        ("backend tests", ["uv", "run", "pytest", "-q"], BACKEND_DIR),
+        ("backend typecheck", ["uv", "run", "basedpyright"], BACKEND_DIR),
+        (
+            "backend tests",
+            ["uv", "run", "pytest", "-q", "--cov=app", "--cov-report=term-missing"],
+            BACKEND_DIR,
+        ),
         ("frontend lint", [npm, "run", "lint"], FRONTEND_DIR),
         ("frontend typecheck", [npm, "run", "typecheck"], FRONTEND_DIR),
         ("frontend tests", [npm, "run", "test"], FRONTEND_DIR),

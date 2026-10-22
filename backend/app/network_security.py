@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from typing import Any
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers
 from starlette.responses import PlainTextResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 __all__ = [
     "DEFAULT_ALLOWED_HOSTS",
@@ -119,8 +118,8 @@ class RequestSizeLimitMiddleware:
     @staticmethod
     async def _buffer_body(
         receive: Receive, limit: int
-    ) -> tuple[list[dict[str, Any]], bool]:
-        messages: list[dict[str, Any]] = []
+    ) -> tuple[list[Message], bool]:
+        messages: list[Message] = []
         total = 0
         while True:
             message = await receive()
@@ -134,10 +133,8 @@ class RequestSizeLimitMiddleware:
                 return messages, True
 
     @staticmethod
-    def _replay_body(
-        messages: list[dict[str, Any]], receive: Receive
-    ) -> Receive:
-        async def replay() -> dict[str, Any]:
+    def _replay_body(messages: list[Message], receive: Receive) -> Receive:
+        async def replay() -> Message:
             if messages:
                 return messages.pop(0)
             return await receive()

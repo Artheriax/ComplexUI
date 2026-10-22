@@ -1248,7 +1248,8 @@ async def _run_execution(
                     )
                     break
                 if limits.max_memory_bytes > 0:
-                    used = process_memory_bytes(handle.process.pid)
+                    pid = handle.process.pid
+                    used = process_memory_bytes(pid) if pid is not None else None
                     if used is not None and used > limits.max_memory_bytes:
                         abnormal = (
                             "MemoryLimit",
@@ -1270,11 +1271,14 @@ async def _run_execution(
             if not isinstance(message, dict):
                 continue
             if message.get("kind") == "event":
+                data = message.get("data")
+                if not isinstance(data, dict):
+                    data = {}
                 try:
                     event = ExecutionEvent(
                         type=EventType(str(message.get("type", ""))),
                         node_id=str(message.get("node_id", "")),
-                        data=message.get("data") if isinstance(message.get("data"), dict) else {},
+                        data=data,
                     )
                 except ValueError:
                     continue

@@ -332,8 +332,12 @@ Run the test suite from this directory:
 
 ```sh
 uv run ruff check .    # lint (app/templates excluded: they use the node DSL)
-uv run pytest
+uv run basedpyright    # static type check (app; templates excluded)
+uv run pytest --cov=app --cov-report=term-missing
 ```
+
+Coverage uses the configured 80% backend threshold when `--cov` is enabled;
+the full verification gate and CI run it by default.
 
 The default suite skips nodes whose optional runtimes are absent. To exercise
 the full catalog (torch, torchvision, Ultralytics, OpenCV, XGBoost, LightGBM),

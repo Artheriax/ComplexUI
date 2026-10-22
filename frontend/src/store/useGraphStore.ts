@@ -36,6 +36,14 @@ import type {
   TemplateCreatePayload,
   WorkspaceSession,
 } from "../lib/api";
+import {
+  idleExecution,
+  pruneExecution,
+  reduceExecutionEvent,
+  reduceRunStatus,
+} from "../lib/executionEvents";
+import type { GraphExecutionState } from "../lib/executionEvents";
+import { mergeWidgetValues, reconcileEdges } from "../lib/graphEditing";
 import { sha256Hex } from "../lib/hash";
 import { advanceSeedNodes } from "../lib/seedNodes";
 import {
@@ -78,22 +86,17 @@ import type {
   BackendRunStatus,
   ComplexNodeData,
   ExecuteResponse,
-  ExecutionError,
   ExecutionEvent,
   ExecutionStatus,
   NodeColor,
-  NodeExecutionState,
   NodeSchema,
   PendingApproval,
   PendingConnection,
-  PreviewValue,
-  RichOutput,
   SocketType,
   SubgraphDefinition,
   SubgraphMap,
   SubgraphScope,
   TemplateInfo,
-  WidgetParam,
   WorkflowGraphPayload,
   WorkflowTemplateInfo,
 } from "../types/graph";
@@ -105,41 +108,11 @@ import {
   isSubgraphManagerNode,
   NEW_SUBGRAPH_INPUT_HANDLE,
   NEW_SUBGRAPH_OUTPUT_HANDLE,
-  parseRichOutputs,
   SUBGRAPH_INPUT_NODE_ID,
   SUBGRAPH_OUTPUT_NODE_ID,
 } from "../types/graph";
 
-export interface GraphExecutionState {
-  status: ExecutionStatus;
-  runId: string | null;
-  order: string[];
-  nodeStates: Record<string, NodeExecutionState>;
-  previews: Record<string, Record<string, PreviewValue>>;
-  richOutputs: Record<string, RichOutput[]>;
-  cached: Record<string, boolean>;
-  error: ExecutionError | null;
-}
-
-function pruneExecution(
-  execution: GraphExecutionState,
-  removed: Set<string>,
-): GraphExecutionState {
-  if (removed.size === 0) {
-    return execution;
-  }
-  const nodeStates = { ...execution.nodeStates };
-  const previews = { ...execution.previews };
-  const richOutputs = { ...execution.richOutputs };
-  const cached = { ...execution.cached };
-  for (const id of removed) {
-    delete nodeStates[id];
-    delete previews[id];
-    delete richOutputs[id];
-    delete cached[id];
-  }
-  return { ...execution, nodeStates, previews, richOutputs, cached };
-}
+export type { GraphExecutionState };
 
 export interface GraphSnapshot {
   nodes: AppNode[];
@@ -400,73 +373,6 @@ function emptySchema(
     dependencies: [],
     syntax_errors: [],
   };
-}
-
-const idleExecution = (): GraphExecutionState => ({
-  status: "idle",
-  runId: null,
-  order: [],
-  nodeStates: {},
-  previews: {},
-  richOutputs: {},
-  cached: {},
-  error: null,
-});
-
-function widgetValueAllowed(widget: WidgetParam, value: unknown): boolean {
-  const options = widget.options ?? [];
-  if (options.length > 0 && !options.some((option) => option === value)) {
-    return false;
-  }
-  switch (widget.data_type) {
-    case "int":
-      return typeof value === "number" && Number.isInteger(value);
-    case "float":
-      return typeof value === "number" && Number.isFinite(value);
-    case "str":
-      return typeof value === "string";
-    case "bool":
-      return typeof value === "boolean";
-    default:
-      return true;
-  }
-}
-
-function mergeWidgetValues(
-  schema: NodeSchema,
-  previous: Record<string, unknown>,
-): Record<string, unknown> {
-  const next = defaultWidgetValues(schema);
-  for (const widget of schema.widgets) {
-    if (
-      previous[widget.name] !== undefined &&
-      widgetValueAllowed(widget, previous[widget.name])
-    ) {
-      next[widget.name] = previous[widget.name];
-    }
-  }
-  return next;
-}
-
-function reconcileEdges(
-  edges: AppEdge[],
-  nodeId: string,
-  schema: NodeSchema,
-): AppEdge[] {
-  const targets = new Set([
-    ...schema.inputs.map((socket) => socket.name),
-    ...schema.widgets.map((widget) => widget.name),
-  ]);
-  const outputs = new Set(schema.outputs.map((socket) => socket.name));
-  return edges.filter((edge) => {
-    if (edge.source === nodeId && !outputs.has(edge.sourceHandle ?? "")) {
-      return false;
-    }
-    if (edge.target === nodeId && !targets.has(edge.targetHandle ?? "")) {
-      return false;
-    }
-    return true;
-  });
 }
 
 interface SizedNode {
@@ -1080,209 +986,6 @@ async function buildSavedWorkflow(
   }
   const root = await buildGraph(saved.nodes, saved.edges, false);
   return { nodes: root.nodes, edges: root.edges, subgraphs };
-}
-
-function reduceExecutionEvent(
-  execution: GraphExecutionState,
-  event: ExecutionEvent,
-): GraphExecutionState {
-  switch (event.type) {
-    case "EXECUTION_STARTED": {
-      const order = Array.isArray(event.data.order)
-        ? (event.data.order as string[])
-        : [];
-      return {
-        ...idleExecution(),
-        status: "running",
-        runId:
-          typeof event.data.run_id === "string"
-            ? event.data.run_id
-            : execution.runId,
-        order,
-      };
-    }
-    case "NODE_STARTED":
-      return {
-        ...execution,
-        nodeStates: {
-          ...execution.nodeStates,
-          [event.node_id]: { status: "running" },
-        },
-      };
-    case "NODE_PROGRESS": {
-      const rawProgress =
-        typeof event.data.progress === "number" && Number.isFinite(event.data.progress)
-          ? event.data.progress
-          : 0;
-      const existing = execution.nodeStates[event.node_id];
-      return {
-        ...execution,
-        nodeStates: {
-          ...execution.nodeStates,
-          [event.node_id]: {
-            ...(existing ?? { status: "running" as const }),
-            status: "running",
-            progress: Math.min(1, Math.max(0, rawProgress)),
-            progressMessage:
-              typeof event.data.message === "string"
-                ? event.data.message
-                : undefined,
-          },
-        },
-      };
-    }
-    case "INSTALLING_DEPS": {
-      const installing = Array.isArray(event.data.dependencies)
-        ? (event.data.dependencies as string[])
-        : [];
-      return {
-        ...execution,
-        nodeStates: {
-          ...execution.nodeStates,
-          [event.node_id]: { status: "running", installing },
-        },
-      };
-    }
-    case "NODE_COMPLETED": {
-      const outputs = (event.data.outputs ?? {}) as Record<
-        string,
-        PreviewValue
-      >;
-      const richOutputs = parseRichOutputs(event.data.rich_outputs);
-      return {
-        ...execution,
-        previews: {
-          ...execution.previews,
-          [event.node_id]: outputs,
-        },
-        richOutputs: {
-          ...execution.richOutputs,
-          [event.node_id]: richOutputs,
-        },
-        cached: {
-          ...execution.cached,
-          [event.node_id]: event.data.cached === true,
-        },
-        nodeStates: {
-          ...execution.nodeStates,
-          [event.node_id]: {
-            status: "completed",
-            cached: event.data.cached === true,
-            outputs,
-            richOutputs,
-          },
-        },
-      };
-    }
-    case "NODE_ERROR": {
-      const richOutputs = parseRichOutputs(event.data.rich_outputs);
-      return {
-        ...execution,
-        richOutputs: {
-          ...execution.richOutputs,
-          [event.node_id]: richOutputs,
-        },
-        nodeStates: {
-          ...execution.nodeStates,
-          [event.node_id]: {
-            status: "error",
-            richOutputs,
-            error: {
-              line:
-                typeof event.data.line === "number"
-                  ? event.data.line
-                  : null,
-              message: String(event.data.message ?? "Node failed"),
-              errorType: String(event.data.error_type ?? "Error"),
-              traceback: String(event.data.traceback ?? ""),
-            },
-          },
-        },
-      };
-    }
-    case "EXECUTION_COMPLETED":
-      return {
-        ...execution,
-        status: "completed",
-        previews: (event.data.previews ?? {}) as Record<
-          string,
-          Record<string, PreviewValue>
-        >,
-        cached: (event.data.cached ?? {}) as Record<string, boolean>,
-      };
-    case "EXECUTION_FAILED":
-      return {
-        ...execution,
-        status: "failed",
-        error: {
-          message: String(event.data.message ?? "Execution failed"),
-          errorType: String(event.data.error_type ?? "Error"),
-          nodeId:
-            typeof event.data.node_id === "string"
-              ? event.data.node_id
-              : null,
-          line:
-            typeof event.data.line === "number"
-              ? event.data.line
-              : null,
-          traceback: String(event.data.traceback ?? ""),
-        },
-      };
-    case "EXECUTION_CANCELLED": {
-      const nodeStates: Record<string, NodeExecutionState> = {};
-      for (const [nodeId, nodeState] of Object.entries(
-        execution.nodeStates,
-      )) {
-        nodeStates[nodeId] =
-          nodeState.status === "running" ? { status: "idle" } : nodeState;
-      }
-      return {
-        ...execution,
-        status: "cancelled",
-        error: null,
-        nodeStates,
-      };
-    }
-    default:
-      return execution;
-  }
-}
-
-function reduceRunStatus(
-  execution: GraphExecutionState,
-  status: BackendRunStatus,
-): GraphExecutionState {
-  if (status.status === "running") {
-    if (execution.status === "running") {
-      return execution;
-    }
-    return {
-      ...idleExecution(),
-      status: "running",
-      runId: status.run_id,
-    };
-  }
-  if (execution.status !== "running" || execution.runId === null) {
-    return execution;
-  }
-  const nodeStates: Record<string, NodeExecutionState> = {};
-  for (const [nodeId, nodeState] of Object.entries(execution.nodeStates)) {
-    nodeStates[nodeId] =
-      nodeState.status === "running" ? { status: "idle" } : nodeState;
-  }
-  return {
-    ...execution,
-    status: "failed",
-    nodeStates,
-    error: {
-      message:
-        "Lost contact with the backend before the run finished. Re-run the workflow to refresh outputs.",
-      errorType: "Disconnected",
-      nodeId: null,
-      line: null,
-      traceback: "",
-    },
-  };
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => {
@@ -4348,186 +4051,15 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         }
       }
       set((state) => {
-        const execution = state.execution;
-        switch (event.type) {
-          case "EXECUTION_STARTED": {
-            const order = Array.isArray(event.data.order)
-              ? (event.data.order as string[])
-              : [];
-            return {
-              execution: {
-                ...idleExecution(),
-                status: "running",
-                runId:
-                  typeof event.data.run_id === "string"
-                    ? event.data.run_id
-                    : execution.runId,
-                order,
-              },
-            };
-          }
-          case "NODE_STARTED":
-            return {
-              execution: {
-                ...execution,
-                nodeStates: {
-                  ...execution.nodeStates,
-                  [event.node_id]: { status: "running" },
-                },
-              },
-            };
-          case "NODE_PROGRESS": {
-            const rawProgress =
-              typeof event.data.progress === "number" &&
-              Number.isFinite(event.data.progress)
-                ? event.data.progress
-                : 0;
-            const existing = execution.nodeStates[event.node_id];
-            return {
-              execution: {
-                ...execution,
-                nodeStates: {
-                  ...execution.nodeStates,
-                  [event.node_id]: {
-                    ...(existing ?? { status: "running" as const }),
-                    status: "running",
-                    progress: Math.min(1, Math.max(0, rawProgress)),
-                    progressMessage:
-                      typeof event.data.message === "string"
-                        ? event.data.message
-                        : undefined,
-                  },
-                },
-              },
-            };
-          }
-          case "INSTALLING_DEPS": {
-            const installing = Array.isArray(event.data.dependencies)
-              ? (event.data.dependencies as string[])
-              : [];
-            return {
-              execution: {
-                ...execution,
-                nodeStates: {
-                  ...execution.nodeStates,
-                  [event.node_id]: { status: "running", installing },
-                },
-              },
-            };
-          }
-          case "NODE_COMPLETED": {
-            const outputs = (event.data.outputs ?? {}) as Record<
-              string,
-              PreviewValue
-            >;
-            const richOutputs = parseRichOutputs(event.data.rich_outputs);
-            const nodes = advanceSeedNodes(state.nodes, event);
-            return {
-              execution: {
-                ...execution,
-                previews: {
-                  ...execution.previews,
-                  [event.node_id]: outputs,
-                },
-                richOutputs: {
-                  ...execution.richOutputs,
-                  [event.node_id]: richOutputs,
-                },
-                cached: {
-                  ...execution.cached,
-                  [event.node_id]: event.data.cached === true,
-                },
-                nodeStates: {
-                  ...execution.nodeStates,
-                  [event.node_id]: {
-                    status: "completed",
-                    cached: event.data.cached === true,
-                    outputs,
-                    richOutputs,
-                  },
-                },
-              },
-              ...(nodes !== state.nodes ? { nodes } : {}),
-            };
-          }
-          case "NODE_ERROR": {
-            const richOutputs = parseRichOutputs(event.data.rich_outputs);
-            return {
-              execution: {
-                ...execution,
-                richOutputs: {
-                  ...execution.richOutputs,
-                  [event.node_id]: richOutputs,
-                },
-                nodeStates: {
-                  ...execution.nodeStates,
-                  [event.node_id]: {
-                    status: "error",
-                    richOutputs,
-                    error: {
-                      line:
-                        typeof event.data.line === "number"
-                          ? event.data.line
-                          : null,
-                      message: String(event.data.message ?? "Node failed"),
-                      errorType: String(event.data.error_type ?? "Error"),
-                      traceback: String(event.data.traceback ?? ""),
-                    },
-                  },
-                },
-              },
-            };
-          }
-          case "EXECUTION_COMPLETED":
-            return {
-              execution: {
-                ...execution,
-                status: "completed",
-                previews: (event.data.previews ?? {}) as Record<
-                  string,
-                  Record<string, PreviewValue>
-                >,
-                cached: (event.data.cached ?? {}) as Record<string, boolean>,
-              },
-            };
-          case "EXECUTION_FAILED":
-            return {
-              execution: {
-                ...execution,
-                status: "failed",
-                error: {
-                  message: String(event.data.message ?? "Execution failed"),
-                  errorType: String(event.data.error_type ?? "Error"),
-                  nodeId:
-                    typeof event.data.node_id === "string"
-                      ? event.data.node_id
-                      : null,
-                  line:
-                    typeof event.data.line === "number"
-                      ? event.data.line
-                      : null,
-                  traceback: String(event.data.traceback ?? ""),
-                },
-              },
-            };
-          case "EXECUTION_CANCELLED": {
-            const nodeStates: Record<string, NodeExecutionState> = {};
-            for (const [nodeId, nodeState] of Object.entries(
-              execution.nodeStates,
-            )) {
-              nodeStates[nodeId] =
-                nodeState.status === "running" ? { status: "idle" } : nodeState;
-            }
-            return {
-              execution: {
-                ...execution,
-                status: "cancelled",
-                error: null,
-                nodeStates,
-              },
-            };
-          }
+        const execution = reduceExecutionEvent(state.execution, event);
+        const nodes = advanceSeedNodes(state.nodes, event);
+        if (execution === state.execution && nodes === state.nodes) {
+          return {};
         }
+        return {
+          ...(execution !== state.execution ? { execution } : {}),
+          ...(nodes !== state.nodes ? { nodes } : {}),
+        };
       });
     },
 
@@ -4551,44 +4083,8 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         }
       }
       set((state) => {
-        const execution = state.execution;
-        if (status.status === "running") {
-          if (execution.status === "running") {
-            return {};
-          }
-          return {
-            execution: {
-              ...idleExecution(),
-              status: "running",
-              runId: status.run_id,
-            },
-          };
-        }
-        if (execution.status !== "running" || execution.runId === null) {
-          return {};
-        }
-        const nodeStates: Record<string, NodeExecutionState> = {};
-        for (const [nodeId, nodeState] of Object.entries(
-          execution.nodeStates,
-        )) {
-          nodeStates[nodeId] =
-            nodeState.status === "running" ? { status: "idle" } : nodeState;
-        }
-        return {
-          execution: {
-            ...execution,
-            status: "failed",
-            nodeStates,
-            error: {
-              message:
-                "Lost contact with the backend before the run finished. Re-run the workflow to refresh outputs.",
-              errorType: "Disconnected",
-              nodeId: null,
-              line: null,
-              traceback: "",
-            },
-          },
-        };
+        const execution = reduceRunStatus(state.execution, status);
+        return execution === state.execution ? {} : { execution };
       });
     },
 

@@ -27,7 +27,8 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - run: uv sync --frozen
       - run: uv run ruff check .
-      - run: uv run pytest
+      - run: uv run basedpyright
+      - run: uv run pytest --cov=app --cov-report=term-missing
 
   frontend:
     name: Frontend

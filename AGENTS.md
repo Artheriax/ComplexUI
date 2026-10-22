@@ -166,7 +166,9 @@ Run targeted tests while developing and the full gate before declaring work done
 | Area | Command (working directory) |
 | --- | --- |
 | Backend lint | `uv run ruff check .` (`backend/`) |
+| Backend typecheck | `uv run basedpyright` (`backend/`) |
 | Backend tests | `uv run pytest` (`backend/`) |
+| Backend coverage | `uv run pytest --cov=app --cov-report=term-missing` (`backend/`) |
 | Frontend lint | `npm run lint` (`frontend/`) |
 | Frontend typecheck | `npm run typecheck` (`frontend/`) |
 | Frontend tests | `npm test` (`frontend/`) |
@@ -211,7 +213,8 @@ Run targeted tests while developing and the full gate before declaring work done
 
 - Behavior is implemented without bypassing security, path, size or retention
   rules.
-- Backend Ruff and pytest pass; frontend lint, typecheck, tests and build pass.
+- Backend Ruff, basedpyright and pytest with coverage pass; frontend lint,
+  typecheck, tests and build pass.
 - Relevant Playwright/ML-overlay checks pass or are explicitly reported as not
   run.
 - Contracts, save format, docs and regression tests are updated together.

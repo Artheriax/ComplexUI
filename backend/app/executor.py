@@ -1004,8 +1004,11 @@ def _sigmas_preview(value: Any) -> dict[str, Any]:
         if isinstance(tensor, (list, tuple)):
             values = [float(item) for item in tensor]
         else:
-            raw = tensor.detach().cpu().flatten().tolist()
-            values = [float(item) for item in raw]
+            detach = getattr(tensor, "detach", None)
+            if callable(detach):
+                detached: Any = detach()
+                raw = detached.cpu().flatten().tolist()
+                values = [float(item) for item in raw]
     except Exception:
         values = []
     sampled = values

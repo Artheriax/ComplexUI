@@ -127,7 +127,7 @@ from `backend/`):
 | `backend` | backend only |
 | `frontend` | Vite dev server only |
 | `prod` | builds the frontend and serves everything from the backend on one port |
-| `check` | full verification gate: Ruff, backend pytest, ESLint, frontend typecheck, vitest, build |
+| `check` | full verification gate: Ruff, basedpyright, backend pytest with coverage, ESLint, frontend typecheck, vitest, build |
 
 Browser E2E is a separate gate: install Chromium once with
 `cd frontend && npx playwright install chromium`, then run `npm run e2e`.

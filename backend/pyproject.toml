@@ -22,6 +22,16 @@ dependencies = [
 pythonpath = ["."]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["app"]
+omit = ["app/templates/*"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 80
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -34,6 +44,7 @@ ignore = ["E501"]
 [dependency-groups]
 dev = [
     "accelerate>=1.0",
+    "basedpyright>=1.40",
     "diffusers>=0.31",
     "fastexcel>=0.21.0",
     "httpx2>=2.13.1",
@@ -49,6 +60,7 @@ dev = [
     "pillow>=11.0",
     "plotly>=7.1.0",
     "pytest>=9.1.1",
+    "pytest-cov>=7.0",
     "pywavelets>=1.6",
     "ruff>=0.17.1",
     "safetensors>=0.4",
