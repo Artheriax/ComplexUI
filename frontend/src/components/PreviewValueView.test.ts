@@ -151,7 +151,7 @@ test("renders the sigma schedule and advanced sampling contracts", () => {
   const noise: NoisePreview = {
     kind: "noise",
     noise_type: "fractal",
-    seed: 42,
+    noise_seed: 42,
     alpha: 1,
     k: 1,
     scale: 0.1,
@@ -177,7 +177,7 @@ test("renders the sigma schedule and advanced sampling contracts", () => {
 
   rerender(createElement(PreviewValueView, { value: noise }));
   expect(screen.getByText("fractal")).toBeTruthy();
-  expect(screen.getByText(/seed 42/)).toBeTruthy();
+  expect(screen.getByText(/noise seed 42/)).toBeTruthy();
 
   rerender(createElement(PreviewValueView, { value: guider }));
   expect(screen.getByText("CFG 7")).toBeTruthy();

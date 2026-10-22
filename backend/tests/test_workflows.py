@@ -27,6 +27,8 @@ EXPECTED_WORKFLOWS = {
     "imagegen_sd15_advanced",
     "imagegen_sd15_dreamshaper",
     "imagegen_sd15_img2img",
+    "imagegen_sd15_ksampler_advanced",
+    "imagegen_sd15_sampler_custom",
     "imagegen_sdxl_lightning",
     "iris_knn_classification",
     "messy_data_cleaning_pipeline",
@@ -66,6 +68,8 @@ GENERATION_WORKFLOWS = {
     "imagegen_sd15_advanced",
     "imagegen_sd15_dreamshaper",
     "imagegen_sd15_img2img",
+    "imagegen_sd15_ksampler_advanced",
+    "imagegen_sd15_sampler_custom",
     "imagegen_sdxl_lightning",
 }
 

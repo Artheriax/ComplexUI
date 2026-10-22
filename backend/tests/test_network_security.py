@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -169,6 +171,84 @@ def test_request_size_override_uses_longest_matching_prefix() -> None:
             == 413
         )
         assert limited_client.post("/uploader", content=b"x" * 64).status_code == 413
+
+
+def _run_body_limit(
+    path: str,
+    messages: list[dict[str, Any]],
+    *,
+    max_bytes: int,
+    overrides: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
+    seen: list[dict[str, Any]] = []
+
+    async def echo(scope: Any, receive: Any, send: Any) -> None:
+        body = b""
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": body})
+
+    middleware = RequestSizeLimitMiddleware(
+        echo, max_bytes=max_bytes, overrides=overrides
+    )
+    scope = {"type": "http", "path": path, "headers": []}
+
+    async def receive() -> dict[str, Any]:
+        return messages.pop(0)
+
+    async def send(message: dict[str, Any]) -> None:
+        seen.append(message)
+
+    asyncio.run(middleware(scope, receive, send))
+    return seen
+
+
+def test_chunked_body_over_limit_is_rejected() -> None:
+    sent = _run_body_limit(
+        "/api/execute",
+        [
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"def", "more_body": False},
+        ],
+        max_bytes=5,
+    )
+
+    assert sent[0]["status"] == 413
+
+
+def test_chunked_body_under_limit_is_replayed() -> None:
+    sent = _run_body_limit(
+        "/api/execute",
+        [
+            {"type": "http.request", "body": b"abc", "more_body": True},
+            {"type": "http.request", "body": b"de", "more_body": False},
+        ],
+        max_bytes=8,
+    )
+
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"abcde"
+
+
+def test_chunked_upload_path_keeps_streaming_above_json_limit() -> None:
+    sent = _run_body_limit(
+        "/api/uploads",
+        [
+            {"type": "http.request", "body": b"abcdef", "more_body": True},
+            {"type": "http.request", "body": b"ghij", "more_body": False},
+        ],
+        max_bytes=4,
+        overrides={"/api/uploads": 1024},
+    )
+
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"abcdefghij"
 
 
 def test_parse_code_limit(client: TestClient) -> None:

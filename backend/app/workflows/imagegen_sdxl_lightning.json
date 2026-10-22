@@ -24,9 +24,7 @@
         "y": 220
       },
       "widget_values": {
-        "local_model": "models/diffusion/dreamshaperXL_lightningDPMSDE.safetensors",
-        "device": "auto",
-        "dtype": "auto"
+        "checkpoint_name": "models/diffusion/dreamshaperXL_lightningDPMSDE.safetensors"
       }
     },
     {
@@ -71,11 +69,11 @@
       },
       "widget_values": {
         "seed": 42,
-        "control_after_generate": "randomize",
         "steps": 6,
         "cfg": 2,
-        "sampler": "dpmpp_sde",
-        "scheduler": "karras"
+        "scheduler": "karras",
+        "sampler_name": "dpmpp_sde",
+        "control_after_generated": "randomize"
       }
     },
     {
@@ -86,7 +84,7 @@
         "y": 160
       },
       "widget_values": {
-        "tiling": false
+        "tiled": false
       }
     },
     {
@@ -113,12 +111,6 @@
       "source_handle": "height",
       "target_node_id": "latent",
       "target_handle": "height"
-    },
-    {
-      "source_node_id": "checkpoint",
-      "source_handle": "model",
-      "target_node_id": "latent",
-      "target_handle": "checkpoint"
     },
     {
       "source_node_id": "checkpoint",
@@ -160,7 +152,7 @@
       "source_node_id": "sampler",
       "source_handle": "latent",
       "target_node_id": "decode",
-      "target_handle": "latent"
+      "target_handle": "samples"
     },
     {
       "source_node_id": "checkpoint",
@@ -170,7 +162,7 @@
     },
     {
       "source_node_id": "decode",
-      "source_handle": "images",
+      "source_handle": "image",
       "target_node_id": "save",
       "target_handle": "media"
     }

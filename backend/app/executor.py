@@ -1045,7 +1045,7 @@ def _noise_preview(value: Any) -> dict[str, Any]:
     return {
         "kind": "noise",
         "noise_type": str(value.get("noise_type", "")),
-        "seed": value.get("seed"),
+        "noise_seed": value.get("noise_seed"),
         "alpha": value.get("alpha", 1.0),
         "k": value.get("k", 1.0),
         "scale": value.get("scale", 0.1),

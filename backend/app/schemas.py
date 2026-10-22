@@ -155,6 +155,7 @@ def widget_socket_type(raw: str) -> SocketType:
     if cleaned in {
         "str",
         "string",
+        "prompt",
         "file",
         "path",
         "folder",

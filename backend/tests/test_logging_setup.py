@@ -17,8 +17,10 @@ from app.logging_setup import (
     DailyTextFileHandler,
     FileFormatter,
     JsonFormatter,
+    PollingAccessFilter,
     _should_color,
     configure_logging,
+    install_access_log_filter,
     resolve_log_dir,
 )
 
@@ -33,6 +35,37 @@ def _record(
     level: int = logging.INFO, message: str = "hello", name: str = "complexui.test"
 ) -> logging.LogRecord:
     return logging.LogRecord(name, level, __file__, 1, message, None, None)
+
+
+def test_polling_access_filter_drops_successful_polls_only() -> None:
+    access_filter = PollingAccessFilter()
+    record = _record(name="uvicorn.access")
+    record.args = ("127.0.0.1", "GET", "/api/system/metrics", "HTTP/1.1", 200)
+    assert not access_filter.filter(record)
+
+    record.args = ("127.0.0.1", "GET", "/api/system/metrics", "HTTP/1.1", 500)
+    assert access_filter.filter(record)
+
+    record.args = ("127.0.0.1", "POST", "/api/system/metrics", "HTTP/1.1", 200)
+    assert access_filter.filter(record)
+
+    record.args = ("127.0.0.1", "GET", "/api/execute", "HTTP/1.1", 200)
+    assert access_filter.filter(record)
+
+
+def test_install_access_log_filter_is_idempotent() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    install_access_log_filter()
+    install_access_log_filter()
+    try:
+        installed = [
+            item for item in access_logger.filters if isinstance(item, PollingAccessFilter)
+        ]
+        assert len(installed) == 1
+    finally:
+        for item in list(access_logger.filters):
+            if isinstance(item, PollingAccessFilter):
+                access_logger.removeFilter(item)
 
 
 def test_formatter_plain_output() -> None:

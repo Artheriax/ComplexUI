@@ -10,6 +10,7 @@ import type {
   SubgraphDefinition,
 } from "../types/graph";
 import {
+  SOCKET_TYPE_NAMES,
   SUBGRAPH_INPUT_NODE_ID,
   SUBGRAPH_OUTPUT_NODE_ID,
 } from "../types/graph";
@@ -209,6 +210,44 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
     ]);
     expect(reparsed.nodes[0]?.isSubgraph).toBe(true);
     expect(reparsed.nodes[0]?.subgraphId).toBe("def-1");
+  });
+
+  it("round-trips every socket type on subgraph boundary ports", () => {
+    const types = [...SOCKET_TYPE_NAMES];
+    const definition: SubgraphDefinition = {
+      id: "all-types",
+      name: "All Types",
+      inputs: types.map((data_type, index) => ({
+        name: `input_${index}`,
+        data_type,
+      })),
+      outputs: types.map((data_type, index) => ({
+        name: `output_${index}`,
+        data_type,
+      })),
+      nodes: [makeNode("inside")],
+      edges: [],
+      inputPosition: { x: -260, y: 0 },
+      outputPosition: { x: 300, y: 0 },
+    };
+    const instance = createSubgraphInstanceNode("instance", definition, {
+      x: 100,
+      y: 100,
+    });
+    const saved = serialiseWorkflow(
+      [instance],
+      [],
+      "All Types",
+      { "all-types": definition },
+    );
+    const reparsed = parseWorkflowJson(JSON.stringify(saved));
+
+    expect(reparsed.subgraphs?.["all-types"]?.inputs).toEqual(
+      definition.inputs,
+    );
+    expect(reparsed.subgraphs?.["all-types"]?.outputs).toEqual(
+      definition.outputs,
+    );
   });
 
   it("rejects missing, cyclic and malformed subgraph references", () => {

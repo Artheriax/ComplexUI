@@ -4,7 +4,7 @@
 import torch
 
 clip: CLIP
-text: str = ""
+text: Prompt = ""
 
 if not isinstance(clip, dict):
     raise TypeError("clip must be a CLIP wrapper")
@@ -28,7 +28,8 @@ def encode_tokens(encoder, current_tokenizer, prompt: str):
     input_ids = tokens.input_ids.to(device)
     with torch.inference_mode():
         output = encoder(input_ids, output_hidden_states=True)
-    return output.hidden_states[-2], output
+    last_hidden_state = getattr(output, "last_hidden_state", output[0])
+    return last_hidden_state, output
 
 
 with torch.inference_mode():

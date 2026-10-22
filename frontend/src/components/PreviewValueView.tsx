@@ -508,7 +508,9 @@ export function PreviewValueView({
       <div className="text-[10px] text-zinc-300">
         <div className="text-lime-300">{value.noise_type}</div>
         <div className="flex flex-wrap gap-x-2 text-zinc-500">
-          {value.seed !== null && <span>seed {value.seed}</span>}
+          {value.noise_seed !== null && (
+            <span>noise seed {value.noise_seed}</span>
+          )}
           {value.noise_type === "fractal" && (
             <>
               <span>alpha {formatNumber(value.alpha)}</span>

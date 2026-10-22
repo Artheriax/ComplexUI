@@ -7,10 +7,14 @@ from typing import Literal
 import torch
 from diffusers import UNet2DConditionModel
 
-component_path: ModelPath = ""
-architecture: Literal["auto", "sd15", "sdxl"] = "auto"
-device: Literal["auto", "cpu", "cuda"] = "auto"
-dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+unet_name: ModelSelector = ModelSelector(type="unet")
+weight_dtype: Literal[
+    "default",
+    "fp8_e4m3fn",
+    "fp8",
+    "e4m3fn_last",
+    "fp8_e5m2",
+] = "default"
 
 DEFAULT_SCHEDULER_CONFIG = {
     "num_train_timesteps": 1000,
@@ -34,25 +38,22 @@ def _detect_arch(config) -> str:
     return "sd15"
 
 
-if not component_path:
-    raise ValueError("Select a standalone UNet path")
-path = Path(component_path)
+if not unet_name:
+    raise ValueError("Select a standalone UNet in models/unet")
+path = Path(unet_name)
 if not path.exists():
     raise FileNotFoundError(f"Diffusion model does not exist: {path}")
-if device == "cuda" and not torch.cuda.is_available():
-    raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-if device == "auto":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-if dtype == "auto":
+device = "cuda" if torch.cuda.is_available() else "cpu"
+if weight_dtype == "default":
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
-elif dtype == "float16":
-    torch_dtype = torch.float16
-elif dtype == "bfloat16":
-    torch_dtype = torch.bfloat16
+elif weight_dtype in {"fp8_e4m3fn", "fp8", "e4m3fn_last"}:
+    torch_dtype = torch.float8_e4m3fn
+elif weight_dtype == "fp8_e5m2":
+    torch_dtype = torch.float8_e5m2
 else:
-    torch_dtype = torch.float32
-if device == "cpu" and torch_dtype == torch.float16:
-    torch_dtype = torch.float32
+    raise ValueError(f"Unsupported weight_dtype: {weight_dtype}")
+if device == "cpu" and str(torch_dtype).startswith("torch.float8"):
+    raise ValueError("FP8 UNet weights require CUDA")
 
 report = globals().get("report_progress")
 if callable(report):
@@ -77,12 +78,7 @@ else:
 unet.to(device)
 unet.eval()
 
-detected = _detect_arch(unet.config)
-if architecture != "auto" and architecture != detected:
-    raise ValueError(
-        f"Selected architecture '{architecture}' does not match UNet config '{detected}'"
-    )
-arch = architecture if architecture != "auto" else detected
+arch = _detect_arch(unet.config)
 if arch == "sdxl":
     recommended = {
         "steps": 25,

@@ -68,6 +68,7 @@ from .exporter import (
 from .logging_setup import (
     FileFormatter,
     configure_logging,
+    install_access_log_filter,
     resolve_log_dir,
 )
 from .models import InvalidModelPath, get_model_store
@@ -160,6 +161,7 @@ configure_logging(
     os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"),
     log_dir=_LOG_DIR,
 )
+install_access_log_filter()
 logger = logging.getLogger("complexui.server")
 
 _SEND_TIMEOUT_SECONDS = 2.0
@@ -303,10 +305,18 @@ def _log_event(event: ExecutionEvent, *, target: logging.Logger | None = None) -
             extra=extra,
         )
     elif event.type is EventType.NODE_PROGRESS:
-        log.debug(
-            "  [prog ] %s %s",
+        progress = data.get("progress")
+        percent = (
+            f" ({round(float(progress) * 100)}%)"
+            if isinstance(progress, (int, float))
+            else ""
+        )
+        message = str(data.get("message") or "").strip()
+        log.info(
+            "  [progress] %s %s%s",
             event.node_id,
-            data.get("message", ""),
+            message,
+            percent,
             extra=extra,
         )
     elif event.type is EventType.NODE_COMPLETED:

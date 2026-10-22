@@ -118,7 +118,7 @@ body {
   stroke: #f4f4f5 !important;
 }
 
-:::-webkit-scrollbar {
+::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
@@ -130,6 +130,11 @@ body {
 ::-webkit-scrollbar-thumb {
   background: #3f3f46;
   border-radius: 4px;
+}
+
+textarea {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
 }
 
 .rich-html {

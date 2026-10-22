@@ -17,7 +17,10 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -28,6 +31,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
+from typing import IO
 
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
@@ -47,11 +51,94 @@ HEALTH_TIMEOUT_SECONDS = 45.0
 POLL_INTERVAL_SECONDS = 0.2
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _enable_windows_ansi() -> bool:
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:
+        return False
+
+
+class ConsoleRenderer:
+    """Write pumped logs while keeping one progress line at the bottom."""
+
+    def __init__(
+        self,
+        stream: IO[str] | None = None,
+        *,
+        enabled: bool | None = None,
+        ansi: bool | None = None,
+    ) -> None:
+        self.stream = stream if stream is not None else sys.stdout
+        is_tty = bool(getattr(self.stream, "isatty", lambda: False)())
+        self.enabled = is_tty if enabled is None else enabled
+        self.ansi = (
+            self.enabled
+            and (_enable_windows_ansi() if ansi is None else ansi)
+        )
+        self._lock = threading.RLock()
+        self._progress: str | None = None
+        self._drawn_width = 0
+
+    def _erase(self) -> None:
+        if self._drawn_width == 0:
+            return
+        if self.ansi:
+            self.stream.write("\r\x1b[2K")
+        else:
+            self.stream.write("\r" + (" " * self._drawn_width) + "\r")
+        self._drawn_width = 0
+
+    def _draw(self) -> None:
+        if not self.enabled or not self._progress:
+            return
+        self.stream.write(self._progress)
+        self.stream.flush()
+        self._drawn_width = len(_ANSI_RE.sub("", self._progress))
+
+    def write(self, text: str) -> None:
+        with self._lock:
+            self._erase()
+            self.stream.write(text)
+            if not text.endswith("\n"):
+                self.stream.write("\n")
+            self.stream.flush()
+            self._draw()
+
+    def update_progress(self, text: str) -> None:
+        with self._lock:
+            self._progress = text or None
+            if not self.enabled:
+                if text:
+                    self.stream.write(text + "\n")
+                    self.stream.flush()
+                return
+            self._erase()
+            self._draw()
+
+    def clear_progress(self) -> None:
+        with self._lock:
+            self._erase()
+            self._progress = None
+
+
 class Theme:
     """Tiny ANSI helper honoring --no-color / NO_COLOR / tty state."""
 
     def __init__(self, enabled: bool) -> None:
         self.enabled = enabled
+        self.console: ConsoleRenderer | None = None
 
     def paint(self, text: str, color: str) -> str:
         return f"{color}{text}{RESET}" if self.enabled else text
@@ -60,17 +147,29 @@ class Theme:
         color, label = TAGS[name]
         return self.paint(label, color)
 
+    def _write(self, text: str) -> None:
+        if self.console is not None:
+            self.console.write(text + "\n")
+        else:
+            print(text)
+
     def info(self, message: str) -> None:
-        print(f"{self.paint('[complexui]', BOLD)} {message}")
+        self._write(f"{self.paint('[complexui]', BOLD)} {message}")
 
     def warn(self, message: str) -> None:
-        print(f"{self.paint('[complexui]', BOLD)} {self.paint(message, YELLOW)}")
+        self._write(
+            f"{self.paint('[complexui]', BOLD)} {self.paint(message, YELLOW)}"
+        )
 
     def fail(self, message: str) -> None:
-        print(f"{self.paint('[complexui]', BOLD)} {self.paint(message, RED)}")
+        self._write(
+            f"{self.paint('[complexui]', BOLD)} {self.paint(message, RED)}"
+        )
 
     def ok(self, message: str) -> None:
-        print(f"{self.paint('[complexui]', BOLD)} {self.paint(message, GREEN)}")
+        self._write(
+            f"{self.paint('[complexui]', BOLD)} {self.paint(message, GREEN)}"
+        )
 
 
 def _resolve_color(explicit_off: bool) -> bool:
@@ -242,6 +341,7 @@ def spawn(
     theme: Theme,
     *,
     prefix: bool = True,
+    console: ConsoleRenderer | None = None,
 ):
     kwargs: dict[str, object] = {}
     if os.name != "nt":
@@ -263,8 +363,20 @@ def spawn(
     def pump() -> None:
         assert process.stdout is not None
         for line in process.stdout:
-            sys.stdout.write(f"{tag} {line}" if prefix else line)
-            sys.stdout.flush()
+            text = f"{tag} {line}" if prefix else line
+            if console is None:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                continue
+            if "[progress]" in text:
+                console.update_progress(text.rstrip("\n"))
+                continue
+            if any(
+                marker in text
+                for marker in ("[start]", "[done ]", "[error]", "run ")
+            ):
+                console.clear_progress()
+            console.write(text)
 
     threading.Thread(target=pump, name=f"{name}-pump", daemon=True).start()
     theme.info(f"started {name}: {' '.join(command)}")
@@ -380,6 +492,159 @@ def probe_host(host: str) -> str:
     return host
 
 
+def _run_version(command: list[str]) -> str | None:
+    executable = shutil.which(command[0])
+    if executable is None:
+        return None
+    try:
+        result = subprocess.run(
+            [executable, *command[1:]],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = result.stdout.strip().splitlines()
+    return output[0].strip() if output else None
+
+
+def _git_value(*args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _fetch_json(url: str) -> dict[str, object] | None:
+    try:
+        with urllib.request.urlopen(url, timeout=2.0) as response:
+            payload = json.load(response)
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def print_banner(
+    args: argparse.Namespace,
+    theme: Theme,
+    health: dict[str, object] | None,
+    metrics: dict[str, object] | None,
+) -> None:
+    health = health or {}
+    branch = _git_value("rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+    commit = _git_value("rev-parse", "--short", "HEAD") or "unknown"
+    dirty = _git_value("status", "--porcelain") is not None
+    remote = _git_value("remote", "get-url", "origin") or "no remote"
+    version = str(health.get("version", "0.1.0"))
+    accelerator = str(health.get("effective_accelerator", args.accelerator))
+    workspace = Path(
+        os.environ.get(
+            "COMPLEXUI_WORKSPACE", str(BACKEND_DIR / "workspace")
+        )
+    ).expanduser()
+    inputs = Path(
+        os.environ.get("COMPLEXUI_INPUT_DIR", str(REPO_ROOT / "inputs"))
+    ).expanduser()
+    outputs = Path(
+        os.environ.get("COMPLEXUI_OUTPUT_DIR", str(REPO_ROOT / "outputs"))
+    ).expanduser()
+    models = str(health.get("models_root", REPO_ROOT / "models"))
+    if args.no_log_file:
+        log_dir: Path | None = None
+    elif args.log_dir:
+        log_dir = Path(args.log_dir).expanduser()
+    else:
+        configured_logs = os.environ.get("COMPLEXUI_LOG_DIR")
+        log_dir = (
+            Path(configured_logs).expanduser()
+            if configured_logs and configured_logs != "0"
+            else workspace / "logs"
+        )
+    limits = health.get("limits")
+    limits = limits if isinstance(limits, dict) else {}
+    torch = health.get("torch")
+    gpus = metrics.get("gpus") if isinstance(metrics, dict) else None
+    gpu_text = ""
+    if isinstance(gpus, list) and gpus:
+        parts = []
+        for gpu in gpus[:2]:
+            if not isinstance(gpu, dict):
+                continue
+            name = str(gpu.get("name", "GPU"))
+            vram = gpu.get("vram_total_bytes")
+            if isinstance(vram, (int, float)) and vram > 0:
+                name += f" ({vram / (1024 * 1024):.0f} MiB)"
+            parts.append(name)
+        gpu_text = ", ".join(parts)
+    if not gpu_text:
+        gpu_text = "none detected"
+    python_version = platform.python_version()
+    uv = _run_version(["uv", "--version"]) or "unavailable"
+    node = _run_version(["node", "--version"]) or "unavailable"
+    npm = _run_version(["npm", "--version"]) or "unavailable"
+    url_host = probe_host(args.host)
+    backend_url = f"http://{url_host}:{args.backend_port}"
+    ui_url = (
+        f"http://localhost:{args.frontend_port}"
+        if args.mode == "dev"
+        else backend_url
+    )
+    divider = theme.paint("-" * 78, DIM)
+    print(divider)
+    print(
+        f"{theme.paint('ComplexUI', BOLD + CYAN)} {version}  "
+        f"{theme.paint('mode', DIM)}={args.mode}  "
+        f"{theme.paint('git', DIM)}={branch}@{commit}"
+        f"{' (dirty)' if dirty else ''}"
+    )
+    print(f"{theme.paint('git remote', DIM)} {remote}")
+    print(
+        f"{theme.paint('runtime', DIM)} python {python_version} · {uv} · "
+        f"node {node} · npm {npm}"
+    )
+    print(
+        f"{theme.paint('platform', DIM)} {platform.platform()} · "
+        f"{theme.paint('venv', DIM)} {sys.prefix}"
+    )
+    print(
+        f"{theme.paint('urls', DIM)} backend {backend_url} · UI {ui_url}"
+    )
+    print(
+        f"{theme.paint('paths', DIM)} workspace {workspace} · "
+        f"inputs {inputs} · outputs {outputs} · models {models}"
+    )
+    print(
+        f"{theme.paint('hardware', DIM)} accelerator {accelerator} · "
+        f"torch {torch or 'not installed'} · CUDA "
+        f"{'yes' if health.get('torch_cuda') else 'no'} · GPU {gpu_text}"
+    )
+    print(
+        f"{theme.paint('limits', DIM)} node "
+        f"{limits.get('node_timeout_seconds', '?')}s · run "
+        f"{limits.get('run_timeout_seconds', '?')}s · memory "
+        f"{limits.get('max_memory_mb', '?')} MiB"
+    )
+    print(
+        f"{theme.paint('logs', DIM)} console {args.log_level.upper()}/"
+        f"{args.log_format} · files "
+        f"{log_dir if log_dir is not None else 'disabled'} · runs "
+        f"{log_dir / 'runs' if log_dir is not None else 'disabled'}"
+    )
+    print(divider)
+
+
 def launch_servers(
     args: argparse.Namespace,
     theme: Theme,
@@ -390,6 +655,8 @@ def launch_servers(
     serve_dist: bool,
 ) -> int:
     processes: dict[str, subprocess.Popen] = {}
+    console = ConsoleRenderer()
+    theme.console = console
     theme.info(
         f"mode={'dev' if with_frontend else ('prod' if serve_dist else 'backend')} "
         f"backend=http://{args.host}:{args.backend_port} "
@@ -403,6 +670,7 @@ def launch_servers(
             backend_environment(args, serve_dist=serve_dist),
             theme,
             prefix=args.log_format != "json",
+            console=console,
         )
         if with_frontend:
             processes["frontend"] = spawn(
@@ -411,6 +679,7 @@ def launch_servers(
                 FRONTEND_DIR,
                 os.environ.copy(),
                 theme,
+                console=console,
             )
 
         health_url = f"http://{probe_host(args.host)}:{args.backend_port}/api/health"
@@ -427,6 +696,11 @@ def launch_servers(
                 return 1
             theme.ok(f"frontend ready at {ui_url}")
 
+        health = _fetch_json(health_url)
+        metrics = _fetch_json(
+            f"http://{probe_host(args.host)}:{args.backend_port}/api/system/metrics"
+        )
+        print_banner(args, theme, health, metrics)
         theme.info(f"UI: {theme.paint(ui_url, BOLD)}  (Ctrl+C to stop)")
         if args.open:
             webbrowser.open(ui_url)
@@ -469,6 +743,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_check(args, theme, npm)
 
     if args.mode == "frontend":
+        console = ConsoleRenderer()
+        theme.console = console
         theme.info(f"frontend-only mode on http://localhost:{args.frontend_port}")
         warn_port_mismatches(args, theme)
         processes = {
@@ -478,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
                 FRONTEND_DIR,
                 os.environ.copy(),
                 theme,
+                console=console,
             )
         }
         try:

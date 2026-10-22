@@ -61,9 +61,9 @@ through NVML. Switching between CPU and CUDA torch builds reinstalls the torch
 family, and large wheel downloads use `COMPLEXUI_INSTALL_TIMEOUT_SECONDS`
 (default 1200).
 
-The bundled catalog ships **84 node templates** (74 production nodes across 10
-categories plus 10 example/synthetic helpers that stay hidden and power the
-bundled workflows) and **21 ready-to-run example workflows**. Browser-style
+The bundled catalog ships **104 node templates** (94 production nodes across
+11 categories plus 10 example/synthetic helpers that stay hidden and power the
+bundled workflows) and **27 ready-to-run example workflows**. Browser-style
 workflow tabs keep multiple graphs open at once, each with its own undo history,
 execution output and project identity; open tabs are restored after a reload.
 The left rail expands **Nodes**, **Workflows**, **Templates**, and **Assets** drawers: drag a template, open a bundled workflow or saved
@@ -151,7 +151,11 @@ protection: the API has no authentication and executes Python code. Use
 
 Console logs are colorized and prefixed `[backend]` / `[frontend]`; every step —
 node starts, cache hits, timings, dependency installs, cancellations — is
-narrated in the terminal. Set `COMPLEXUI_LOG_LEVEL=DEBUG` for more detail,
+narrated in the terminal. Startup prints a diagnostic banner with git/runtime
+versions, paths, hardware and active log destinations. During a run, node
+progress is shown as one updating line at the bottom of the console; successful
+polling requests for `/api/system/metrics`, `/api/status` and `/api/health` are
+filtered from the access log. Set `COMPLEXUI_LOG_LEVEL=DEBUG` for more detail,
 `COMPLEXUI_LOG_FORMAT=json` (or `--log-format json`) for structured application
 logs, or `NO_COLOR=1` / `--no-color` for plain output.
 

@@ -98,7 +98,7 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   window keeps its own graph, viewport, undo history, execution state and
   project identity. Open windows are restored from localStorage, and only one
   backend run is allowed at a time (the running tab shows a spinner).
-- **Templates drawer**: 21 ready-to-run examples with collapsible categories;
+- **Templates drawer**: 27 ready-to-run examples with collapsible categories;
   opening one adds a fully wired graph (nodes, widgets and positions) in a new
   window.
 - **Assets drawer**: **Files** tab uploads CSV, TSV, Parquet, Excel, NDJSON,

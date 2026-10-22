@@ -11,41 +11,28 @@ from transformers import (
     CLIPTokenizer,
 )
 
-clip_path: ModelPath = ""
-architecture: Literal["auto", "sd15", "sdxl"] = "auto"
-device: Literal["auto", "cpu", "cuda"] = "auto"
-dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+clip_name: ModelPath = ""
+type: Literal["auto", "sd15", "sdxl"] = "auto"
+device: Literal["default", "cpu"] = "default"
 
-if not clip_path:
+if not clip_name:
     raise ValueError("Select a CLIP component folder")
-root = Path(clip_path)
+root = Path(clip_name)
 if not root.is_dir():
     raise FileNotFoundError(f"CLIP folder does not exist: {root}")
-if device == "cuda" and not torch.cuda.is_available():
-    raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-if device == "auto":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-if dtype == "auto":
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-elif dtype == "float16":
-    torch_dtype = torch.float16
-elif dtype == "bfloat16":
-    torch_dtype = torch.bfloat16
-else:
-    torch_dtype = torch.float32
-if device == "cpu" and torch_dtype == torch.float16:
-    torch_dtype = torch.float32
+device = "cpu" if device == "cpu" else ("cuda" if torch.cuda.is_available() else "cpu")
+torch_dtype = torch.float16 if device == "cuda" else torch.float32
 
 text_dir = root / "text_encoder" if (root / "text_encoder").is_dir() else root
 tokenizer_dir = root / "tokenizer" if (root / "tokenizer").is_dir() else root
 text2_dir = root / "text_encoder_2"
 tokenizer2_dir = root / "tokenizer_2"
 detected = "sdxl" if text2_dir.is_dir() else "sd15"
-if architecture != "auto" and architecture != detected:
+if type != "auto" and type != detected:
     raise ValueError(
-        f"Selected architecture '{architecture}' does not match CLIP folder '{detected}'"
+        f"Selected base model '{type}' does not match CLIP folder '{detected}'"
     )
-arch = architecture if architecture != "auto" else detected
+arch = type if type != "auto" else detected
 if arch == "sdxl" and not tokenizer2_dir.is_dir():
     raise ValueError("SDXL CLIP folders require tokenizer_2")
 

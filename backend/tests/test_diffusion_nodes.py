@@ -35,7 +35,9 @@ class _FakeUNet(torch.nn.Module):
         self.calls.append(
             {
                 "sample": sample.shape,
+                "sample_std": float(sample.std()),
                 "timestep": timestep.shape,
+                "timestep_value": float(timestep.flatten()[0]),
                 "encoder_hidden_states": encoder_hidden_states.shape,
                 "added_cond_kwargs": added_cond_kwargs,
             }
@@ -100,6 +102,35 @@ def _latent(width: int = 32, height: int = 32) -> dict:
     }
 
 
+class _FakeTokenizer:
+    model_max_length = 77
+
+    def __call__(self, text, **_kwargs):
+        return SimpleNamespace(
+            input_ids=torch.zeros(1, self.model_max_length, dtype=torch.long)
+        )
+
+
+class _FakeEncoderOutput:
+    def __init__(self, last_hidden_state, pooled=None):
+        self.last_hidden_state = last_hidden_state
+        self.hidden_states = (torch.zeros_like(last_hidden_state), last_hidden_state)
+        self._pooled = last_hidden_state if pooled is None else pooled
+
+    def __getitem__(self, index):
+        if index != 0:
+            raise IndexError(index)
+        return self._pooled
+
+
+class _FakeTextEncoder:
+    def __init__(self, last_hidden_state, pooled=None):
+        self.output = _FakeEncoderOutput(last_hidden_state, pooled)
+
+    def __call__(self, input_ids, output_hidden_states=True):
+        return self.output
+
+
 def test_resolution_validates_shared_dimensions() -> None:
     resolution = _func("resolution")
     assert resolution(width=512, height=768) == (512, 768)
@@ -109,10 +140,45 @@ def test_resolution_validates_shared_dimensions() -> None:
         resolution(width=4, height=768)
 
 
+def test_resolution_computes_aspect_ratios_and_megapixels() -> None:
+    resolution = _func("resolution")
+    assert resolution(
+        width=512,
+        height=512,
+        aspect_ratio="16:9",
+        orientation="landscape",
+        megapixels=1.0,
+        divisible_by=64,
+    ) == (1344, 768)
+    assert resolution(
+        width=512,
+        height=512,
+        aspect_ratio="2:1",
+        orientation="portrait",
+        megapixels=1.0,
+        divisible_by=8,
+    ) == (704, 1416)
+    assert resolution(
+        width=768,
+        height=768,
+        aspect_ratio="4:3",
+        orientation="landscape",
+        megapixels=0.0,
+        divisible_by=16,
+    ) == (880, 672)
+
+
+def test_resolution_rejects_invalid_resolution_controls() -> None:
+    resolution = _func("resolution")
+    with pytest.raises(ValueError, match="divisible_by"):
+        resolution(width=512, height=512, divisible_by=10)
+    with pytest.raises(ValueError, match="megapixels"):
+        resolution(width=512, height=512, megapixels=-1)
+
+
 def test_empty_latent_uses_checkpoint_scale_factor() -> None:
     empty = _func("empty_latent_image")
     (latent,) = empty(
-        checkpoint={"vae_scale_factor": 8},
         width=64,
         height=32,
         batch_size=2,
@@ -122,7 +188,22 @@ def test_empty_latent_uses_checkpoint_scale_factor() -> None:
     assert latent["height"] == 32
     assert latent["batch_size"] == 2
     with pytest.raises(ValueError, match="multiples of 8"):
-        empty(checkpoint={"vae_scale_factor": 8}, width=60, height=32, batch_size=1)
+        empty(width=60, height=32, batch_size=1)
+
+
+def test_empty_latent_computes_aspect_ratio() -> None:
+    empty = _func("empty_latent_image")
+    (latent,) = empty(
+        width=512,
+        height=512,
+        batch_size=1,
+        aspect_ratio="1:1",
+        megapixels=0.25,
+        divisible_by=32,
+    )
+    assert latent["width"] == 512
+    assert latent["height"] == 512
+    assert latent["samples"].shape == (1, 4, 64, 64)
 
 
 def test_image_from_batch_selects_one_image() -> None:
@@ -131,6 +212,36 @@ def test_image_from_batch_selects_one_image() -> None:
     assert selected is images[2]
     with pytest.raises(IndexError):
         _func("image_from_batch")(images=images, index=3)
+
+
+def test_clip_text_encode_uses_last_hidden_state_and_sdxl_pooled() -> None:
+    last = torch.ones(1, 77, 4)
+    clip = {
+        "arch": "sd15",
+        "device": "cpu",
+        "dtype": torch.float32,
+        "text_encoder": _FakeTextEncoder(last),
+        "tokenizer": _FakeTokenizer(),
+    }
+    (conditioning,) = _func("clip_text_encode")(clip=clip, text="hello")
+    assert torch.equal(conditioning["cond"], last)
+    assert conditioning["pooled"] is None
+
+    last = torch.ones(1, 77, 4)
+    last_2 = torch.full((1, 77, 4), 2.0)
+    pooled = torch.full((1, 8), 7.0)
+    clip = {
+        "arch": "sdxl",
+        "device": "cpu",
+        "dtype": torch.float32,
+        "text_encoder": _FakeTextEncoder(last),
+        "tokenizer": _FakeTokenizer(),
+        "text_encoder_2": _FakeTextEncoder(last_2, pooled),
+        "tokenizer_2": _FakeTokenizer(),
+    }
+    (conditioning,) = _func("clip_text_encode")(clip=clip, text="hello")
+    assert torch.equal(conditioning["cond"], torch.cat([last, last_2], dim=-1))
+    assert torch.equal(conditioning["pooled"], pooled)
 
 
 def test_ksampler_runs_cfg_with_a_fake_unet() -> None:
@@ -144,7 +255,7 @@ def test_ksampler_runs_cfg_with_a_fake_unet() -> None:
         seed=7,
         steps=2,
         cfg=7.0,
-        sampler="euler",
+        sampler_name="euler",
         scheduler="normal",
     )
 
@@ -155,6 +266,42 @@ def test_ksampler_runs_cfg_with_a_fake_unet() -> None:
     assert unet.calls[0]["sample"] == (2, 4, 4, 4)
     assert unet.calls[0]["encoder_hidden_states"] == (2, 7, 4)
     assert unet.calls[0]["added_cond_kwargs"] is None
+
+
+def test_ksampler_uses_real_sigma_scale_for_initial_noise() -> None:
+    model, unet = _model()
+    conditioning = _conditioning()
+    _func("ksampler")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        latent_image=_latent(512, 512),
+        seed=7,
+        steps=4,
+        cfg=1.0,
+        sampler_name="euler",
+        scheduler="karras",
+    )
+
+    assert 0.85 < unet.calls[0]["sample_std"] < 1.15
+
+
+def test_ksampler_keeps_dpmpp_unit_initial_noise() -> None:
+    model, unet = _model()
+    conditioning = _conditioning()
+    _func("ksampler")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        latent_image=_latent(512, 512),
+        seed=7,
+        steps=4,
+        cfg=1.0,
+        sampler_name="dpmpp_2m",
+        scheduler="karras",
+    )
+
+    assert 0.85 < unet.calls[0]["sample_std"] < 1.15
 
 
 def test_ksampler_builds_sdxl_added_conditioning() -> None:
@@ -169,7 +316,7 @@ def test_ksampler_builds_sdxl_added_conditioning() -> None:
         seed=1,
         steps=1,
         cfg=2.0,
-        sampler="euler",
+        sampler_name="euler",
         scheduler="karras",
     )
 
@@ -182,19 +329,19 @@ def test_ksampler_builds_sdxl_added_conditioning() -> None:
 
 def test_vae_decode_returns_an_image_batch() -> None:
     vae_model = _FakeVAE()
-    (images,) = _func("vae_decode")(
+    (image,) = _func("vae_decode")(
         vae={
             "vae": vae_model,
             "device": "cpu",
             "dtype": torch.float32,
             "scaling_factor": 0.18215,
         },
-        latent=_latent(32, 24),
-        tiling=True,
+        samples=_latent(32, 24),
+        tiled=True,
     )
 
-    assert len(images) == 1
-    assert images[0].size == (32, 24)
+    assert len(image) == 1
+    assert image[0].size == (32, 24)
     assert vae_model.tiling is True
 
 
@@ -278,12 +425,18 @@ def test_save_media_handles_single_and_multi_image_batches(tmp_path) -> None:
         "lms",
         "dpmpp_2s_ancestral",
         "dpmpp_sde",
+        "dpmpp_sde_gpu",
         "dpmpp_2m",
         "dpmpp_2m_sde",
+        "dpmpp_2m_sde_gpu",
         "dpmpp_3m_sde",
+        "dpmpp_3m_sde_gpu",
         "ddpm",
         "ddim",
         "uni_pc",
+        "lcm",
+        "ipndm",
+        "ipndm_v",
     ],
 )
 def test_core_samplers_step_on_cpu(sampler: str) -> None:
@@ -297,12 +450,47 @@ def test_core_samplers_step_on_cpu(sampler: str) -> None:
         seed=3,
         steps=4,
         cfg=7.0,
-        sampler=sampler,
+        sampler_name=sampler,
         scheduler="karras",
-        control_after_generate="fixed",
+        control_after_generated="fixed",
     )
     assert result["samples"].shape == (1, 4, 4, 4)
     assert torch.isfinite(result["samples"]).all()
+
+
+@pytest.mark.parametrize(
+    "scheduler",
+    [
+        "normal",
+        "karras",
+        "exponential",
+        "sgm_uniform",
+        "simple",
+        "ddim_uniform",
+        "beta",
+        "beta57",
+        "linear_quadratic",
+        "kl_optimal",
+    ],
+)
+def test_ksampler_accepts_all_supported_schedules(scheduler: str) -> None:
+    model, _ = _model()
+    conditioning = _conditioning()
+    (result,) = _func("ksampler")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        latent_image=_latent(),
+        seed=3,
+        steps=5,
+        cfg=7.0,
+        sampler_name="euler",
+        scheduler=scheduler,
+        control_after_generated="fixed",
+    )
+    assert result["samples"].shape == (1, 4, 4, 4)
+    assert torch.isfinite(result["samples"]).all()
+
 
 def test_basic_scheduler_builds_descending_sigmas() -> None:
     model, _ = _model()
@@ -323,6 +511,60 @@ def test_basic_scheduler_builds_descending_sigmas() -> None:
     assert preview["steps"] == 4
     assert preview["scheduler"] == "karras"
     assert preview["sigmas"][0] > preview["sigmas"][-1]
+    assert len(sigmas["timesteps"]) == 4
+    assert torch.all(sigmas["timesteps"][:-1] >= sigmas["timesteps"][1:])
+
+
+def test_basic_scheduler_timesteps_match_diffusers() -> None:
+    model, _ = _model()
+    (sigmas,) = _func("basic_scheduler")(
+        model=model,
+        scheduler="karras",
+        steps=4,
+        denoise=1.0,
+    )
+    config = dict(model["scheduler_config"])
+    config.pop("_use_default_values", None)
+    config["use_karras_sigmas"] = True
+    scheduler = EulerDiscreteScheduler.from_config(config)
+    scheduler.set_timesteps(4)
+
+    assert torch.allclose(
+        sigmas["sigmas"][:-1], scheduler.sigmas[:-1], atol=1e-4
+    )
+    assert torch.allclose(
+        sigmas["timesteps"].float(), scheduler.timesteps.float(), atol=0.1
+    )
+
+
+@pytest.mark.parametrize(
+    "scheduler",
+    [
+        "normal",
+        "karras",
+        "exponential",
+        "sgm_uniform",
+        "simple",
+        "ddim_uniform",
+        "beta",
+        "beta57",
+        "linear_quadratic",
+        "kl_optimal",
+    ],
+)
+def test_basic_scheduler_accepts_all_supported_schedules(scheduler: str) -> None:
+    model, _ = _model()
+    (sigmas,) = _func("basic_scheduler")(
+        model=model,
+        scheduler=scheduler,
+        steps=5,
+        denoise=1.0,
+    )
+    values = sigmas["sigmas"]
+    assert len(values) == 6
+    assert torch.isfinite(values).all()
+    assert values[0] > values[-2] > 0
+    assert values[-1] == 0
 
 
 def test_sampler_custom_advanced_uses_contracts() -> None:
@@ -345,7 +587,7 @@ def test_sampler_custom_advanced_uses_contracts() -> None:
     noise = {
         "kind": "noise",
         "noise_type": "gaussian",
-        "seed": 9,
+        "noise_seed": 9,
         "alpha": 1.0,
         "k": 1.0,
         "scale": 0.1,
@@ -356,7 +598,6 @@ def test_sampler_custom_advanced_uses_contracts() -> None:
         sigmas=sigmas,
         noise=noise,
         latent_image=_latent(),
-        add_noise=True,
     )
 
     assert output["samples"].shape == (1, 4, 4, 4)
@@ -394,7 +635,7 @@ def test_sampler_custom_advanced_supports_custom_sampler() -> None:
     noise = {
         "kind": "noise",
         "noise_type": "uniform",
-        "seed": 4,
+        "noise_seed": 4,
         "alpha": 1.0,
         "k": 1.0,
         "scale": 0.1,
@@ -405,7 +646,6 @@ def test_sampler_custom_advanced_supports_custom_sampler() -> None:
         sigmas=sigmas,
         noise=noise,
         latent_image=_latent(),
-        add_noise=False,
     )
 
     assert output["samples"].shape == (1, 4, 4, 4)
@@ -450,7 +690,7 @@ def test_advanced_sampler_accepts_all_res4lyf_noise_types() -> None:
         noise = {
             "kind": "noise",
             "noise_type": noise_type,
-            "seed": 2,
+            "noise_seed": 2,
             "alpha": 1.0,
             "k": 1.0,
             "scale": 0.1,
@@ -461,7 +701,6 @@ def test_advanced_sampler_accepts_all_res4lyf_noise_types() -> None:
             sigmas=sigmas,
             noise=noise,
             latent_image=_latent(),
-            add_noise=True,
         )
         assert output["samples"].shape == (1, 4, 4, 4), noise_type
         assert torch.isfinite(output["samples"]).all(), noise_type
@@ -479,7 +718,7 @@ def test_advanced_contract_previews() -> None:
         {
             "kind": "noise",
             "noise_type": "fractal",
-            "seed": 42,
+            "noise_seed": 42,
             "alpha": 1.2,
             "k": 0.8,
             "scale": 0.1,
@@ -487,7 +726,7 @@ def test_advanced_contract_previews() -> None:
     )
     assert noise["kind"] == "noise"
     assert noise["noise_type"] == "fractal"
-    assert noise["seed"] == 42
+    assert noise["noise_seed"] == 42
 
     model, _ = _model()
     guider = build_output_preview(
@@ -524,7 +763,7 @@ def test_advanced_sampler_supports_sde_variance_noise() -> None:
     noise = {
         "kind": "noise",
         "noise_type": "fractal",
-        "seed": 5,
+        "noise_seed": 5,
         "alpha": 1.0,
         "k": 1.0,
         "scale": 0.1,
@@ -535,7 +774,6 @@ def test_advanced_sampler_supports_sde_variance_noise() -> None:
         sigmas=sigmas,
         noise=noise,
         latent_image=_latent(),
-        add_noise=True,
     )
     assert output["samples"].shape == (1, 4, 4, 4)
     assert torch.isfinite(output["samples"]).all()
@@ -590,8 +828,8 @@ def test_vae_encode_returns_a_latent() -> None:
             "scaling_factor": 0.18215,
             "vae_scale_factor": 8,
         },
-        image=Image.new("RGB", (32, 24), "blue"),
-        tiling=True,
+        pixels=Image.new("RGB", (32, 24), "blue"),
+        tiled=True,
     )
     assert latent["samples"].shape == (1, 4, 3, 4)
     assert latent["width"] == 32
@@ -611,8 +849,74 @@ def test_ksampler_denoise_slices_the_schedule() -> None:
         steps=4,
         denoise=0.5,
         cfg=7.0,
-        sampler="euler",
+        sampler_name="euler",
         scheduler="normal",
     )
     assert result["samples"].shape == (1, 4, 4, 4)
+    assert len(unet.calls) == 2
+
+def test_ksampler_advanced_respects_step_range() -> None:
+    model, unet = _model()
+    conditioning = _conditioning()
+    (result,) = _func("ksampler_advanced")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        latent_image=_latent(),
+        add_noise=True,
+        noise_seed=4,
+        steps=4,
+        cfg=7.0,
+        sampler_name="euler",
+        scheduler="normal",
+        start_at_step=1,
+        end_at_step=3,
+        return_with_leftover_noise=False,
+    )
+    assert result["samples"].shape == (1, 4, 4, 4)
+    assert len(unet.calls) == 2
+
+
+def test_ksampler_advanced_can_return_leftover_noise() -> None:
+    model, unet = _model()
+    conditioning = _conditioning()
+    (result,) = _func("ksampler_advanced")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        latent_image=_latent(),
+        add_noise=False,
+        noise_seed=4,
+        steps=4,
+        cfg=7.0,
+        sampler_name="euler",
+        scheduler="normal",
+        start_at_step=1,
+        end_at_step=2,
+        return_with_leftover_noise=True,
+    )
+    assert result["samples"].shape == (1, 4, 4, 4)
+    assert len(unet.calls) == 1
+
+
+def test_sampler_custom_uses_sampler_and_sigmas_contracts() -> None:
+    model, unet = _model()
+    conditioning = _conditioning()
+    (output, denoised_output) = _func("sampler_custom")(
+        model=model,
+        positive=conditioning,
+        negative=conditioning,
+        sampler={"kind": "sampler", "name": "euler", "sample": None},
+        sigmas={
+            "kind": "sigmas",
+            "sigmas": torch.tensor([1.0, 0.5, 0.0]),
+            "steps": 2,
+        },
+        latent_image=_latent(),
+        add_noise=True,
+        noise_seed=4,
+        cfg=7.0,
+    )
+    assert output["samples"].shape == (1, 4, 4, 4)
+    assert denoised_output["samples"].shape == (1, 4, 4, 4)
     assert len(unet.calls) == 2

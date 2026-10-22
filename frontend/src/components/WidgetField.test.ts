@@ -138,3 +138,43 @@ test("disables a widget driven by a connected value", () => {
     }) as HTMLButtonElement).disabled,
   ).toBe(true);
 });
+
+test("renders prompt widgets as a scrollable textarea", () => {
+  const onChange = vi.fn();
+  render(
+    createElement(WidgetField, {
+      widget: { name: "text", data_type: "Prompt", default: "" },
+      value: "a cinematic landscape",
+      onChange,
+    }),
+  );
+
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.tagName).toBe("TEXTAREA");
+  expect(textarea.getAttribute("data-cu-prompt")).toBe("true");
+  expect(textarea.value).toBe("a cinematic landscape");
+  expect(textarea.className).toContain("overflow-y-auto");
+  expect(textarea.className).toContain("flex-1");
+
+  fireEvent.change(textarea, { target: { value: "updated prompt" } });
+  expect(onChange).toHaveBeenLastCalledWith("updated prompt");
+});
+
+test("sizes path inputs from their content up to the available width", () => {
+  render(
+    createElement(WidgetField, {
+      widget: {
+        name: "checkpoint_name",
+        data_type: "ModelPath",
+        default: "",
+      },
+      value: "models/diffusion/a_very_long_checkpoint_name.safetensors",
+      onChange: vi.fn(),
+    }),
+  );
+
+  const input = screen.getByRole("textbox") as HTMLInputElement;
+  expect(input.getAttribute("size")).toBe("58");
+  expect(input.className).toContain("max-w-full");
+  expect(input.className).not.toContain("w-28");
+});

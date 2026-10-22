@@ -53,7 +53,7 @@ export function ModelSelectorField({
           <span className="ml-1 text-[10px] text-cyan-400">linked</span>
         )}
       </span>
-      <div className="flex min-w-0 items-center gap-1">
+      <div className="flex min-w-0 max-w-full items-center gap-1">
         {missing && (
           <span
             title={`Missing local model: ${path}`}
@@ -69,7 +69,7 @@ export function ModelSelectorField({
           aria-invalid={missing || undefined}
           disabled={disabled}
           onClick={() => setPickerOpen(true)}
-          className={`nodrag flex w-32 items-center gap-1 rounded border bg-zinc-950 px-1.5 py-0.5 text-left text-xs outline-none disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500 ${
+          className={`nodrag flex w-fit min-w-0 max-w-full items-center gap-1 rounded border bg-zinc-950 px-1.5 py-0.5 text-left text-xs outline-none disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500 ${
             missing
               ? "border-amber-700 text-amber-200"
               : "border-zinc-700 text-zinc-200 hover:border-cyan-600 focus:border-cyan-500"

@@ -2979,5 +2979,32 @@ describe("seed controls", () => {
         .widgetValues.seed,
     ).toBe(42);
   });
+
+  it("supports control_after_generated with noise_seed", async () => {
+    const template = await makeTemplate({
+      node_schema: makeSchema({
+        widgets: [
+          { name: "noise_seed", data_type: "int", default: 7 },
+          {
+            name: "control_after_generated",
+            data_type: "str",
+            default: "increment",
+          },
+        ],
+      }),
+    });
+    const id = useGraphStore
+      .getState()
+      .addNodeFromTemplate(template, { x: 0, y: 0 });
+    useGraphStore.getState().applyExecutionEvent({
+      type: "NODE_COMPLETED",
+      node_id: id,
+      data: { cached: false, outputs: {} },
+    });
+    expect(
+      useGraphStore.getState().nodes.find((node) => node.id === id)?.data
+        .widgetValues.noise_seed,
+    ).toBe(8);
+  });
 });
 

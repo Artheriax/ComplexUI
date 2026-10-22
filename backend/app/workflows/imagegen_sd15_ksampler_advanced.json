@@ -1,0 +1,174 @@
+{
+  "name": "imagegen_sd15_ksampler_advanced",
+  "title": "DreamShaper 8 \u00b7 KSampler Advanced",
+  "category": "Image Generation",
+  "description": "Text-to-image with explicit sigma step range, noise and leftover-noise control.",
+  "nodes": [
+    {
+      "id": "resolution",
+      "template": "resolution",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "widget_values": {
+        "width": 512,
+        "height": 512
+      }
+    },
+    {
+      "id": "checkpoint",
+      "template": "load_checkpoint",
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "widget_values": {
+        "checkpoint_name": "models/diffusion/dreamshaper_8.safetensors"
+      }
+    },
+    {
+      "id": "positive",
+      "template": "clip_text_encode",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "widget_values": {
+        "text": "a cozy reading nook by a rain-streaked window, warm lamp light, cinematic, highly detailed"
+      }
+    },
+    {
+      "id": "negative",
+      "template": "clip_text_encode",
+      "position": {
+        "x": 360,
+        "y": 220
+      },
+      "widget_values": {
+        "text": "blurry, low quality, watermark, text, deformed"
+      }
+    },
+    {
+      "id": "latent",
+      "template": "empty_latent_image",
+      "position": {
+        "x": 360,
+        "y": 440
+      },
+      "widget_values": {
+        "batch_size": 1
+      }
+    },
+    {
+      "id": "sampler",
+      "template": "ksampler_advanced",
+      "position": {
+        "x": 720,
+        "y": 160
+      },
+      "widget_values": {
+        "add_noise": true,
+        "noise_seed": 42,
+        "control_after_generated": "randomize",
+        "steps": 25,
+        "cfg": 7,
+        "sampler_name": "dpmpp_2m",
+        "scheduler": "karras",
+        "start_at_step": 0,
+        "end_at_step": 10000,
+        "return_with_leftover_noise": false
+      }
+    },
+    {
+      "id": "decode",
+      "template": "vae_decode",
+      "position": {
+        "x": 1080,
+        "y": 160
+      },
+      "widget_values": {
+        "tiled": false
+      }
+    },
+    {
+      "id": "save",
+      "template": "save_media",
+      "position": {
+        "x": 1440,
+        "y": 160
+      },
+      "widget_values": {
+        "path": "imagegen_sd15_ksampler_advanced.png"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source_node_id": "resolution",
+      "source_handle": "width",
+      "target_node_id": "latent",
+      "target_handle": "width"
+    },
+    {
+      "source_node_id": "resolution",
+      "source_handle": "height",
+      "target_node_id": "latent",
+      "target_handle": "height"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "clip",
+      "target_node_id": "positive",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "clip",
+      "target_node_id": "negative",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "model",
+      "target_node_id": "sampler",
+      "target_handle": "model"
+    },
+    {
+      "source_node_id": "positive",
+      "source_handle": "conditioning",
+      "target_node_id": "sampler",
+      "target_handle": "positive"
+    },
+    {
+      "source_node_id": "negative",
+      "source_handle": "conditioning",
+      "target_node_id": "sampler",
+      "target_handle": "negative"
+    },
+    {
+      "source_node_id": "latent",
+      "source_handle": "latent",
+      "target_node_id": "sampler",
+      "target_handle": "latent_image"
+    },
+    {
+      "source_node_id": "sampler",
+      "source_handle": "latent",
+      "target_node_id": "decode",
+      "target_handle": "samples"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "vae",
+      "target_node_id": "decode",
+      "target_handle": "vae"
+    },
+    {
+      "source_node_id": "decode",
+      "source_handle": "image",
+      "target_node_id": "save",
+      "target_handle": "media"
+    }
+  ]
+}

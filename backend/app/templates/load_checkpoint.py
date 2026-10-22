@@ -12,14 +12,10 @@
 import json
 import struct
 from pathlib import Path
-from typing import Literal
-
 import torch
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline
 
-local_model: ModelSelector = ModelSelector(type="diffusion")
-device: Literal["auto", "cpu", "cuda"] = "auto"
-dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+checkpoint_name: ModelSelector = ModelSelector(type="diffusion")
 
 
 def detect_architecture(checkpoint: Path) -> str:
@@ -44,29 +40,17 @@ def detect_architecture(checkpoint: Path) -> str:
     )
 
 
-if not local_model:
+if not checkpoint_name:
     raise ValueError("Select a local diffusion checkpoint in models/diffusion")
-checkpoint = Path(local_model)
+checkpoint = Path(checkpoint_name)
 if checkpoint.suffix.lower() != ".safetensors":
     raise ValueError("Diffusion checkpoints must use the .safetensors format")
 if not checkpoint.is_file():
     raise FileNotFoundError(f"Diffusion checkpoint does not exist: {checkpoint}")
 
 architecture = detect_architecture(checkpoint)
-if device == "cuda" and not torch.cuda.is_available():
-    raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-if device == "auto":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-if dtype == "auto":
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-elif dtype == "float16":
-    torch_dtype = torch.float16
-elif dtype == "bfloat16":
-    torch_dtype = torch.bfloat16
-else:
-    torch_dtype = torch.float32
-if device == "cpu" and torch_dtype == torch.float16:
-    torch_dtype = torch.float32
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if device == "cuda" else torch.float32
 
 report = globals().get("report_progress")
 if callable(report):

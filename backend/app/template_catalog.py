@@ -482,12 +482,12 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
     "empty_latent_image": TemplateMeta(
         "Empty Latent Image",
         "Image Generation",
-        "Create a noise latent with SD1.5 or SDXL dimensions",
+        "Create a latent from explicit dimensions, aspect ratio or megapixels",
     ),
     "ksampler": TemplateMeta(
         "KSampler",
         "Image Generation",
-        "Sample a latent with CFG and a DPM or Euler sampler",
+        "Sample a latent with CFG, ComfyUI-style samplers and schedules",
     ),
     "vae_decode": TemplateMeta(
         "VAE Decode",
@@ -502,7 +502,7 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
     "resolution": TemplateMeta(
         "Resolution",
         "Image Generation",
-        "Shared width and height values for 512 or 1024 output",
+        "Compute width and height from aspect ratio, megapixels and divisibility",
     ),
     "basic_scheduler": TemplateMeta(
         "Basic Scheduler",
@@ -558,6 +558,16 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Image Scale",
         "Image Generation",
         "Resize or crop an image to a target resolution",
+    ),
+    "ksampler_advanced": TemplateMeta(
+        "KSampler Advanced",
+        "Image Generation",
+        "Sample a configurable sigma step range with optional noise",
+    ),
+    "sampler_custom": TemplateMeta(
+        "Sampler Custom",
+        "Image Generation",
+        "Run a sampler and SIGMAS contract with CFG",
     ),
 }
 

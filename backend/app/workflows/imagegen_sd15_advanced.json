@@ -1,29 +1,39 @@
 {
   "name": "imagegen_sd15_advanced",
-  "title": "DreamShaper 8 · Advanced Sampling",
+  "title": "DreamShaper 8 \u00b7 Advanced Sampling",
   "category": "Image Generation",
   "description": "Custom SIGMAS, sampler, noise and guider contracts with RES4LYF noise.",
   "nodes": [
     {
       "id": "resolution",
       "template": "resolution",
-      "position": { "x": 0, "y": 0 },
-      "widget_values": { "width": 512, "height": 512 }
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "widget_values": {
+        "width": 512,
+        "height": 512
+      }
     },
     {
       "id": "checkpoint",
       "template": "load_checkpoint",
-      "position": { "x": 0, "y": 220 },
+      "position": {
+        "x": 0,
+        "y": 220
+      },
       "widget_values": {
-        "local_model": "models/diffusion/dreamshaper_8.safetensors",
-        "device": "auto",
-        "dtype": "auto"
+        "checkpoint_name": "models/diffusion/dreamshaper_8.safetensors"
       }
     },
     {
       "id": "positive",
       "template": "clip_text_encode",
-      "position": { "x": 360, "y": 0 },
+      "position": {
+        "x": 360,
+        "y": 0
+      },
       "widget_values": {
         "text": "a cozy reading nook by a rain-streaked window, warm lamp light, cinematic, highly detailed"
       }
@@ -31,7 +41,10 @@
     {
       "id": "negative",
       "template": "clip_text_encode",
-      "position": { "x": 360, "y": 220 },
+      "position": {
+        "x": 360,
+        "y": 220
+      },
       "widget_values": {
         "text": "blurry, low quality, watermark, text, deformed"
       }
@@ -39,76 +52,192 @@
     {
       "id": "latent",
       "template": "empty_latent_image",
-      "position": { "x": 360, "y": 440 },
-      "widget_values": { "batch_size": 1 }
+      "position": {
+        "x": 360,
+        "y": 440
+      },
+      "widget_values": {
+        "batch_size": 1
+      }
     },
     {
       "id": "scheduler",
       "template": "basic_scheduler",
-      "position": { "x": 720, "y": 0 },
-      "widget_values": { "scheduler": "karras", "steps": 25, "denoise": 1.0 }
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "widget_values": {
+        "scheduler": "karras",
+        "steps": 25,
+        "denoise": 1.0
+      }
     },
     {
       "id": "sampler",
       "template": "sampler_select",
-      "position": { "x": 720, "y": 180 },
-      "widget_values": { "sampler_name": "dpmpp_2m" }
+      "position": {
+        "x": 720,
+        "y": 180
+      },
+      "widget_values": {
+        "sampler_name": "dpmpp_2m"
+      }
     },
     {
       "id": "noise",
       "template": "noise_generator",
-      "position": { "x": 720, "y": 330 },
+      "position": {
+        "x": 720,
+        "y": 330
+      },
       "widget_values": {
         "noise_type": "gaussian",
-        "seed": 42,
-        "control_after_generate": "fixed",
         "alpha": 1.0,
         "k": 1.0,
-        "scale": 0.1
+        "scale": 0.1,
+        "noise_seed": 42
       }
     },
     {
       "id": "guider",
       "template": "cfg_guider",
-      "position": { "x": 720, "y": 560 },
-      "widget_values": { "cfg": 7.0 }
+      "position": {
+        "x": 720,
+        "y": 560
+      },
+      "widget_values": {
+        "cfg": 7.0
+      }
     },
     {
       "id": "advanced",
       "template": "sampler_custom_advanced",
-      "position": { "x": 1080, "y": 160 },
-      "widget_values": { "add_noise": true }
+      "position": {
+        "x": 1080,
+        "y": 160
+      },
+      "widget_values": {}
     },
     {
       "id": "decode",
       "template": "vae_decode",
-      "position": { "x": 1440, "y": 160 },
-      "widget_values": { "tiling": false }
+      "position": {
+        "x": 1440,
+        "y": 160
+      },
+      "widget_values": {
+        "tiled": false
+      }
     },
     {
       "id": "save",
       "template": "save_media",
-      "position": { "x": 1800, "y": 160 },
-      "widget_values": { "path": "imagegen_sd15_advanced.png" }
+      "position": {
+        "x": 1800,
+        "y": 160
+      },
+      "widget_values": {
+        "path": "imagegen_sd15_advanced.png"
+      }
     }
   ],
   "edges": [
-    { "source_node_id": "resolution", "source_handle": "width", "target_node_id": "latent", "target_handle": "width" },
-    { "source_node_id": "resolution", "source_handle": "height", "target_node_id": "latent", "target_handle": "height" },
-    { "source_node_id": "checkpoint", "source_handle": "model", "target_node_id": "latent", "target_handle": "checkpoint" },
-    { "source_node_id": "checkpoint", "source_handle": "clip", "target_node_id": "positive", "target_handle": "clip" },
-    { "source_node_id": "checkpoint", "source_handle": "clip", "target_node_id": "negative", "target_handle": "clip" },
-    { "source_node_id": "checkpoint", "source_handle": "model", "target_node_id": "scheduler", "target_handle": "model" },
-    { "source_node_id": "checkpoint", "source_handle": "model", "target_node_id": "guider", "target_handle": "model" },
-    { "source_node_id": "positive", "source_handle": "conditioning", "target_node_id": "guider", "target_handle": "positive" },
-    { "source_node_id": "negative", "source_handle": "conditioning", "target_node_id": "guider", "target_handle": "negative" },
-    { "source_node_id": "scheduler", "source_handle": "sigmas", "target_node_id": "advanced", "target_handle": "sigmas" },
-    { "source_node_id": "sampler", "source_handle": "sampler", "target_node_id": "advanced", "target_handle": "sampler" },
-    { "source_node_id": "noise", "source_handle": "noise", "target_node_id": "advanced", "target_handle": "noise" },
-    { "source_node_id": "guider", "source_handle": "guider", "target_node_id": "advanced", "target_handle": "guider" },
-    { "source_node_id": "latent", "source_handle": "latent", "target_node_id": "advanced", "target_handle": "latent_image" },
-    { "source_node_id": "advanced", "source_handle": "output", "target_node_id": "decode", "target_handle": "latent" },
-    { "source_node_id": "checkpoint", "source_handle": "vae", "target_node_id": "decode", "target_handle": "vae" },
-    { "source_node_id": "decode", "source_handle": "images", "target_node_id": "save", "target_handle": "media" }
+    {
+      "source_node_id": "resolution",
+      "source_handle": "width",
+      "target_node_id": "latent",
+      "target_handle": "width"
+    },
+    {
+      "source_node_id": "resolution",
+      "source_handle": "height",
+      "target_node_id": "latent",
+      "target_handle": "height"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "clip",
+      "target_node_id": "positive",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "clip",
+      "target_node_id": "negative",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "model",
+      "target_node_id": "scheduler",
+      "target_handle": "model"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "model",
+      "target_node_id": "guider",
+      "target_handle": "model"
+    },
+    {
+      "source_node_id": "positive",
+      "source_handle": "conditioning",
+      "target_node_id": "guider",
+      "target_handle": "positive"
+    },
+    {
+      "source_node_id": "negative",
+      "source_handle": "conditioning",
+      "target_node_id": "guider",
+      "target_handle": "negative"
+    },
+    {
+      "source_node_id": "scheduler",
+      "source_handle": "sigmas",
+      "target_node_id": "advanced",
+      "target_handle": "sigmas"
+    },
+    {
+      "source_node_id": "sampler",
+      "source_handle": "sampler",
+      "target_node_id": "advanced",
+      "target_handle": "sampler"
+    },
+    {
+      "source_node_id": "noise",
+      "source_handle": "noise",
+      "target_node_id": "advanced",
+      "target_handle": "noise"
+    },
+    {
+      "source_node_id": "guider",
+      "source_handle": "guider",
+      "target_node_id": "advanced",
+      "target_handle": "guider"
+    },
+    {
+      "source_node_id": "latent",
+      "source_handle": "latent",
+      "target_node_id": "advanced",
+      "target_handle": "latent_image"
+    },
+    {
+      "source_node_id": "advanced",
+      "source_handle": "output",
+      "target_node_id": "decode",
+      "target_handle": "samples"
+    },
+    {
+      "source_node_id": "checkpoint",
+      "source_handle": "vae",
+      "target_node_id": "decode",
+      "target_handle": "vae"
+    },
+    {
+      "source_node_id": "decode",
+      "source_handle": "image",
+      "target_node_id": "save",
+      "target_handle": "media"
+    }
   ]
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
+from typing import Any
 from urllib.parse import urlsplit
 
 from starlette.datastructures import Headers
@@ -79,8 +80,12 @@ def origin_is_allowed(
 
 
 class RequestSizeLimitMiddleware:
-    """Reject oversized HTTP requests advertised via Content-Length.
+    """Reject oversized HTTP requests.
 
+    Requests with ``Content-Length`` are rejected before body streaming.
+    Chunked requests without that header are buffered only when their route
+    uses the normal JSON limit; upload routes with a larger override keep
+    streaming so their per-file caps can apply without buffering the payload.
     ``overrides`` maps path prefixes (for example ``"/api/uploads"``) to a
     larger or smaller limit. The longest matching prefix wins.
     """
@@ -111,22 +116,67 @@ class RequestSizeLimitMiddleware:
                 return limit
         return self.max_bytes
 
+    @staticmethod
+    async def _buffer_body(
+        receive: Receive, limit: int
+    ) -> tuple[list[dict[str, Any]], bool]:
+        messages: list[dict[str, Any]] = []
+        total = 0
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                return messages, True
+            total += len(message.get("body", b""))
+            if total > limit:
+                return messages, False
+            if not message.get("more_body", False):
+                return messages, True
+
+    @staticmethod
+    def _replay_body(
+        messages: list[dict[str, Any]], receive: Receive
+    ) -> Receive:
+        async def replay() -> dict[str, Any]:
+            if messages:
+                return messages.pop(0)
+            return await receive()
+
+        return replay
+
     async def __call__(
         self, scope: Scope, receive: Receive, send: Send
     ) -> None:
-        if scope["type"] == "http":
-            raw_length = Headers(scope=scope).get("content-length")
-            if raw_length is not None:
-                try:
-                    content_length = int(raw_length)
-                except ValueError:
-                    await PlainTextResponse(
-                        "Invalid Content-Length", status_code=400
-                    )(scope, receive, send)
-                    return
-                if content_length > self._limit_for(scope["path"]):
-                    await PlainTextResponse(
-                        "Request body too large", status_code=413
-                    )(scope, receive, send)
-                    return
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        limit = self._limit_for(scope["path"])
+        raw_length = Headers(scope=scope).get("content-length")
+        if raw_length is not None:
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                await PlainTextResponse(
+                    "Invalid Content-Length", status_code=400
+                )(scope, receive, send)
+                return
+            if content_length > limit:
+                await PlainTextResponse(
+                    "Request body too large", status_code=413
+                )(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if limit > self.max_bytes:
+            await self.app(scope, receive, send)
+            return
+
+        messages, accepted = await self._buffer_body(receive, limit)
+        if not accepted:
+            await PlainTextResponse(
+                "Request body too large", status_code=413
+            )(scope, receive, send)
+            return
+        await self.app(scope, self._replay_body(messages, receive), send)

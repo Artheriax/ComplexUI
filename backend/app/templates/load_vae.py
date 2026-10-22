@@ -2,15 +2,10 @@
 # dependencies = ["torch>=2.2", "diffusers>=0.31", "safetensors>=0.4"]
 # ///
 from pathlib import Path
-from typing import Literal
-
 import torch
 from diffusers import AutoencoderKL
 
-component_path: ModelPath = ""
-architecture: Literal["auto", "sd15", "sdxl"] = "auto"
-device: Literal["auto", "cpu", "cuda"] = "auto"
-dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+vae_name: ModelSelector = ModelSelector(type="vae")
 
 
 def _detect_arch(vae, path: Path) -> str:
@@ -23,25 +18,13 @@ def _detect_arch(vae, path: Path) -> str:
     return "sdxl" if "xl" in name or "sdxl" in name else "sd15"
 
 
-if not component_path:
-    raise ValueError("Select a standalone VAE path")
-path = Path(component_path)
+if not vae_name:
+    raise ValueError("Select a standalone VAE in models/vae")
+path = Path(vae_name)
 if not path.exists():
     raise FileNotFoundError(f"VAE does not exist: {path}")
-if device == "cuda" and not torch.cuda.is_available():
-    raise RuntimeError("CUDA was requested but torch.cuda.is_available() is false")
-if device == "auto":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-if dtype == "auto":
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-elif dtype == "float16":
-    torch_dtype = torch.float16
-elif dtype == "bfloat16":
-    torch_dtype = torch.bfloat16
-else:
-    torch_dtype = torch.float32
-if device == "cpu" and torch_dtype == torch.float16:
-    torch_dtype = torch.float32
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch_dtype = torch.float16 if device == "cuda" else torch.float32
 
 report = globals().get("report_progress")
 if callable(report):
@@ -63,12 +46,7 @@ else:
 vae_model.to(device)
 vae_model.eval()
 
-detected = _detect_arch(vae_model, path)
-if architecture != "auto" and architecture != detected:
-    raise ValueError(
-        f"Selected architecture '{architecture}' does not match VAE config '{detected}'"
-    )
-arch = architecture if architecture != "auto" else detected
+arch = _detect_arch(vae_model, path)
 block_channels = getattr(vae_model.config, "block_out_channels", (128, 256, 512, 512))
 vae_scale_factor = 2 ** (len(block_channels) - 1)
 scaling_factor = float(

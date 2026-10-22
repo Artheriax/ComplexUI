@@ -18,6 +18,7 @@ import {
   isNodeColor,
   isSubgraphInstanceNode,
   isSubgraphManagerNode,
+  SOCKET_TYPE_NAMES,
   SUBGRAPH_INPUT_NODE_ID,
   SUBGRAPH_OUTPUT_NODE_ID,
 } from "../types/graph";
@@ -35,24 +36,6 @@ export const MAX_PROJECT_NAME_CHARS = 80;
 export const MAX_SUBGRAPHS = 50;
 const MAX_IDENTIFIER_CHARS = 200;
 export const MAX_FRAME_DIMENSION = 100_000;
-
-const SOCKET_TYPES = new Set<SocketType>([
-  "DATAFRAME",
-  "DATASET",
-  "ML_MODEL",
-  "METRICS",
-  "TENSOR",
-  "IMAGE",
-  "VIDEO",
-  "MEDIA",
-  "DETECTION_MODEL",
-  "SEGMENTATION_MODEL",
-  "CLASSIFICATION_MODEL",
-  "DETECTIONS",
-  "MASKS",
-  "CLASSIFICATIONS",
-  "ANY",
-]);
 
 export interface SavedNode {
   id: string;
@@ -300,7 +283,7 @@ function validateSockets(value: unknown, label: string): OutputSocket[] {
       record.name.length === 0 ||
       record.name.length > MAX_IDENTIFIER_CHARS ||
       typeof record.data_type !== "string" ||
-      !SOCKET_TYPES.has(record.data_type as SocketType)
+      !SOCKET_TYPE_NAMES.has(record.data_type as SocketType)
     ) {
       throw new Error(`${label} contains an invalid socket.`);
     }

@@ -20,18 +20,19 @@ from diffusers import (
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
     HeunDiscreteScheduler,
+    IPNDMScheduler,
     KDPM2AncestralDiscreteScheduler,
     KDPM2DiscreteScheduler,
+    LCMScheduler,
     LMSDiscreteScheduler,
     UniPCMultistepScheduler,
 )
 
+noise: NOISE
 guider: GUIDER
 sampler: SAMPLER
 sigmas: SIGMAS
-noise: NOISE
 latent_image: LATENT
-add_noise: bool = True
 
 SCHEDULER_CLASSES = {
     "euler": EulerDiscreteScheduler,
@@ -42,12 +43,18 @@ SCHEDULER_CLASSES = {
     "lms": LMSDiscreteScheduler,
     "dpmpp_2s_ancestral": DPMSolverSinglestepScheduler,
     "dpmpp_sde": DPMSolverSDEScheduler,
+    "dpmpp_sde_gpu": DPMSolverSDEScheduler,
     "dpmpp_2m": DPMSolverMultistepScheduler,
     "dpmpp_2m_sde": DPMSolverMultistepScheduler,
+    "dpmpp_2m_sde_gpu": DPMSolverMultistepScheduler,
     "dpmpp_3m_sde": DPMSolverMultistepScheduler,
+    "dpmpp_3m_sde_gpu": DPMSolverMultistepScheduler,
     "ddpm": DDPMScheduler,
     "ddim": DDIMScheduler,
     "uni_pc": UniPCMultistepScheduler,
+    "lcm": LCMScheduler,
+    "ipndm": IPNDMScheduler,
+    "ipndm_v": IPNDMScheduler,
 }
 
 NOISE_TYPES = (
@@ -285,7 +292,7 @@ noise_type = str(noise.get("noise_type", "gaussian"))
 custom_noise_generator = noise.get("generate")
 if not callable(custom_noise_generator) and noise_type not in NOISE_TYPES:
     raise ValueError(f"Unsupported noise type: {noise_type}")
-noise_seed = int(noise.get("seed", 0))
+noise_seed = int(noise.get("noise_seed", 0))
 
 config.update(
     {
@@ -298,20 +305,38 @@ config.update(
         "steps_offset": int(config.get("steps_offset", 1)),
     }
 )
-if sampler_name in {"dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde"}:
+if sampler_name in {
+    "dpmpp_2m",
+    "dpmpp_2m_sde",
+    "dpmpp_2m_sde_gpu",
+    "dpmpp_3m_sde",
+    "dpmpp_3m_sde_gpu",
+}:
     config["algorithm_type"] = (
-        "sde-dpmsolver++" if sampler_name.endswith("_sde") else "dpmsolver++"
+        "sde-dpmsolver++" if "_sde" in sampler_name else "dpmsolver++"
     )
     config["solver_order"] = 3 if "3m" in sampler_name else 2
 
 step_count = int(len(sigmas_tensor) - 1)
+timesteps_tensor = sigmas.get("timesteps")
+if timesteps_tensor is not None:
+    if not isinstance(timesteps_tensor, torch.Tensor):
+        raise TypeError("sigmas wrapper timesteps must be a tensor")
+    timesteps_tensor = timesteps_tensor.to(device=device, dtype=torch.float32)
+    if timesteps_tensor.ndim != 1 or len(timesteps_tensor) != step_count:
+        raise ValueError("sigmas timesteps must match the sigma schedule length")
 sampler_object = None
 timesteps = None
 if scheduler_class is not None:
     sampler_object = scheduler_class.from_config(config)
     sampler_object.set_timesteps(step_count, device=device)
-    if hasattr(sampler_object, "sigmas") and sampler_object.sigmas is not None:
+    if (
+        hasattr(sampler_object, "sigmas")
+        and sampler_object.sigmas is not None
+        ):
         sampler_object.sigmas = sigmas_tensor
+    if timesteps_tensor is not None:
+        sampler_object.timesteps = timesteps_tensor.to(dtype=sampler_object.timesteps.dtype)
     if hasattr(sampler_object, "set_begin_index"):
         sampler_object.set_begin_index(0)
     if hasattr(sampler_object, "_step_index"):
@@ -319,7 +344,11 @@ if scheduler_class is not None:
     timesteps = sampler_object.timesteps[:step_count]
     sampler_object.timesteps = timesteps
 else:
-    timesteps = torch.linspace(1, 0, step_count, device=device)
+    timesteps = (
+        timesteps_tensor
+        if timesteps_tensor is not None
+        else torch.linspace(1, 0, step_count, device=device)
+    )
 
 use_cfg = float(guider.get("cfg", 7.0)) > 1.0
 positive_conditioning = _conditioning(positive, arch, device, dtype)
@@ -347,38 +376,29 @@ if height <= 0 or width <= 0:
     raise ValueError("latent_image wrapper is missing its dimensions")
 latents = samples.to(device=device, dtype=dtype).clone()
 torch.manual_seed(noise_seed)
-if add_noise:
-    if callable(custom_noise_generator):
-        generated = custom_noise_generator(
-            shape=tuple(latents.shape),
-            seed=noise_seed,
-            dtype=dtype,
-            device=device,
-        )
-        generated = generated.to(device=device, dtype=dtype)
-    else:
-        generated = _generate_noise(
-            noise_type,
-            tuple(latents.shape),
-            noise_seed,
-            dtype,
-            device,
-            float(noise.get("alpha", 1.0)),
-            float(noise.get("k", 1.0)),
-            float(noise.get("scale", 0.1)),
-        )
-    unit_init = {
-        "ddpm",
-        "ddim",
-        "dpmpp_2s_ancestral",
-        "dpmpp_2m",
-        "dpmpp_2m_sde",
-        "dpmpp_3m_sde",
-        "uni_pc",
-    }
-    initial_sigma = (
-        float(sigmas_tensor[0]) if sampler_name not in unit_init else 1.0
+if callable(custom_noise_generator):
+    generated = custom_noise_generator(
+        shape=tuple(latents.shape),
+        seed=noise_seed,
+        dtype=dtype,
+        device=device,
     )
+    generated = generated.to(device=device, dtype=dtype)
+else:
+    generated = _generate_noise(
+        noise_type,
+        tuple(latents.shape),
+        noise_seed,
+        dtype,
+        device,
+        float(noise.get("alpha", 1.0)),
+        float(noise.get("k", 1.0)),
+        float(noise.get("scale", 0.1)),
+    )
+if sampler_object is not None and hasattr(sampler_object, "add_noise"):
+    latents = sampler_object.add_noise(latents, generated, timesteps[0:1])
+else:
+    initial_sigma = float(sigmas_tensor[0])
     latents = latents + initial_sigma * generated
 
 batch_size = int(latents.shape[0])
@@ -439,7 +459,12 @@ with torch.inference_mode():
                 step_kwargs["generator"] = torch.Generator(
                     device=device
                 ).manual_seed(noise_seed + index)
-            elif sampler_name in {"dpmpp_2m_sde", "dpmpp_3m_sde"}:
+            elif sampler_name in {
+                "dpmpp_2m_sde",
+                "dpmpp_2m_sde_gpu",
+                "dpmpp_3m_sde",
+                "dpmpp_3m_sde_gpu",
+            }:
                 if callable(custom_noise_generator):
                     variance_noise = custom_noise_generator(
                         shape=tuple(latents.shape),
@@ -475,6 +500,8 @@ with torch.inference_mode():
                 f"advanced sampling {index + 1}/{total_steps}",
             )
 
+latents = torch.nan_to_num(latents, nan=0.0, posinf=0.0, neginf=0.0)
+
 output = {
     "kind": "latent",
     "samples": latents.detach().cpu(),
@@ -483,6 +510,6 @@ output = {
     "batch_size": batch_size,
     "vae_scale_factor": int(latent_image.get("vae_scale_factor", 8)),
 }
-denoised = {**output, "kind": "latent", "samples": output["samples"].clone()}
+denoised_output = {**output, "kind": "latent", "samples": output["samples"].clone()}
 
-return output: LATENT, denoised: LATENT
+return output: LATENT, denoised_output: LATENT

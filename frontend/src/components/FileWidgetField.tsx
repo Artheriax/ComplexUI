@@ -42,7 +42,7 @@ export function FileWidgetField({
         aria-label={`Choose file for ${widget.name}`}
         disabled={disabled}
         onClick={() => setPickerOpen(true)}
-        className="nodrag flex w-28 items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-left text-xs text-zinc-200 outline-none hover:border-cyan-600 focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+        className="nodrag flex w-fit min-w-0 max-w-full items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-left text-xs text-zinc-200 outline-none hover:border-cyan-600 focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
       >
         <FileIcon className="h-3 w-3 shrink-0 text-cyan-400" />
         <span className={`truncate ${path ? "" : "text-zinc-600"}`}>

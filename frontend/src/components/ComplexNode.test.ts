@@ -144,6 +144,58 @@ test("renders the persisted node color accent", () => {
   );
 });
 
+test("tints the node body with the selected dark surface", () => {
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: { ...data, color: "violet" },
+      }),
+    ),
+  );
+
+  const surface = container.querySelector('[data-node-surface="violet"]');
+  expect(surface).not.toBeNull();
+  expect((surface as HTMLElement).style.backgroundColor).toBe(
+    "rgb(28, 21, 51)",
+  );
+});
+
+test("gives prompt widgets a flexible textarea row", () => {
+  const promptData = {
+    ...data,
+    label: "CLIP Text Encode",
+    templateName: "clip_text_encode",
+    schema: {
+      ...data.schema,
+      widgets: [
+        {
+          name: "text",
+          data_type: "Prompt",
+          default: "",
+        },
+      ],
+    },
+    widgetValues: { text: "a cinematic landscape" },
+  };
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, { ...nodeProps(), data: promptData }),
+    ),
+  );
+
+  const prompt = container.querySelector("[data-cu-prompt]");
+  expect(prompt?.tagName).toBe("TEXTAREA");
+  expect(prompt?.className).toContain("flex-1");
+  expect(
+    container.querySelector('[data-prompt-row="true"]')?.className,
+  ).toContain("flex-1");
+});
+
 test("renders a shared subgraph manager without code controls", () => {
   const managerData = {
     ...data,

@@ -12,12 +12,25 @@ interface WidgetFieldProps {
 
 const inputClass =
   "nodrag w-28 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+const pathInputClass =
+  "nodrag min-w-0 max-w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-left text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 const stepperInputClass =
   "nodrag w-16 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 text-right text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 const stepButtonClass =
   "nodrag flex h-5 w-5 items-center justify-center rounded border border-zinc-700 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700";
 const selectClass =
   "nodrag w-28 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+
+const PATH_WIDGET_KINDS = new Set([
+  "file",
+  "imagefile",
+  "videofile",
+  "outputfile",
+  "path",
+  "folder",
+  "directory",
+  "modelpath",
+]);
 
 function choiceLabel(option: WidgetChoice): string {
   return typeof option === "boolean" ? String(option).toLowerCase() : String(option);
@@ -50,6 +63,30 @@ export function WidgetField({
     step !== undefined && Number.isFinite(step) && step > 0
       ? step
       : undefined;
+
+  if (kind === "prompt") {
+    return (
+      <label className="flex h-full min-h-0 flex-1 flex-col gap-1">
+        <span
+          className="truncate text-xs text-zinc-400"
+          title={`${widget.name}: ${widget.data_type}`}
+        >
+          {widget.name}
+          {connected && (
+            <span className="ml-1 text-[10px] text-cyan-400">linked</span>
+          )}
+        </span>
+        <textarea
+          className="nodrag min-h-40 w-full flex-1 resize-none overflow-y-auto rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-left text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500"
+          rows={8}
+          disabled={connected}
+          value={value === undefined || value === null ? "" : String(value)}
+          onChange={(event) => onChange(event.target.value)}
+          data-cu-prompt="true"
+        />
+      </label>
+    );
+  }
 
   if (kind === "modelselector") {
     return (
@@ -228,13 +265,27 @@ export function WidgetField({
         />
       );
     }
+    const textValue =
+      value === undefined || value === null ? "" : String(value);
+    if (PATH_WIDGET_KINDS.has(kind)) {
+      return (
+        <input
+          type="text"
+          size={Math.max(12, Math.min(240, textValue.length + 2))}
+          className={pathInputClass}
+          disabled={connected}
+          value={textValue}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      );
+    }
     if (kind === "str" || kind === "string") {
       return (
         <input
           type="text"
           className={`${inputClass} text-left`}
           disabled={connected}
-          value={value === undefined || value === null ? "" : String(value)}
+          value={textValue}
           onChange={(event) => onChange(event.target.value)}
         />
       );
@@ -244,7 +295,7 @@ export function WidgetField({
         type="text"
         className={`${inputClass} text-left`}
         disabled={connected}
-        value={value === undefined || value === null ? "" : String(value)}
+        value={textValue}
         onChange={(event) => onChange(event.target.value)}
       />
     );

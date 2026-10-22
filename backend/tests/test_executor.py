@@ -103,17 +103,73 @@ def _chain_graph(n_neighbors: int = 5) -> WorkflowGraph:
 
 
 EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
-    "load_checkpoint": ([], ["model", "clip", "vae"], ["local_model", "device", "dtype"]),
+    "load_checkpoint": ([], ["model", "clip", "vae"], ["checkpoint_name"]),
     "clip_text_encode": (["clip"], ["conditioning"], ["text"]),
-    "empty_latent_image": (["checkpoint"], ["latent"], ["width", "height", "batch_size"]),
+    "empty_latent_image": (
+        [],
+        ["latent"],
+        [
+            "width",
+            "height",
+            "batch_size",
+            "aspect_ratio",
+            "orientation",
+            "megapixels",
+            "divisible_by",
+        ],
+    ),
     "ksampler": (
         ["model", "positive", "negative", "latent_image"],
         ["latent"],
-        ["seed", "control_after_generate", "steps", "denoise", "cfg", "sampler", "scheduler"],
+        [
+            "seed",
+            "control_after_generated",
+            "steps",
+            "denoise",
+            "cfg",
+            "sampler_name",
+            "scheduler",
+        ],
     ),
-    "vae_decode": (["vae", "latent"], ["images"], ["tiling"]),
+    "ksampler_advanced": (
+        ["model", "positive", "negative", "latent_image"],
+        ["latent"],
+        [
+            "add_noise",
+            "noise_seed",
+            "control_after_generated",
+            "steps",
+            "cfg",
+            "sampler_name",
+            "scheduler",
+            "start_at_step",
+            "end_at_step",
+            "return_with_leftover_noise",
+        ],
+    ),
+    "sampler_custom": (
+        ["model", "positive", "negative", "sampler", "sigmas", "latent_image"],
+        ["output", "denoised_output"],
+        ["add_noise", "noise_seed", "control_after_generated", "cfg"],
+    ),
+    "vae_decode": (
+        ["samples", "vae"],
+        ["image"],
+        ["tiled", "tile_size", "overlap", "temporal_size", "temporal_overlap"],
+    ),
     "image_from_batch": (["images"], ["image"], ["index"]),
-    "resolution": ([], ["width", "height"], ["width", "height"]),
+    "resolution": (
+        [],
+        ["width", "height"],
+        [
+            "width",
+            "height",
+            "aspect_ratio",
+            "orientation",
+            "megapixels",
+            "divisible_by",
+        ],
+    ),
     "basic_scheduler": (
         ["model"],
         ["sigmas"],
@@ -123,31 +179,23 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "noise_generator": (
         [],
         ["noise"],
-        ["noise_type", "seed", "control_after_generate", "alpha", "k", "scale"],
+        ["noise_type", "noise_seed", "alpha", "k", "scale"],
     ),
     "cfg_guider": (["model", "positive", "negative"], ["guider"], ["cfg"]),
     "sampler_custom_advanced": (
-        ["guider", "sampler", "sigmas", "noise", "latent_image"],
-        ["output", "denoised"],
-        ["add_noise"],
+        ["noise", "guider", "sampler", "sigmas", "latent_image"],
+        ["output", "denoised_output"],
+        [],
     ),
     "preview_sigmas": (["sigmas"], ["sigmas"], []),
-    "load_diffusion_model": (
-        [],
-        ["model"],
-        ["component_path", "architecture", "device", "dtype"],
+    "load_diffusion_model": ([], ["model"], ["unet_name", "weight_dtype"]),
+    "load_clip": ([], ["clip"], ["clip_name", "type", "device"]),
+    "load_vae": ([], ["vae"], ["vae_name"]),
+    "vae_encode": (
+        ["pixels", "vae"],
+        ["latent"],
+        ["tiled", "tile_size", "overlap", "temporal_size", "temporal_overlap"],
     ),
-    "load_clip": (
-        [],
-        ["clip"],
-        ["clip_path", "architecture", "device", "dtype"],
-    ),
-    "load_vae": (
-        [],
-        ["vae"],
-        ["component_path", "architecture", "device", "dtype"],
-    ),
-    "vae_encode": (["vae", "image"], ["latent"], ["tiling"]),
     "image_scale": (
         ["image"],
         ["scaled"],
@@ -793,6 +841,13 @@ def test_all_official_templates_parse_cleanly() -> None:
         assert [widget.name for widget in schema.widgets] == widgets
         assert registry.is_official(record.code)
         assert registry.template_for_hash(record.code_hash).name == name
+
+
+def test_prompt_widgets_are_string_compatible() -> None:
+    registry = get_security_registry()
+    schema = parse_node(registry.get_template("clip_text_encode").code)
+    assert schema.widgets[0].data_type == "Prompt"
+    assert widget_socket_type(schema.widgets[0].data_type) is SocketType.STRING
 
 
 def test_template_socket_types() -> None:

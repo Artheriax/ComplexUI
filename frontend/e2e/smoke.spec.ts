@@ -13,7 +13,10 @@ async function openWorkflow(
   page: import("@playwright/test").Page,
   title: RegExp,
 ) {
-  await page.getByRole("button", { name: "Templates" }).click();
+  const templates = page.getByRole("button", { name: "Templates" });
+  if ((await templates.getAttribute("aria-expanded")) !== "true") {
+    await templates.click();
+  }
   await page
     .getByPlaceholder("Search templates…")
     .fill(title.source.replace(/\\(.)/g, "$1"));
@@ -83,6 +86,24 @@ test("shows and hides the system monitor from settings", async ({ page }) => {
   await expect(
     page.getByRole("region", { name: "System monitor" }),
   ).toBeVisible();
+});
+
+test("opens bundled image-generation workflows without local models", async ({
+  page,
+}) => {
+  const workflows: Array<[RegExp, string]> = [
+    [/DreamShaper 8 · SD1\.5/, "8 nodes"],
+    [/DreamShaper 8 · KSampler Advanced/, "8 nodes"],
+    [/DreamShaper 8 · Sampler Custom/, "10 nodes"],
+    [/DreamShaper XL Lightning · SDXL/, "8 nodes"],
+  ];
+
+  for (const [title, count] of workflows) {
+    await openWorkflow(page, title);
+    await expect(
+      canvasStatus(page).getByText(count, { exact: true }),
+    ).toBeVisible();
+  }
 });
 
 test("lists generated media in the Assets Outputs tab", async ({ page }) => {

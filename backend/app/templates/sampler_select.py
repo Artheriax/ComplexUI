@@ -9,12 +9,18 @@ sampler_name: Literal[
     "lms",
     "dpmpp_2s_ancestral",
     "dpmpp_sde",
+    "dpmpp_sde_gpu",
     "dpmpp_2m",
     "dpmpp_2m_sde",
+    "dpmpp_2m_sde_gpu",
     "dpmpp_3m_sde",
+    "dpmpp_3m_sde_gpu",
     "ddpm",
     "ddim",
     "uni_pc",
+    "lcm",
+    "ipndm",
+    "ipndm_v",
 ] = "dpmpp_2m"
 
 sampler = {

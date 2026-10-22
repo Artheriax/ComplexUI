@@ -19,13 +19,7 @@ noise_type: Literal[
     "wavelet",
     "perlin",
 ] = "gaussian"
-seed: int = 0
-control_after_generate: Literal[
-    "fixed",
-    "increment",
-    "decrement",
-    "randomize",
-] = "randomize"
+noise_seed: int = 0
 alpha: float = 1.0
 k: float = 1.0
 scale: float = 0.1
@@ -40,7 +34,7 @@ if scale < 0 or scale > 10:
 noise = {
     "kind": "noise",
     "noise_type": noise_type,
-    "seed": int(seed),
+    "noise_seed": int(noise_seed),
     "alpha": float(alpha),
     "k": float(k),
     "scale": float(scale),

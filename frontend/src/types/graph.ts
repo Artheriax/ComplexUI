@@ -31,7 +31,7 @@ export type SocketType =
   | "STRING"
   | "ANY";
 
-const SOCKET_TYPE_NAMES = new Set<SocketType>([
+export const SOCKET_TYPE_NAMES = new Set<SocketType>([
   "DATAFRAME",
   "DATASET",
   "ML_MODEL",
@@ -77,6 +77,7 @@ export function widgetSocketType(dataType: string): SocketType {
   if (
     kind === "str" ||
     kind === "string" ||
+    kind === "prompt" ||
     kind === "file" ||
     kind === "path" ||
     kind === "folder" ||
@@ -373,7 +374,7 @@ export interface SamplerPreview {
 export interface NoisePreview {
   kind: "noise";
   noise_type: string;
-  seed: number | null;
+  noise_seed: number | null;
   alpha: number;
   k: number;
   scale: number;
@@ -547,6 +548,7 @@ export type ExecutionStatus = "idle" | "running" | "completed" | "failed" | "can
 export interface NodeColorMeta {
   label: string;
   accent: string;
+  surface: string;
 }
 
 export const NODE_COLOR_ORDER: NodeColor[] = [
@@ -560,13 +562,13 @@ export const NODE_COLOR_ORDER: NodeColor[] = [
 ];
 
 export const NODE_COLORS: Record<NodeColor, NodeColorMeta> = {
-  default: { label: "Default", accent: "#52525b" },
-  sky: { label: "Sky", accent: "#38bdf8" },
-  emerald: { label: "Emerald", accent: "#34d399" },
-  amber: { label: "Amber", accent: "#fbbf24" },
-  rose: { label: "Rose", accent: "#fb7185" },
-  violet: { label: "Violet", accent: "#a78bfa" },
-  zinc: { label: "Zinc", accent: "#a1a1aa" },
+  default: { label: "Default", accent: "#52525b", surface: "#18181b" },
+  sky: { label: "Sky", accent: "#38bdf8", surface: "#0b2233" },
+  emerald: { label: "Emerald", accent: "#34d399", surface: "#0b261f" },
+  amber: { label: "Amber", accent: "#fbbf24", surface: "#2a2110" },
+  rose: { label: "Rose", accent: "#fb7185", surface: "#2b1018" },
+  violet: { label: "Violet", accent: "#a78bfa", surface: "#1c1533" },
+  zinc: { label: "Zinc", accent: "#a1a1aa", surface: "#1f1f23" },
 };
 
 export function isNodeColor(value: unknown): value is NodeColor {

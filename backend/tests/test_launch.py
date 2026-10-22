@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,32 @@ import launch
 
 def _theme() -> launch.Theme:
     return launch.Theme(False)
+
+
+def test_console_renderer_keeps_progress_at_bottom() -> None:
+    stream = io.StringIO()
+    renderer = launch.ConsoleRenderer(stream, enabled=True, ansi=False)
+
+    renderer.update_progress("progress 1")
+    renderer.write("[backend] log line\n")
+    renderer.update_progress("progress 2")
+    renderer.clear_progress()
+
+    output = stream.getvalue()
+    assert "progress 1" in output
+    assert "[backend] log line" in output
+    assert "progress 2" in output
+    assert output.endswith("\r")
+
+
+def test_console_renderer_falls_back_to_plain_lines_without_tty() -> None:
+    stream = io.StringIO()
+    renderer = launch.ConsoleRenderer(stream, enabled=False)
+
+    renderer.update_progress("progress 1")
+    renderer.write("plain line\n")
+
+    assert stream.getvalue() == "progress 1\nplain line\n"
 
 
 def test_ensure_frontend_dependencies_noop_when_installed(

@@ -327,6 +327,11 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
   const status = execution?.status ?? "idle";
   const borderClass = statusBorder[status];
   const accent = NODE_COLORS[data.color]?.accent ?? NODE_COLORS.default.accent;
+  const surface =
+    NODE_COLORS[data.color]?.surface ?? NODE_COLORS.default.surface;
+  const hasPromptWidget = data.schema.widgets.some(
+    (widget) => widget.data_type.toLowerCase() === "prompt",
+  );
 
   if (data.isFrame) {
     return <FrameShell id={id} label={data.label} accent={accent} selected={selected} />;
@@ -340,6 +345,7 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
         label={data.label}
         schema={data.schema}
         accent={accent}
+        surface={surface}
         selected={selected}
       />
     );
@@ -354,6 +360,7 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
         label={data.label}
         schema={data.schema}
         accent={accent}
+        surface={surface}
         selected={selected}
         onOpen={() => {
           enterSubgraph(id);
@@ -364,19 +371,21 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
 
   return (
     <div
-      className={`flex min-w-[230px] flex-col rounded-lg border bg-zinc-900 shadow-xl ${
+      data-node-surface={data.color}
+      className={`flex min-w-[230px] flex-col rounded-lg border shadow-xl ${
         width === undefined ? "max-w-[280px]" : ""
       } ${borderClass} ${selected ? "ring-2 ring-cyan-400/60" : ""}`}
       style={{
         width: width === undefined ? undefined : "100%",
         height: height === undefined ? undefined : "100%",
+        backgroundColor: surface,
       }}
     >
       {selected && (
         <NodeResizeControl
           position="bottom-right"
           minWidth={230}
-          minHeight={160}
+          minHeight={hasPromptWidget ? 240 : 160}
           maxWidth={MAX_FRAME_DIMENSION}
           maxHeight={MAX_FRAME_DIMENSION}
           color={accent}
@@ -471,16 +480,29 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
       )}
 
       {data.schema.widgets.length > 0 && (
-        <div className="shrink-0 space-y-1 border-b border-zinc-800 py-1.5 pr-2">
+        <div
+          className={`space-y-1 border-b border-zinc-800 py-1.5 pr-2 ${
+            hasPromptWidget
+              ? "flex min-h-0 flex-1 flex-col"
+              : "shrink-0"
+          }`}
+        >
           {data.schema.widgets.map((widget) => {
             const effectiveWidget =
               widget.name === "value" && valueOptions !== null
                 ? { ...widget, options: valueOptions }
                 : widget;
+            const isPromptWidget =
+              widget.data_type.toLowerCase() === "prompt";
             return (
               <div
                 key={widget.name}
-                className="cu-widget-row relative pl-3"
+                className={`cu-widget-row relative pl-3 ${
+                  isPromptWidget
+                    ? "flex min-h-0 flex-1 flex-col"
+                    : "shrink-0"
+                }`}
+                data-prompt-row={isPromptWidget ? "true" : undefined}
                 onDoubleClick={(event) => event.stopPropagation()}
               >
                 <WidgetTargetHandle
@@ -603,6 +625,7 @@ function SubgraphManagerShell({
   label,
   schema,
   accent,
+  surface,
   selected,
 }: {
   id: string;
@@ -610,16 +633,17 @@ function SubgraphManagerShell({
   label: string;
   schema: NodeSchema;
   accent: string;
+  surface: string;
   selected: boolean;
 }) {
   const addSubgraphPort = useGraphStore((state) => state.addSubgraphPort);
 
   return (
     <div
-      className={`min-w-[190px] rounded-lg border bg-zinc-900 shadow-xl ${
+      className={`min-w-[190px] rounded-lg border shadow-xl ${
         selected ? "ring-2 ring-cyan-400/60" : ""
       }`}
-      style={{ borderColor: accent }}
+      style={{ borderColor: accent, backgroundColor: surface }}
     >
       <div className="relative flex shrink-0 items-center gap-1.5 rounded-t-lg border-b border-zinc-800 bg-zinc-900/95 px-2 py-1.5">
         <span
@@ -699,6 +723,7 @@ function SubgraphInstanceShell({
   label,
   schema,
   accent,
+  surface,
   selected,
   onOpen,
 }: {
@@ -708,6 +733,7 @@ function SubgraphInstanceShell({
   label: string;
   schema: NodeSchema;
   accent: string;
+  surface: string;
   selected: boolean;
   onOpen: () => void;
 }) {
@@ -724,11 +750,12 @@ function SubgraphInstanceShell({
 
   return (
     <div
-      className={`flex min-w-[230px] flex-col rounded-lg border bg-zinc-900 shadow-xl ${
+      className={`flex min-w-[230px] flex-col rounded-lg border shadow-xl ${
         width === undefined ? "max-w-[280px]" : ""
       } ${selected ? "ring-2 ring-cyan-400/60" : ""}`}
       style={{
         borderColor: accent,
+        backgroundColor: surface,
         width: width === undefined ? undefined : "100%",
         height: height === undefined ? undefined : "100%",
       }}

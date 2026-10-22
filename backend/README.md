@@ -63,14 +63,15 @@ FastAPI service and node-code toolchain for ComplexUI.
 - `app/workspace.py` — file-backed named projects, 30 retained version
   snapshots, workspace trash, and close/visibility recovery sessions.
 - `app/main.py` — FastAPI server: REST endpoints plus `/ws/execution` streaming.
-- `app/templates/` — 84 official ML node templates across 10 categories:
+- `app/templates/` — 104 official ML node templates across 11 categories:
   scalar values (int/float/bool/string), data loaders (sklearn sets,
   synthetic/messy generators, CSV/Parquet/Excel/NDJSON), cleaning, EDA,
   preprocessing, imbalanced-data samplers, models (scikit-learn +
-  XGBoost/LightGBM), evaluation, the PyTorch tensor path, and computer vision
-  (torchvision image classification/detection/segmentation, video
-  classification, YOLO image/video detection and segmentation, image/video
-  loaders, media preview and media saving). Optional dependencies (`torch`, `torchvision`,
+  XGBoost/LightGBM), evaluation, the PyTorch tensor path, image generation
+  (SD1.5/SDXL checkpoint, CLIP, VAE, scheduler and sampler nodes), and
+  computer vision (torchvision image classification/detection/segmentation,
+  video classification, YOLO image/video detection and segmentation,
+  image/video loaders, media preview and media saving). Optional dependencies (`torch`, `torchvision`,
   `ultralytics`, `opencv-python`, `imageio-ffmpeg`, `safetensors`,
   `onnxruntime`, `xgboost`, `lightgbm`, `fastexcel`, `imbalanced-learn`) are
   declared in PEP 723 headers and installed on demand. Generated videos are
@@ -79,8 +80,9 @@ FastAPI service and node-code toolchain for ComplexUI.
   Scalar outputs can also target any widget parameter (for example
   `float_value.result -> train_test_split.test_size`); the executor overrides
   that keyword argument after applying stored widget values.
-- `app/workflows/` — 21 example workflow definitions (JSON) served by the API
-  and validated at load time, including offline vision image/video pipelines.
+- `app/workflows/` — 27 example workflow definitions (JSON) served by the API
+  and validated at load time, including offline vision image/video pipelines
+  and local image-generation workflows.
 
 Ultralytics (YOLO) templates are kept in a separate node family from the
 torchvision templates so non-YOLO vision workflows do not install it.
@@ -178,7 +180,9 @@ Requests enforce node-code, graph-size, and target-count caps; advertised
 request bodies larger than 16 MiB are rejected with `413`, except
 `/api/uploads`, which accepts up to 502 MiB so a 500 MiB media asset plus
 multipart overhead fits. Upload contents are also capped per asset kind while
-streaming. The server binds
+streaming. Non-upload bodies without `Content-Length` are buffered and capped
+before routing; upload routes stay streamed so their per-asset caps apply. The
+server binds
 loopback by default and accepts only loopback `Host` headers and WebSocket
 `Origin`s; set `COMPLEXUI_ALLOWED_HOSTS` (comma-separated) for custom hostnames
 or use the launcher's `--allow-network` flag, which disables the guard and warns.
@@ -315,7 +319,9 @@ Operator launcher (preferred): `uv run python launch.py [dev|backend|frontend|pr
 or the repo-root `start.cmd`. Console logging honors `COMPLEXUI_LOG_LEVEL`
 (default `INFO`), `COMPLEXUI_LOG_FORMAT` (`text` or newline-delimited `json`;
 uvicorn access lines remain plain text), `NO_COLOR` / `FORCE_COLOR`, and
-`--no-color` / `--log-level` / `--log-format`.
+`--no-color` / `--log-level` / `--log-format`. Successful polling requests for
+`/api/system/metrics`, `/api/status` and `/api/health` are filtered from the
+access logger.
 
 Plain-text logs are also written daily to `backend/workspace/logs/` (14 days
 retained), with one file per execution under `backend/workspace/logs/runs/`.

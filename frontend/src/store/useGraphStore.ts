@@ -37,6 +37,7 @@ import type {
   WorkspaceSession,
 } from "../lib/api";
 import { sha256Hex } from "../lib/hash";
+import { advanceSeedNodes } from "../lib/seedNodes";
 import {
   loadLocalProjectIdentity,
   loadLocalWorkflow,
@@ -1079,49 +1080,6 @@ async function buildSavedWorkflow(
   }
   const root = await buildGraph(saved.nodes, saved.edges, false);
   return { nodes: root.nodes, edges: root.edges, subgraphs };
-}
-
-export function advanceSeedNodes(
-  nodes: AppNode[],
-  event: ExecutionEvent,
-): AppNode[] {
-  if (event.type !== "NODE_COMPLETED" || event.data.cached === true) {
-    return nodes;
-  }
-  const node = nodes.find((candidate) => candidate.id === event.node_id);
-  if (!node) {
-    return nodes;
-  }
-  const values = node.data.widgetValues;
-  const seed = values.seed;
-  const control = values.control_after_generate;
-  if (typeof seed !== "number" || !Number.isFinite(seed)) {
-    return nodes;
-  }
-  let nextSeed: number;
-  if (control === "increment") {
-    nextSeed = seed + 1;
-  } else if (control === "decrement") {
-    nextSeed = seed - 1;
-  } else if (control === "randomize") {
-    nextSeed = Math.floor(Math.random() * 4_294_967_295);
-  } else {
-    return nodes;
-  }
-  if (nextSeed === seed) {
-    return nodes;
-  }
-  return nodes.map((candidate) =>
-    candidate.id === node.id
-      ? {
-          ...candidate,
-          data: {
-            ...candidate.data,
-            widgetValues: { ...values, seed: nextSeed },
-          },
-        }
-      : candidate,
-  );
 }
 
 function reduceExecutionEvent(

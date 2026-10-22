@@ -32,7 +32,9 @@ __all__ = [
     "FileFormatter",
     "JsonFormatter",
     "LogFormat",
+    "PollingAccessFilter",
     "configure_logging",
+    "install_access_log_filter",
     "resolve_log_dir",
 ]
 
@@ -78,6 +80,44 @@ _RESERVED_RECORD_KEYS = {
     "threadName",
 }
 DEFAULT_LOG_DIR = Path(__file__).resolve().parents[1] / "workspace" / "logs"
+_POLLING_ACCESS_PATHS = frozenset(
+    {"/api/system/metrics", "/api/status", "/api/health"}
+)
+
+
+class PollingAccessFilter(logging.Filter):
+    """Drop successful access-log records for high-frequency polling routes."""
+
+    def __init__(self, paths: tuple[str, ...] = tuple(_POLLING_ACCESS_PATHS)) -> None:
+        super().__init__()
+        self.paths = frozenset(paths)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 5:
+            return True
+        method, path, status = args[1], args[2], args[4]
+        if not isinstance(method, str) or not isinstance(path, str):
+            return True
+        try:
+            status_code = int(status)
+        except (TypeError, ValueError):
+            return True
+        return not (
+            method.upper() == "GET"
+            and status_code < 400
+            and path.split("?", 1)[0] in self.paths
+        )
+
+
+def install_access_log_filter() -> logging.Logger:
+    """Install the polling access filter on Uvicorn's access logger."""
+    access_logger = logging.getLogger("uvicorn.access")
+    for existing in list(access_logger.filters):
+        if isinstance(existing, PollingAccessFilter):
+            access_logger.removeFilter(existing)
+    access_logger.addFilter(PollingAccessFilter())
+    return access_logger
 
 
 class LogFormat(StrEnum):
