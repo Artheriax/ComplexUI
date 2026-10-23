@@ -123,31 +123,56 @@ scope so they can be implemented without re-discovering the current state.
      visible so users can include it in prompts.
    - Add tiny synthetic embedding fixtures for tests and document usage.
 
-9. **Attention optimizations (SDPA, xFormers, Sage and more).**
-   - Add an `attention` selector (`auto`, `sdpa`, `xformers`, `sage`) and
-     optional `attention_slicing` to model/CLIP/VAE loaders.
-   - `auto` uses PyTorch SDPA on supported setups and falls back safely.
-     Feature-detect optional backends; never add them as hard runtime
-     dependencies. Missing backends fail with an actionable message.
-   - Keep backend choice visible in model previews and cache keys where it
-     affects output. Do not silently mix mutually exclusive backends.
-   - Add mocked/feature-detection tests and document compatibility and memory
-     tradeoffs.
+9. Attention, precision and quantization optimizations
 
-10. **Internal optimizations (memory, offloading, OOM handling).**
-    - Add `offload` modes (`none`, `model`, `sequential`) to the pipeline-based
-      loaders and expose VAE slicing plus attention slicing alongside the
-      existing VAE tiling controls.
-    - Set/document `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (and any
-      configurable alternatives) for the worker process.
-    - Catch CUDA OOM and allocation failures, clear the CUDA cache, run
-      garbage collection and raise a concise node error with remedies (lower
-      resolution/batch, enable tiling/offload, close other GPU apps). The
-      server, UI and console must stay alive.
-    - Ensure cleanup in `finally` paths; keep the existing wall-clock,
-      node-timeout and process memory guards intact.
-    - Add mocked-OOM and cleanup tests; document settings in the relevant
-      READMEs.
+9.1 Attention backend registry
+
+- Replace the fixed attention selector with a capability-based registry.
+- Investigate PyTorch SDPA, FlashAttention 2/3, xFormers, SageAttention 2/2++, SageAttention 3, FlexAttention, Comfy Kitchen INT8/SOL attention, and split/sub-quadratic fallbacks.
+- Separate universal attention APIs from specialized kernels and model-specific attention processors.
+- Detect GPU architecture, PyTorch/CUDA versions, optional packages, dtype, masks, attention shape and model compatibility.
+- Provide `auto`, explicit backend selection and an optional benchmark mode.
+- Make `auto` fall back safely; explicit backend requests must fail with an actionable error if unavailable.
+- Log the selected backend and reason. Include effective settings in diagnostics and cache keys where they change model behavior.
+- Do not add optional attention packages as mandatory runtime dependencies.
+- Test unsupported devices, missing packages, masks, cross-attention, fallback paths and output correctness.
+
+9.2 Precision and quantization
+
+- Track weight storage dtype, compute dtype and accumulation behavior separately.
+- Support architecture- and hardware-appropriate FP32, FP16 and BF16 inference paths.
+- Investigate FP8, MXFP8, INT8/W8A8, ConvRot, NF4 and supported 4-bit formats through compatible runtimes.
+- Keep quantization format, quantization configuration, kernel backend and quantized checkpoint metadata explicit.
+- Do not treat INT8, NF4, INT4, MXFP8 and NVFP4 as interchangeable formats.
+- Add FP16 accumulation only as an explicit experimental option with numerical validation and overflow tests.
+- Validate model compatibility, hardware requirements and dtype combinations before inference.
+- Do not quantize arbitrary weights automatically unless the selected method and model architecture are supported.
+- Add mocked contract tests and small local fixtures; avoid model downloads in the test suite.
+- Document expected speed, VRAM, quality and compatibility trade-offs.
+
+9.3 Compilation and execution acceleration
+
+- Investigate optional `torch.compile`, CUDA Graphs and channels-last memory format where supported.
+- Make compilation opt-in, handle compilation failures safely, and distinguish first-run compilation time from steady-state inference.
+- Avoid unbounded compilation caches or recompilation when input shapes vary.
+- Benchmark each optimization on representative image-generation, image-editing and video workflows.
+- Keep eager execution available as the compatibility fallback.
+
+10. Memory management, offloading and OOM handling
+
+- Provide model-level, sequential and group/block offloading where supported by the architecture and runtime.
+- Expose VAE slicing and tiling independently; preserve existing VAE tiling behavior.
+- Keep attention slicing as a compatibility/low-memory fallback rather than assuming it is faster.
+- Investigate low-memory and sharded checkpoint loading to reduce peak memory during model initialization.
+- Add documented CUDA allocator configuration, including supported `PYTORCH_ALLOC_CONF` options and `expandable_segments`, applied before CUDA initialization.
+- Treat allocator backend selection, such as `cudaMallocAsync` where supported, as a separate, validated configuration.
+- Track peak allocated/reserved VRAM, CPU RAM, load time, inference time and offloading overhead when available.
+- Catch CUDA OOM and relevant allocation failures at node boundaries; clean up temporary resources and return concise, actionable errors.
+- Explain that clearing the CUDA cache does not free live tensors; do not retry unchanged operations indefinitely.
+- Keep the server and UI alive where possible; safely restart a worker only when required.
+- Preserve existing process memory limits, node timeouts and wall-clock guards.
+- Add mocked-OOM, cleanup, fallback and worker-recovery tests.
+- Document hardware/backend compatibility and memory/speed trade-offs in the relevant READMEs.
 
 11. **Automatic template updates for uncustomized nodes.**
     - Persist `templateCodeHash` (the template version a node was created from)
