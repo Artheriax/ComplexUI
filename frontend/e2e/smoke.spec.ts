@@ -23,6 +23,48 @@ async function openWorkflow(
   await page.getByRole("button", { name: title }).click();
 }
 
+async function emptyCanvasPoint(
+  page: import("@playwright/test").Page,
+): Promise<{ x: number; y: number }> {
+  const point = await page
+    .locator(".react-flow__pane")
+    .evaluate((pane) => {
+      const rect = pane.getBoundingClientRect();
+      const blocked =
+        ".react-flow__node, .react-flow__controls, .react-flow__minimap, .react-flow__panel, .react-flow__attribution";
+      const maxX = Math.min(rect.width, window.innerWidth - rect.left) - 40;
+      const maxY = Math.min(rect.height, window.innerHeight - rect.top) - 40;
+      for (let y = 60; y < maxY; y += 40) {
+        for (let x = 60; x < maxX; x += 40) {
+          const target = document.elementFromPoint(rect.left + x, rect.top + y);
+          if (
+            target?.closest(".react-flow__pane") &&
+            !target.closest(blocked)
+          ) {
+            return { x: rect.left + x, y: rect.top + y };
+          }
+        }
+      }
+      return null;
+    });
+  if (!point) {
+    throw new Error("Could not find an empty point on the canvas");
+  }
+  return point;
+}
+
+async function settleCanvas(page: import("@playwright/test").Page) {
+  const viewport = page.locator(".react-flow__viewport");
+  await page.waitForTimeout(400);
+  await expect
+    .poll(async () => {
+      const style = await viewport.getAttribute("style");
+      await page.waitForTimeout(100);
+      return style === (await viewport.getAttribute("style"));
+    })
+    .toBe(true);
+}
+
 async function edgeDragPoint(
   page: import("@playwright/test").Page,
   edgeTestId: string,
@@ -124,10 +166,11 @@ test("edits the Save Media filename template and preview", async ({ page }) => {
 
 test("adds the switch and folder loader nodes", async ({ page }) => {
   await openWorkflow(page, /Vision Media Smoke Test/);
-  const pane = page.locator(".react-flow__pane");
-
-  await pane.dblclick({ position: { x: 80, y: 80 } });
   const search = page.getByRole("combobox", { name: "Search nodes" });
+
+  const firstPoint = await emptyCanvasPoint(page);
+  await page.mouse.dblclick(firstPoint.x, firstPoint.y);
+  await expect(search).toBeVisible();
   await search.fill("Switch (5 Inputs)");
   await page.getByRole("option", { name: /Switch \(5 Inputs\)/ }).click();
 
@@ -144,7 +187,9 @@ test("adds the switch and folder loader nodes", async ({ page }) => {
     switchNode.getByText("The selected input is not connected."),
   ).toBeVisible();
 
-  await pane.dblclick({ position: { x: 80, y: 80 } });
+  const secondPoint = await emptyCanvasPoint(page);
+  await page.mouse.dblclick(secondPoint.x, secondPoint.y);
+  await expect(search).toBeVisible();
   await search.fill("Load Images From Folder");
   await page
     .getByRole("option", { name: /Load Images From Folder/ })
@@ -316,6 +361,7 @@ test("runs an offline image-classification workflow", async ({ page }) => {
 
 test("resizes a node without scaling parameter controls", async ({ page }) => {
   await openWorkflow(page, /Iris KNN Classification/);
+  await settleCanvas(page);
   const split = page
     .locator(".react-flow__node")
     .filter({ hasText: "Train / Test Split" });
@@ -330,8 +376,9 @@ test("resizes a node without scaling parameter controls", async ({ page }) => {
   );
   const resizeBox = await resizeHandle.boundingBox();
   expect(resizeBox).not.toBeNull();
-  const before = await split.boundingBox();
-  expect(before).not.toBeNull();
+  const beforeWidth = await split.evaluate(
+    (element) => (element as HTMLElement).offsetWidth,
+  );
   await page.mouse.move(
     resizeBox!.x + resizeBox!.width / 2,
     resizeBox!.y + resizeBox!.height / 2,
@@ -345,8 +392,10 @@ test("resizes a node without scaling parameter controls", async ({ page }) => {
   await page.mouse.up();
 
   await expect
-    .poll(async () => (await split.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(before!.width + 80);
+    .poll(async () =>
+      split.evaluate((element) => (element as HTMLElement).offsetWidth),
+    )
+    .toBeGreaterThan(beforeWidth + 80);
   const parameterAfter = await parameter.evaluate(
     (element) => getComputedStyle(element).width,
   );
@@ -363,8 +412,10 @@ test("resizes a node without scaling parameter controls", async ({ page }) => {
     .locator(".react-flow__node")
     .filter({ hasText: "Train / Test Split" });
   await expect
-    .poll(async () => (await restored.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(before!.width + 80);
+    .poll(async () =>
+      restored.evaluate((element) => (element as HTMLElement).offsetWidth),
+    )
+    .toBeGreaterThan(beforeWidth + 80);
 });
 
 test("runs an offline video-detection workflow", async ({ page }) => {
