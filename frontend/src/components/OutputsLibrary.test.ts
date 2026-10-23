@@ -32,6 +32,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function imageResponse(blob: Blob): Response {
+  return {
+    ok: true,
+    status: 200,
+    blob: async () => blob,
+  } as Response;
+}
+
 function resetOutputs(): void {
   useOutputsStore.setState({
     outputs: [],
@@ -152,10 +160,7 @@ test("copies an output image to the clipboard", async () => {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("/raw")) {
-        return new Response(png, {
-          status: 200,
-          headers: { "Content-Type": "image/png" },
-        });
+        return imageResponse(png);
       }
       return jsonResponse([output]);
     }),
