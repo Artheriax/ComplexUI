@@ -1,4 +1,5 @@
 import type {
+  BatchPreview,
   ClassificationsPreview,
   ClipPreview,
   ConditioningPreview,
@@ -52,6 +53,15 @@ function isModelPreview(value: PreviewValue): value is ModelPreview {
 
 function isImagePreview(value: PreviewValue): value is ImagePreview {
   return typeof value === "object" && value !== null && "kind" in value && value.kind === "image";
+}
+
+function isBatchPreview(value: PreviewValue): value is BatchPreview {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "batch"
+  );
 }
 
 function isImageBatchPreview(value: PreviewValue): value is ImageBatchPreview {
@@ -362,6 +372,13 @@ export function PreviewValueView({
           </div>
           <div className="text-zinc-500">{value.mode}</div>
         </div>
+      </div>
+    );
+  }
+  if (isBatchPreview(value)) {
+    return (
+      <div className="rounded border border-dashed border-zinc-700 px-3 py-4 text-[10px] text-zinc-400">
+        {value.count} items
       </div>
     );
   }

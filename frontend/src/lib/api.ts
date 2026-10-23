@@ -111,9 +111,29 @@ export function datasetRawUrl(datasetId: string): string {
   return `${API_BASE}/uploads/${encodeURIComponent(datasetId)}/raw`;
 }
 
+function encodeOutputPath(value: string): string {
+  return value
+    .replace(/\\/g, "/")
+    .replace(/^outputs\//, "")
+    .split("/")
+    .filter(Boolean)
+    .map(encodeURIComponent)
+    .join("/");
+}
+
 export function outputRawUrl(path: string): string {
-  const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-  return `${API_BASE}/outputs/${encodeURIComponent(name)}/raw`;
+  return `${API_BASE}/outputs/${encodeOutputPath(path)}/raw`;
+}
+
+function isOutputsPath(path: string): boolean {
+  return /^outputs[\\/]/.test(path);
+}
+
+export function savedMediaRawUrl(path: string): string {
+  if (isOutputsPath(path)) {
+    return outputRawUrl(path);
+  }
+  return `${API_BASE}/artifacts/raw?path=${encodeURIComponent(path)}`;
 }
 
 export interface OutputSummary {
@@ -131,15 +151,69 @@ export interface OutputDeleteResult {
   output: OutputSummary;
 }
 
+export interface OutputActionResponse {
+  status: "opened" | "revealed";
+}
+
+export interface FolderPickResponse {
+  path: string | null;
+}
+
 export function fetchOutputs(limit = 200): Promise<OutputSummary[]> {
   return requestJson<OutputSummary[]>(`/outputs?limit=${limit}`);
 }
 
 export function deleteOutput(outputId: string): Promise<OutputDeleteResult> {
   return requestJson<OutputDeleteResult>(
-    `/outputs/${encodeURIComponent(outputId)}`,
+    `/outputs/${encodeOutputPath(outputId)}`,
     { method: "DELETE" },
   );
+}
+
+export function openOutput(outputId: string): Promise<OutputActionResponse> {
+  return requestJson<OutputActionResponse>(
+    `/outputs/${encodeOutputPath(outputId)}/open`,
+    { method: "POST" },
+  );
+}
+
+export function revealOutput(outputId: string): Promise<OutputActionResponse> {
+  return requestJson<OutputActionResponse>(
+    `/outputs/${encodeOutputPath(outputId)}/reveal`,
+    { method: "POST" },
+  );
+}
+
+export async function openSavedOutput(
+  path: string,
+): Promise<OutputActionResponse> {
+  if (isOutputsPath(path)) {
+    return openOutput(path);
+  }
+  return requestJson<OutputActionResponse>("/artifacts/open", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function revealSavedOutput(
+  path: string,
+): Promise<OutputActionResponse> {
+  if (isOutputsPath(path)) {
+    return revealOutput(path);
+  }
+  return requestJson<OutputActionResponse>("/artifacts/reveal", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export async function pickFolder(initial?: string): Promise<string | null> {
+  const response = await requestJson<FolderPickResponse>("/fs/pick-folder", {
+    method: "POST",
+    body: JSON.stringify({ initial: initial ?? null }),
+  });
+  return response.path;
 }
 
 export interface ModelSummary {

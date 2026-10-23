@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -143,29 +144,47 @@ def test_resolution_validates_shared_dimensions() -> None:
 def test_resolution_computes_aspect_ratios_and_megapixels() -> None:
     resolution = _func("resolution")
     assert resolution(
-        width=512,
-        height=512,
+        size_mode="Megapixels",
+        megapixel_preset="1.00 MP - 1024p",
         aspect_ratio="16:9",
         orientation="landscape",
-        megapixels=1.0,
         divisible_by=64,
     ) == (1344, 768)
     assert resolution(
-        width=512,
-        height=512,
+        size_mode="Megapixels",
+        megapixel_preset="1.00 MP - 1024p",
         aspect_ratio="2:1",
         orientation="portrait",
-        megapixels=1.0,
         divisible_by=8,
     ) == (704, 1416)
     assert resolution(
-        width=768,
-        height=768,
+        size_mode="Megapixels",
+        megapixel_preset="Custom",
+        custom_megapixels=0.589824,
         aspect_ratio="4:3",
         orientation="landscape",
-        megapixels=0.0,
         divisible_by=16,
     ) == (880, 672)
+
+
+def test_resolution_supports_custom_ratio_and_new_presets() -> None:
+    resolution = _func("resolution")
+    assert resolution(
+        size_mode="Megapixels",
+        megapixel_preset="8.30 MP - UHD",
+        aspect_ratio="16:9",
+        orientation="landscape",
+        divisible_by=8,
+    ) == (3840, 2160)
+    assert resolution(
+        size_mode="Megapixels",
+        megapixel_preset="Custom",
+        custom_megapixels=0.5,
+        aspect_ratio="custom",
+        custom_ratio="5:4",
+        orientation="portrait",
+        divisible_by=8,
+    ) == (632, 792)
 
 
 def test_resolution_rejects_invalid_resolution_controls() -> None:
@@ -173,7 +192,17 @@ def test_resolution_rejects_invalid_resolution_controls() -> None:
     with pytest.raises(ValueError, match="divisible_by"):
         resolution(width=512, height=512, divisible_by=10)
     with pytest.raises(ValueError, match="megapixels"):
-        resolution(width=512, height=512, megapixels=-1)
+        resolution(
+            size_mode="Megapixels",
+            megapixel_preset="Custom",
+            custom_megapixels=-1,
+        )
+    with pytest.raises(ValueError, match="custom_ratio"):
+        resolution(
+            size_mode="Megapixels",
+            aspect_ratio="custom",
+            custom_ratio="wide",
+        )
 
 
 def test_empty_latent_uses_checkpoint_scale_factor() -> None:
@@ -194,16 +223,31 @@ def test_empty_latent_uses_checkpoint_scale_factor() -> None:
 def test_empty_latent_computes_aspect_ratio() -> None:
     empty = _func("empty_latent_image")
     (latent,) = empty(
-        width=512,
-        height=512,
         batch_size=1,
+        size_mode="Megapixels",
+        megapixel_preset="Custom",
+        custom_megapixels=0.25,
         aspect_ratio="1:1",
-        megapixels=0.25,
         divisible_by=32,
     )
     assert latent["width"] == 512
     assert latent["height"] == 512
     assert latent["samples"].shape == (1, 4, 64, 64)
+
+
+def test_empty_latent_uses_megapixel_presets() -> None:
+    empty = _func("empty_latent_image")
+    (latent,) = empty(
+        batch_size=1,
+        size_mode="Megapixels",
+        megapixel_preset="6.50 MP - Production",
+        aspect_ratio="16:9",
+        divisible_by=8,
+    )
+
+    assert latent["width"] == 3400
+    assert latent["height"] == 1912
+    assert latent["samples"].shape[2:] == (239, 425)
 
 
 def test_image_from_batch_selects_one_image() -> None:
@@ -401,18 +445,22 @@ def test_diffusion_previews_cover_new_socket_types() -> None:
 
 def test_save_media_handles_single_and_multi_image_batches(tmp_path) -> None:
     save = _func("save_media")
+    save.__globals__["outputs_root"] = tmp_path / "outputs"
+    day = datetime.now().strftime("%Y-%m-%d")
+    directory = tmp_path / "outputs" / day
+
     single = Image.new("RGB", (4, 4), "red")
-    (path, saved) = save(media=[single], path=str(tmp_path / "single.png"))
-    assert path == "outputs/single.png"
+    (path, saved) = save(media=[single], model_name="single")
+    assert path == f"outputs/{day}/single_001.png"
     assert isinstance(saved, Image.Image)
-    assert (tmp_path / "single.png").is_file()
+    assert (directory / "single_001.png").is_file()
 
     batch = [Image.new("RGB", (4, 4)), Image.new("RGB", (4, 4))]
-    (path, saved) = save(media=batch, path=str(tmp_path / "batch.png"))
-    assert path == "outputs/batch_000.png"
+    (path, saved) = save(media=batch, model_name="batch")
+    assert path == f"outputs/{day}/batch_001_000.png"
     assert isinstance(saved, list) and len(saved) == 2
-    assert (tmp_path / "batch_000.png").is_file()
-    assert (tmp_path / "batch_001.png").is_file()
+    assert (directory / "batch_001_000.png").is_file()
+    assert (directory / "batch_001_001.png").is_file()
 
 @pytest.mark.parametrize(
     "sampler",

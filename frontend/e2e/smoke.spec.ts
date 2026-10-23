@@ -63,7 +63,7 @@ test("shows and hides the system monitor from settings", async ({ page }) => {
     page.getByRole("region", { name: "System monitor" }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings" });
   await settings.getByRole("tab", { name: "System" }).click();
   const toggle = settings.getByRole("switch", {
@@ -76,7 +76,7 @@ test("shows and hides the system monitor from settings", async ({ page }) => {
     page.getByRole("region", { name: "System monitor" }),
   ).toBeHidden();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const reopened = page.getByRole("dialog", { name: "Settings" });
   await reopened.getByRole("tab", { name: "System" }).click();
   await reopened
@@ -106,6 +106,98 @@ test("opens bundled image-generation workflows without local models", async ({
   }
 });
 
+test("edits the Save Media filename template and preview", async ({ page }) => {
+  await openWorkflow(page, /Vision Media Smoke Test/);
+  const saveNode = page.locator('.react-flow__node[data-id="save"]');
+  const filename = saveNode.getByLabel("Filename template");
+  await filename.fill("%counter%");
+  await expect(
+    saveNode.getByText(/outputs\/\d{4}-\d{2}-\d{2}\/001\.png/),
+  ).toBeVisible();
+
+  await saveNode.getByRole("button", { name: "Reset" }).click();
+  await expect(filename).toHaveValue("%model%_%counter%");
+  await expect(
+    saveNode.getByText(/outputs\/\d{4}-\d{2}-\d{2}\/demo_001\.png/),
+  ).toBeVisible();
+});
+
+test("adds the switch and folder loader nodes", async ({ page }) => {
+  await openWorkflow(page, /Vision Media Smoke Test/);
+  const pane = page.locator(".react-flow__pane");
+
+  await pane.dblclick({ position: { x: 80, y: 80 } });
+  const search = page.getByRole("combobox", { name: "Search nodes" });
+  await search.fill("Switch (5 Inputs)");
+  await page.getByRole("option", { name: /Switch \(5 Inputs\)/ }).click();
+
+  const switchNode = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Switch (5 Inputs)" });
+  await expect(switchNode.getByLabel("Switch selection")).toBeVisible();
+  const firstName = switchNode.getByLabel("Input 1 name");
+  await firstName.fill("Alpha");
+  await expect(firstName).toHaveValue("Alpha");
+  await switchNode.getByLabel("Switch selection").selectOption("1");
+  await expect(switchNode.getByLabel("Switch selection")).toHaveValue("1");
+  await expect(
+    switchNode.getByText("The selected input is not connected."),
+  ).toBeVisible();
+
+  await pane.dblclick({ position: { x: 80, y: 80 } });
+  await search.fill("Load Images From Folder");
+  await page
+    .getByRole("option", { name: /Load Images From Folder/ })
+    .click();
+
+  const loader = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Load Images From Folder" });
+  const folder = loader.getByLabel("Choose folder for folder");
+  await folder.fill("inputs");
+  await expect(folder).toHaveValue("inputs");
+  await expect(
+    loader.getByRole("button", { name: "Browse for folder" }),
+  ).toBeVisible();
+});
+
+test("switches resolution and resize modes with conditional fields", async ({
+  page,
+}) => {
+  await page.getByRole("button", { name: "New workflow window" }).click();
+  const pane = page.locator(".react-flow__pane");
+  const search = page.getByRole("combobox", { name: "Search nodes" });
+
+  await pane.dblclick({ position: { x: 80, y: 80 } });
+  await search.fill("Resolution");
+  await page.getByRole("option", { name: /Resolution Image/ }).click();
+
+  const resolution = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Resolution" });
+  await expect(resolution.getByLabel("width")).toBeVisible();
+  await expect(resolution.getByLabel("megapixel_preset")).toHaveCount(0);
+  await resolution.getByLabel("size_mode").selectOption("Megapixels");
+  await expect(resolution.getByLabel("width")).toHaveCount(0);
+  await expect(resolution.getByLabel("megapixel_preset")).toBeVisible();
+  await expect(resolution.getByLabel("custom_megapixels")).toHaveCount(0);
+  await resolution.getByLabel("megapixel_preset").selectOption("Custom");
+  await expect(resolution.getByLabel("custom_megapixels")).toBeVisible();
+
+  await pane.dblclick({ position: { x: 1000, y: 200 } });
+  await search.fill("Resize Image");
+  await page.getByRole("option", { name: /Resize Image/ }).first().click();
+
+  const resize = page
+    .locator(".react-flow__node")
+    .filter({ hasText: "Resize Image" });
+  await expect(resize.getByLabel("width")).toBeVisible();
+  await resize.getByLabel("mode").selectOption("By Side");
+  await expect(resize.getByLabel("width")).toHaveCount(0);
+  await expect(resize.getByLabel("side_resolution")).toBeVisible();
+  await expect(resize.getByLabel("allow_upscale")).toBeVisible();
+});
+
 test("lists generated media in the Assets Outputs tab", async ({ page }) => {
   await openWorkflow(page, /Vision Media Smoke Test/);
   await canvasStatus(page).getByRole("button", { name: "Run workflow" }).click();
@@ -117,7 +209,9 @@ test("lists generated media in the Assets Outputs tab", async ({ page }) => {
   await page.getByRole("button", { name: "Assets" }).click();
   await page.getByRole("tab", { name: "Outputs" }).click();
   await expect(
-    page.getByRole("button", { name: "Preview vision-demo.png" }),
+    page
+      .getByRole("button", { name: /Preview demo_\d{3}\.png/ })
+      .first(),
   ).toBeVisible();
 });
 
@@ -129,7 +223,7 @@ test("loads a bundled workflow, updates settings, and runs it", async ({
     canvasStatus(page).getByText("4 nodes", { exact: true }),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const settings = page.getByRole("dialog", { name: "Settings" });
   await expect(settings).toBeVisible();
 
@@ -162,6 +256,7 @@ test("loads a bundled workflow, updates settings, and runs it", async ({
 });
 
 test("runs an offline image-classification workflow", async ({ page }) => {
+  await page.getByRole("button", { name: "Hide system monitor" }).click();
   await openWorkflow(page, /Image Classification \(Torchvision\)/);
   await expect(
     canvasStatus(page).getByText("3 nodes", { exact: true }),
@@ -190,6 +285,8 @@ test("runs an offline image-classification workflow", async ({ page }) => {
   await page.mouse.up();
   const image = demo.getByAltText("Node output");
   await expect(image).toBeVisible();
+  await page.getByRole("button", { name: "Fit View" }).click();
+  await page.waitForTimeout(400);
   const imageBefore = await image.boundingBox();
   const demoBefore = await demo.boundingBox();
   expect(imageBefore).not.toBeNull();

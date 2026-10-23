@@ -14,9 +14,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from .datasets import InvalidAssetPath, get_output_store
 from .executor import GraphPlan, validate_graph
 from .models import ModelError, get_model_store
-from .schemas import GraphEdge, GraphNode, NodeSchema, WorkflowGraph
+from .schemas import GraphEdge, GraphNode, NodeSchema, SocketType, WorkflowGraph
 from .transpiler import transpile_node
 
 __all__ = [
@@ -55,6 +56,7 @@ class _PreparedNode:
     function_source: str
     call_args: tuple[str, ...]
     outputs: tuple[tuple[str, int], ...]
+    batch_inputs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +224,11 @@ def _prepare(
                     (socket.name, index)
                     for index, socket in enumerate(schema.outputs)
                 ),
+                batch_inputs=tuple(
+                    socket.name
+                    for socket in schema.inputs
+                    if socket.data_type is SocketType.IMAGE
+                ),
             )
         )
 
@@ -260,10 +267,23 @@ def _call_args(
             args.append(f"{widget.name}={_source_expression(edge)}")
             continue
         value = node.widget_values.get(widget.name, widget.default)
-        if widget.data_type.strip().lower() == "modelselector":
+        widget_kind = widget.data_type.strip().lower()
+        if widget_kind == "modelselector":
             value = _export_model_value(widget.model_type, value)
+        elif widget_kind == "outputfile":
+            value = _export_output_value(value)
         args.append(f"{widget.name}={_literal(value)}")
     return tuple(args)
+
+
+def _export_output_value(value: object) -> object:
+    """Resolve output paths so exported scripts write where the app does."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    try:
+        return str(get_output_store().resolve_path(value))
+    except (InvalidAssetPath, OSError) as exc:
+        raise ExportError(str(exc)) from exc
 
 
 def _export_model_value(model_type: str | None, value: object) -> object:
@@ -356,6 +376,14 @@ def _python_header(
 
 def _runtime_helpers() -> list[str]:
     return [
+        "import os",
+        "from pathlib import Path",
+        "",
+        "outputs_root = Path(",
+        '    os.environ.get("COMPLEXUI_OUTPUT_DIR") or Path.cwd() / "outputs"',
+        ").expanduser().resolve()",
+        "outputs_root.mkdir(parents=True, exist_ok=True)",
+        "",
         "def report_progress(progress: float, message: str | None = None) -> None:",
         "    \"\"\"Standalone exports do not stream progress.\"\"\"",
         "    pass",
@@ -363,6 +391,50 @@ def _runtime_helpers() -> list[str]:
         "def raise_if_cancelled() -> None:",
         "    \"\"\"Standalone exports cannot be cancelled.\"\"\"",
         "    pass",
+        "",
+        "batch_index = 0",
+        "batch_size = 1",
+        "",
+        "def _run_batch_node(func, kwargs, batch_inputs, output_count):",
+        "    names = [",
+        "        name for name in batch_inputs",
+        "        if isinstance(kwargs.get(name), (list, tuple))",
+        "    ]",
+        "    if not names:",
+        "        func.__globals__[\"batch_index\"] = 0",
+        "        func.__globals__[\"batch_size\"] = 1",
+        "        return func(**kwargs)",
+        "    lengths = {name: len(kwargs[name]) for name in names}",
+        "    if len(set(lengths.values())) != 1:",
+        "        detail = \", \".join(",
+        "            f\"{name}={length}\" for name, length in lengths.items()",
+        "        )",
+        "        raise ValueError(",
+        "            \"Image batch inputs must have matching lengths: \" + detail",
+        "        )",
+        "    size = next(iter(lengths.values()))",
+        "    if size > 256:",
+        "        raise ValueError(",
+        "            f\"Image batch has {size} items; the limit is 256.\"",
+        "        )",
+        "    if size == 0:",
+        "        return tuple([] for _ in range(output_count))",
+        "    buckets = [[] for _ in range(output_count)]",
+        "    for index in range(size):",
+        "        func.__globals__[\"batch_index\"] = index",
+        "        func.__globals__[\"batch_size\"] = size",
+        "        item_kwargs = {",
+        "            key: (value[index] if key in names else value)",
+        "            for key, value in kwargs.items()",
+        "        }",
+        "        result = func(**item_kwargs)",
+        "        if output_count == 0:",
+        "            continue",
+        "        if not isinstance(result, tuple) or len(result) != output_count:",
+        "            raise ValueError(\"Node returned an unexpected output shape\")",
+        "        for bucket, value in zip(buckets, result):",
+        "            bucket.append(value)",
+        "    return tuple(buckets)",
         "",
     ]
 
@@ -408,7 +480,24 @@ def _notebook_setup(prepared: _PreparedExport) -> str:
 
 
 def _call_lines(node: _PreparedNode, indent: str) -> list[str]:
-    if node.call_args:
+    if node.batch_inputs and node.call_args:
+        lines = [
+            f"{indent}__node_result = _run_batch_node(",
+            f"{indent}    {node.function_name},",
+            f"{indent}    {{",
+        ]
+        for argument in node.call_args:
+            name, _, expression = argument.partition("=")
+            lines.append(f"{indent}        {name!r}: {expression},")
+        lines.extend(
+            [
+                f"{indent}    }},",
+                f"{indent}    {node.batch_inputs!r},",
+                f"{indent}    {len(node.outputs)},",
+                f"{indent})",
+            ]
+        )
+    elif node.call_args:
         lines = [f"{indent}__node_result = {node.function_name}("]
         lines.extend(f"{indent}    {argument}," for argument in node.call_args)
         lines.append(f"{indent})")

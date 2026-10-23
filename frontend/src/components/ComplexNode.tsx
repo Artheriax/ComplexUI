@@ -17,6 +17,7 @@ import type {
 import { classifyHandle, handleGuideClass } from "../lib/connectionGuide";
 import { MAX_FRAME_DIMENSION } from "../lib/persistence";
 import { deriveValueNodeOptions } from "../lib/valueNodeOptions";
+import { isWidgetVisible } from "../lib/widgetVisibility";
 import { useBundleDragStore } from "../store/useBundleDragStore";
 import { useConnectionGuideStore } from "../store/useConnectionGuideStore";
 import { useEdgeDragStore } from "../store/useEdgeDragStore";
@@ -51,7 +52,31 @@ import {
 } from "./icons";
 import { PreviewValueView } from "./PreviewValueView";
 import { RichOutputView } from "./RichOutputView";
+import { SaveMediaActions } from "./SaveMediaActions";
+import { SaveMediaFields } from "./SaveMediaFields";
+import { SwitchFields } from "./SwitchFields";
 import { WidgetField } from "./WidgetField";
+
+const SWITCH_WIDGETS = new Set([
+  "input_1",
+  "input_2",
+  "input_3",
+  "input_4",
+  "input_5",
+  "choices",
+  "selected",
+]);
+
+const SAVE_MEDIA_WIDGETS = new Set([
+  "folder",
+  "filename",
+  "model_name",
+  "format",
+  "quality",
+  "compress_level",
+  "optimize",
+  "save_nonce",
+]);
 
 const statusBorder: Record<NodeExecutionState["status"] | "idle", string> = {
   idle: "border-zinc-700",
@@ -176,7 +201,9 @@ function SocketHandle({
       position={kind === "source" ? Position.Right : Position.Left}
       id={id}
       style={socketStyle(type)}
-      className={`nokey ${handleGuideClass(state)}`}
+      className={`nokey ${handleGuideClass(state)}${
+        type === "IMAGE_BATCH" ? " cu-handle-batch" : ""
+      }`}
       onPointerDownCapture={
         kind === "target" && occupied
           ? (event) => startEdgeRetarget(event, nodeId, id)
@@ -329,9 +356,39 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
   const accent = NODE_COLORS[data.color]?.accent ?? NODE_COLORS.default.accent;
   const surface =
     NODE_COLORS[data.color]?.surface ?? NODE_COLORS.default.surface;
-  const hasPromptWidget = data.schema.widgets.some(
+  const isSaveMedia = [...SAVE_MEDIA_WIDGETS].every((name) =>
+    data.schema.widgets.some((widget) => widget.name === name),
+  );
+  const isSwitch = [...SWITCH_WIDGETS].every((name) =>
+    data.schema.widgets.some((widget) => widget.name === name),
+  );
+  const customWidgets = isSaveMedia
+    ? SAVE_MEDIA_WIDGETS
+    : isSwitch
+      ? SWITCH_WIDGETS
+      : null;
+  const visibleWidgets = (
+    customWidgets
+      ? data.schema.widgets.filter(
+          (widget) => !customWidgets.has(widget.name),
+        )
+      : data.schema.widgets
+  ).filter((widget) =>
+    isWidgetVisible(widget, data.widgetValues, connectedTargets),
+  );
+  const hasPromptWidget = visibleWidgets.some(
     (widget) => widget.data_type.toLowerCase() === "prompt",
   );
+  const mediaEdge = edges.find(
+    (edge) => edge.target === id && edge.targetHandle === "media",
+  );
+  const upstreamPreview = useGraphStore((state) => {
+    if (!mediaEdge) {
+      return null;
+    }
+    const source = state.execution.nodeStates[mediaEdge.source];
+    return source?.outputs?.[mediaEdge.sourceHandle ?? ""] ?? null;
+  });
 
   if (data.isFrame) {
     return <FrameShell id={id} label={data.label} accent={accent} selected={selected} />;
@@ -373,7 +430,11 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
     <div
       data-node-surface={data.color}
       className={`flex min-w-[230px] flex-col rounded-lg border shadow-xl ${
-        width === undefined ? "max-w-[280px]" : ""
+        width === undefined
+          ? isSaveMedia || isSwitch
+            ? "w-[280px]"
+            : "max-w-[280px]"
+          : ""
       } ${borderClass} ${selected ? "ring-2 ring-cyan-400/60" : ""}`}
       style={{
         width: width === undefined ? undefined : "100%",
@@ -479,7 +540,7 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
         </div>
       )}
 
-      {data.schema.widgets.length > 0 && (
+      {(visibleWidgets.length > 0 || isSaveMedia || isSwitch) && (
         <div
           className={`space-y-1 border-b border-zinc-800 py-1.5 pr-2 ${
             hasPromptWidget
@@ -487,7 +548,44 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
               : "shrink-0"
           }`}
         >
-          {data.schema.widgets.map((widget) => {
+          {isSwitch && (
+            <SwitchFields
+              widgets={data.schema.widgets.filter((widget) =>
+                SWITCH_WIDGETS.has(widget.name),
+              )}
+              values={data.widgetValues}
+              connected={connectedTargets}
+              onChange={(name, value) => updateWidgetValue(id, name, value)}
+              renderHandle={(name, widget, connected) => (
+                <WidgetTargetHandle
+                  nodeId={id}
+                  id={name}
+                  type={widgetSocketType(widget.data_type)}
+                  connected={connected}
+                />
+              )}
+            />
+          )}
+          {isSaveMedia && (
+            <SaveMediaFields
+              widgets={data.schema.widgets.filter((widget) =>
+                SAVE_MEDIA_WIDGETS.has(widget.name),
+              )}
+              values={data.widgetValues}
+              connected={connectedTargets}
+              onChange={(name, value) => updateWidgetValue(id, name, value)}
+              renderHandle={(name, widget, connected) => (
+                <WidgetTargetHandle
+                  nodeId={id}
+                  id={name}
+                  type={widgetSocketType(widget.data_type)}
+                  connected={connected}
+                />
+              )}
+              upstreamPreview={upstreamPreview}
+            />
+          )}
+          {visibleWidgets.map((widget) => {
             const effectiveWidget =
               widget.name === "value" && valueOptions !== null
                 ? { ...widget, options: valueOptions }
@@ -558,11 +656,33 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
       )}
 
       {execution?.outputs && Object.keys(execution.outputs).length > 0 && (
-        <NodePreviews outputs={execution.outputs} fill={height !== undefined} />
+        <NodePreviews
+          outputs={
+            isSaveMedia
+              ? Object.fromEntries(
+                  Object.entries(execution.outputs).filter(
+                    ([name]) => name !== "saved_path",
+                  ),
+                )
+              : execution.outputs
+          }
+          fill={height !== undefined}
+        />
       )}
 
       {execution && execution.richOutputs && execution.richOutputs.length > 0 && (
         <NodeRichOutputs outputs={execution.richOutputs} />
+      )}
+
+      {isSaveMedia && (
+        <SaveMediaActions
+          nodeId={id}
+          values={data.widgetValues}
+          execution={execution}
+          running={running}
+          isTrusted={data.isTrusted}
+          hasMediaInput={connectedTargets.has("media")}
+        />
       )}
 
       {execution && <NodeStatusFooter state={execution} />}

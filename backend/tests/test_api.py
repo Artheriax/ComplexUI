@@ -125,6 +125,7 @@ def test_parse_endpoint_returns_node_schema(client: TestClient) -> None:
             "default": 5,
             "options": [],
             "model_type": None,
+            "visible_when": [],
         }
     ]
     assert body["outputs"][0]["name"] == "k"
@@ -149,8 +150,26 @@ def test_parse_endpoint_returns_literal_choices(client: TestClient) -> None:
             "default": "low",
                 "options": ["low", "medium", "high"],
                 "model_type": None,
+                "visible_when": [],
             }
         ]
+
+
+def test_parse_endpoint_returns_widget_visibility(client: TestClient) -> None:
+    code = (
+        "from typing import Literal\n"
+        "mode: Literal['a', 'b'] = 'a'\n"
+        "value: int = ShowIf(default=5, mode='b')\n"
+        "return value: INT\n"
+    )
+
+    response = client.post("/api/parse", json={"code": code})
+
+    assert response.status_code == 200
+    widgets = response.json()["widgets"]
+    assert widgets[1]["visible_when"] == [
+        {"widget": "mode", "values": ["b"]}
+    ]
 
 
 def test_parse_endpoint_reports_syntax_errors(client: TestClient) -> None:

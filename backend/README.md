@@ -11,10 +11,12 @@ FastAPI service and node-code toolchain for ComplexUI.
 - `app/executor.py` — topological DAG executor with a bounded
   content-addressable LRU cache (64 outputs / 32 MiB), trust gating,
   cancellation checks and WebSocket-ready event streaming. Nodes receive
-  `report_progress(fraction, message)` and `raise_if_cancelled()` globals for
-  cooperative long-running work. `File` widgets are resolved strictly inside
-  the workspace before node code runs; `ModelSelector` widgets resolve inside
-  the repo model root and are fingerprinted into the cache key.
+  `report_progress(fraction, message)`, `raise_if_cancelled()` and
+  `outputs_root` globals for cooperative long-running work and generated-file
+  paths. `File` widgets are resolved strictly inside the workspace before node
+  code runs; `FolderPath` widgets may read a user-picked absolute folder; and
+  `ModelSelector` widgets resolve inside the repo model root. File, folder and
+  model values are fingerprinted into the cache key.
 - `app/execution_host.py` — disposable child-process execution, cache/approval
   transfer, wall-clock and memory guards, process-tree termination and recovery.
 - `app/execution_worker.py` — child-process entry point that runs the executor
@@ -23,6 +25,11 @@ FastAPI service and node-code toolchain for ComplexUI.
   collision-safe names, atomic streaming writes (100 MiB tables, 500 MiB
   media), listing/deletion, bounded Polars table previews, raw media paths, and
   generated-media listing/deletion/resolution under repo-root `outputs/`.
+  Generated files may live in nested validated subfolders (for example
+  `2026-10-23/shots/file.png`); the store exposes relative ids and rejects
+  traversal, absolute paths and symlink escapes. `app/artifacts.py` keeps a
+  bounded allowlist of media paths produced by completed runs so external Save
+  Media destinations can be previewed, copied, opened and revealed safely.
 - `app/models.py` — metadata-only scanner for the repo-root `models/` library.
   It creates `yolo/`, `torchvision/`, and `classification/`, discovers custom
   type folders, validates paths/extensions/symlinks, and returns size + mtime
@@ -55,15 +62,19 @@ FastAPI service and node-code toolchain for ComplexUI.
 - `app/template_catalog.py` — display metadata (title, category, description,
   palette visibility) for the official node catalog. Example dataset loaders
   (iris/wine/breast-cancer/diabetes/digits), the synthetic classification,
-  messy, image and video generators, and the synthetic tensor dataset are
-  flagged `hidden`: they ship for the bundled workflows and older canvases but
-  stay out of the node library.
+  messy, image and video generators, the synthetic tensor dataset, and the
+  legacy per-mode resize nodes are flagged `hidden`: they ship for bundled
+  workflows and older canvases but stay out of the node library.
 - `app/workflow_catalog.py` — example workflow models, socket/DAG validation
   and `WorkflowGraph` materialisation.
 - `app/workspace.py` — file-backed named projects, 30 retained version
   snapshots, workspace trash, and close/visibility recovery sessions.
 - `app/main.py` — FastAPI server: REST endpoints plus `/ws/execution` streaming.
-- `app/templates/` — 104 official ML node templates across 11 categories:
+- `app/artifacts.py` — bounded allowlist of media paths produced by completed
+  runs, used for external Save Media preview/copy/open/reveal actions.
+- `app/os_actions.py` — platform open/reveal helpers and the native folder
+  dialog (Windows PowerShell, macOS `osascript`, Linux `zenity`/`kdialog`).
+- `app/templates/` — 115 official ML node templates across 11 categories:
   scalar values (int/float/bool/string), data loaders (sklearn sets,
   synthetic/messy generators, CSV/Parquet/Excel/NDJSON), cleaning, EDA,
   preprocessing, imbalanced-data samplers, models (scikit-learn +
@@ -71,12 +82,26 @@ FastAPI service and node-code toolchain for ComplexUI.
   (SD1.5/SDXL checkpoint, CLIP, VAE, scheduler and sampler nodes), and
   computer vision (torchvision image classification/detection/segmentation,
   video classification, YOLO image/video detection and segmentation,
-  image/video loaders, media preview and media saving). Optional dependencies (`torch`, `torchvision`,
+  image/video loaders, media preview and media saving). Resolution and Empty
+  Latent Image share resolution/megapixel modes, and Resize Image/Resize Latent
+  consolidate dimensions, side, megapixels and multiplier modes. Optional
+  dependencies (`torch`, `torchvision`,
   `ultralytics`, `opencv-python`, `imageio-ffmpeg`, `safetensors`,
   `onnxruntime`, `xgboost`, `lightgbm`, `fastexcel`, `imbalanced-learn`) are
   declared in PEP 723 headers and installed on demand. Generated videos are
   encoded as browser-playable H.264 MP4/MOV/MKV through the bundled
-  `imageio-ffmpeg` encoder.
+  `imageio-ffmpeg` encoder. Save Media writes images and videos with a
+  configurable folder and filename template. The default is
+  `outputs/<YYYY-MM-DD>/<model>_<counter>[_<batch>].<ext>`; the folder may be a
+  relative path under `outputs/` or an absolute folder chosen with the native
+  Browse dialog. Filename tokens include `%date%`, `%time%`, `%counter%`,
+  `%model%`, `%width%`, `%height%` and `%batch%`; `%seed%`, `%input_name%` and
+  `%input_folder%` wait for metadata support. Counters are 3-digit and batches
+  get an automatic index when the template omits one. PNG/JPEG/WebP/BMP/TIFF/GIF
+  format and quality controls are available. The `outputs_root` node global and
+  the exporter use the same generated-output root. External destinations are
+  allowed; their Open/Copy/Preview/Reveal actions are limited to paths recorded
+  by a completed run (live event registry or retained run history).
   Scalar outputs can also target any widget parameter (for example
   `float_value.result -> train_test_split.test_size`); the executor overrides
   that keyword argument after applying stored widget values.
@@ -88,6 +113,22 @@ Ultralytics (YOLO) templates are kept in a separate node family from the
 torchvision templates so non-YOLO vision workflows do not install it.
 The `ultralytics` package is **AGPL-3.0**; review its license before
 distributing generated applications or network services that use YOLO nodes.
+
+## Image batches
+
+`IMAGE_BATCH` is an ordered list of PIL images. When such a list reaches a
+scalar `IMAGE` input, the executor runs that node once per image, repeats scalar
+`IMAGE` inputs for every item, and requires equal lengths for multiple batch
+inputs. `MEDIA` and `IMAGE_BATCH` inputs receive the whole list. A node may read
+the current item through the `batch_index`/`batch_size` globals; progress is
+mapped across the batch, cancellation is checked between items, errors report
+the failing item index, and the limit is 256 items. Empty batches produce empty
+output lists without executing the node. `Load Images From Folder` reads a
+bounded, name- or mtime-sorted folder of images into a batch; `FolderPath`
+widgets resolve absolute paths or repo-relative paths and are read-only. The
+five-input `Switch` passes one renamed input through, and `Resize Image`,
+`Resize Latent` and `Preview Mask` accept batches through normal socket
+compatibility.
 
 ## Local models
 
@@ -118,6 +159,23 @@ unsupported selections fail during `validate_graph` before a run starts. The
 selected file's `size:mtime_ns` fingerprint is part of the node cache key, and
 exported scripts receive the resolved absolute model path.
 
+Conditional widgets use the same static marker style:
+
+```python
+width: int = ShowIf(default=512, size_mode="Resolution")
+allow_upscale: bool = ShowIf(
+    default=True,
+    mode=["By Side", "By Megapixels"],
+)
+```
+
+`ShowIf` keeps its literal `default` and stores the visibility conditions on the
+widget schema. All conditions must match; a list means any value in that list.
+Values may be strings, numbers, booleans or `None`. The frontend hides
+non-matching widgets, but keeps them visible if the widget or a controlling
+widget is connected. Hidden widgets still retain their saved values, and the
+marker is removed before node execution/export.
+
 Supported loading by template family:
 
 | Family | Formats | Notes |
@@ -136,6 +194,25 @@ Canvases saved against the old template keep their old node code, so after
 upgrading those split nodes no longer match the official hash and need a
 one-time approval (or replacement). Newly dragged split nodes use the new
 template.
+
+Note: `save_media` now has folder/filename template widgets, token expansion,
+native folder Browse, 3-digit counters and batch indices. Canvases saved against
+the old template keep their old node code and need a one-time approval (or
+replacement); newly dragged nodes use the new template and bundled workflows
+materialize the new code.
+
+Note: `resolution` and `empty_latent_image` now expose resolution/megapixel
+modes and preset fields. Existing canvases keep their old node code and need a
+one-time approval (or replacement); new nodes and bundled workflows use the
+updated templates. `resize_image` and `resize_latent` replace the visible
+per-mode resize nodes; the old templates remain hidden aliases so existing
+canvases and workflows continue to run.
+
+Save Media can write to user-selected absolute folders. The native folder
+dialog and external artifact endpoints are disabled when the server accepts
+non-loopback hosts, and external Open/Copy/Preview/Reveal actions only accept
+paths recorded by a completed run. Keep the API loopback-only unless the
+machine is trusted: node code already runs with the backend user's permissions.
 
 ## API
 
@@ -164,9 +241,15 @@ template.
 | `/api/uploads` | POST | Multipart `file` upload. Accepts CSV, TSV, Parquet, XLSX/XLSM, NDJSON/JSONL (100 MiB), and PNG/JPEG/WebP/GIF/BMP/TIFF or MP4/WebM/MOV/AVI/MKV/M4V media (500 MiB); sanitizes names and suffixes collisions. |
 | `/api/uploads/{file_id}` | GET | Return metadata for one uploaded asset. |
 | `/api/uploads/{file_id}/raw` | GET | Serve an uploaded image/video inline with range support and `nosniff`. |
-| `/api/outputs` | GET | List generated images/videos from repo-root `outputs/`, newest first (`limit` 1-500, default 200). |
-| `/api/outputs/{file_id}/raw` | GET | Serve a generated image/video from repo-root `outputs/` inline with range support. |
-| `/api/outputs/{file_id}` | DELETE | Delete one generated image/video. |
+| `/api/outputs` | GET | List generated images/videos from repo-root `outputs/`, including date subfolders; newest first (`limit` 1-500, default 200). `id` is the relative path inside `outputs/` (for example `2026-10-23/file.png`). |
+| `/api/outputs/{file_id:path}/raw` | GET | Serve a generated image/video from `outputs/` inline with range support; `file_id` may include a date folder. |
+| `/api/outputs/{file_id:path}` | DELETE | Delete one generated image/video. |
+| `/api/outputs/{file_id:path}/open` | POST | Open one generated image/video with the platform default application (loopback-only; `403` when non-loopback hosts are allowed). |
+| `/api/outputs/{file_id:path}/reveal` | POST | Reveal one generated image/video in the platform file manager (loopback-only). |
+| `/api/artifacts/raw?path=...` | GET | Serve a media file recorded by a completed Save Media run (external destination; loopback-only). |
+| `/api/artifacts/open` | POST | Open a run-produced external media file with the default application. |
+| `/api/artifacts/reveal` | POST | Reveal a run-produced external media file in the platform file manager. |
+| `/api/fs/pick-folder` | POST | Open the native folder dialog on the server desktop and return the selected absolute path (loopback-only; `409` if one is already open). |
 | `/api/uploads/{file_id}/preview` | GET | Return up to `limit` table rows (default 20, max 100) plus `columns`, `rows`, and `truncated`; `422` for media. |
 | `/api/uploads/{file_id}` | DELETE | Delete one uploaded asset from `inputs/`. |
 | `/api/execute` | POST | Body `{"graph": ..., "targets": [...] \| null, "node_labels": {...} \| null}`. Pre-flights (422 invalid / 403 untrusted / 409 busy), optionally scopes execution to the ancestors of `targets`, then runs the graph; returns `202` with a `run_id`. Labels are retained for run-history display. Flattened subgraph nodes may carry `approval_id` so session approvals remain scoped to the original node id. |
@@ -243,8 +326,12 @@ workspace/
 ```
 
 Uploaded tables, images and videos live in the repo-root `inputs/` directory;
-generated images, videos and artifacts live in repo-root `outputs/`. Set
-`COMPLEXUI_INPUT_DIR` or `COMPLEXUI_OUTPUT_DIR` to relocate them.
+generated images, videos and artifacts normally live in repo-root `outputs/`.
+Save Media defaults to a `%date%` folder there but can write to any absolute
+folder the user picks. External files do not appear in the Outputs library;
+they are available through the Save Media node's Open/Copy/Preview/Show-folder
+actions for as long as the run that produced them is retained. Set
+`COMPLEXUI_INPUT_DIR` or `COMPLEXUI_OUTPUT_DIR` to relocate the managed roots.
 
 Writes are atomic, slugs are restricted to `[a-z0-9-]`, and project/version
 reads revalidate the document before returning it. Overwrites keep the 30 newest
@@ -269,11 +356,16 @@ the 14-day plain-text log retention. File logs follow `COMPLEXUI_WORKSPACE`
 unless `COMPLEXUI_LOG_DIR` overrides them. File widgets store paths like
 `inputs/iris.csv`; execution resolves them against the repo-root inputs
 directory. Legacy workspace-relative paths remain readable. They may also read
-generated files through `outputs/<name>`, while `OutputFile` names write under
-repo-root `outputs/`. File access rejects absolute paths and symlink escapes
-outside the workspace, inputs, and outputs roots. Exports retain those paths,
-so keep the input and generated-output directories available (or adjust the
-paths).
+generated files through `outputs/<folder>/<name>` (nested subfolders allowed),
+while `OutputFile` names write under repo-root `outputs/`. File widgets still
+reject absolute paths and symlink escapes outside the workspace, inputs, and
+outputs roots. Exports resolve `OutputFile` widgets against the same generated
+output directory and retain input/output paths, so keep those directories
+available (or adjust the paths). Save Media's externally chosen destination is
+not a `File` widget and does not relax those file-widget rules. `FolderPath`
+widgets (used by `Load Images From Folder`) are a separate read-only input:
+they accept an absolute user-picked directory or a repo-relative directory and
+cannot write files. The loader rejects symlinked files and caps the batch size.
 
 ## Rich outputs
 
@@ -350,4 +442,3 @@ uv run --with torch --with torchvision --with ultralytics \
 
 Vision workflows use offline random weights/YAML models by default, so their
 tests do not download checkpoints.
-

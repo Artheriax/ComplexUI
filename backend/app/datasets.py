@@ -10,12 +10,14 @@ atomically moved into place.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import os
 import re
 import threading
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from functools import lru_cache
 from pathlib import Path
@@ -29,6 +31,7 @@ from .schemas import (
     MAX_DATASET_NAME_CHARS,
     MAX_DATASET_PREVIEW_ROWS,
     MAX_MEDIA_BYTES,
+    MAX_OUTPUT_PATH_CHARS,
     AssetKind,
     DatasetPreview,
     DatasetSummary,
@@ -103,6 +106,9 @@ _OUTPUT_SUFFIXES = {
     ".txt",
 }
 _OUTPUT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,158}")
+_MAX_OUTPUT_DEPTH = 8
+_MAX_OUTPUT_SCAN_DIRECTORIES = 2_000
+_MAX_OUTPUT_SCAN_FILES = 5_000
 _RESERVED_NAMES = {
     "con",
     "prn",
@@ -370,46 +376,69 @@ class OutputStore:
     def __init__(self, outputs_dir: Path | None = None) -> None:
         self.outputs_dir = (outputs_dir or default_output_dir()).expanduser()
 
-    def _validate_name(self, name: str) -> str:
-        candidate = name.strip().replace("\\", "/")
-        if candidate.startswith("outputs/"):
-            candidate = candidate[len("outputs/") :]
+    def _validate_relative_name(self, value: str) -> str:
+        candidate = value.strip().replace("\\", "/")
+        prefix = f"{_RELATIVE_OUTPUT_DIR.as_posix()}/"
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix) :]
+        if not candidate or len(candidate) > MAX_OUTPUT_PATH_CHARS:
+            raise InvalidAssetPath(f"Invalid output path: {value!r}")
+        path = Path(candidate)
+        if path.is_absolute():
+            raise InvalidAssetPath(f"Invalid output path: {value!r}")
+        parts = [part for part in candidate.split("/") if part not in {"", "."}]
         if (
-            not candidate
-            or "/" in candidate
-            or len(candidate) > MAX_DATASET_NAME_CHARS
-            or not _OUTPUT_NAME.fullmatch(candidate)
-            or Path(candidate).suffix.lower() not in _OUTPUT_SUFFIXES
+            not parts
+            or len(parts) > _MAX_OUTPUT_DEPTH + 1
+            or any(part == ".." for part in parts)
         ):
-            raise InvalidAssetPath(f"Invalid output path: {name!r}")
-        return candidate
+            raise InvalidAssetPath(f"Invalid output path: {value!r}")
+        for part in parts[:-1]:
+            if not _OUTPUT_NAME.fullmatch(part):
+                raise InvalidAssetPath(f"Invalid output path: {value!r}")
+        name = parts[-1]
+        if (
+            len(name) > MAX_DATASET_NAME_CHARS
+            or not _OUTPUT_NAME.fullmatch(name)
+            or Path(name).suffix.lower() not in _OUTPUT_SUFFIXES
+        ):
+            raise InvalidAssetPath(f"Invalid output path: {value!r}")
+        return "/".join(parts)
 
     def resolve_path(self, value: str) -> Path:
         """Resolve an ``OutputFile`` widget value and create its parent directory."""
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
+        root = self.outputs_dir.resolve()
         raw = value.strip()
         path = Path(raw).expanduser()
         if path.is_absolute():
             resolved = path.resolve()
-            if resolved.parent != self.outputs_dir.resolve():
+            if not resolved.is_relative_to(root):
                 raise InvalidAssetPath("Output paths must stay inside outputs.")
-            name = resolved.name
+            relative = self._validate_relative_name(
+                resolved.relative_to(root).as_posix()
+            )
         else:
-            name = self._validate_name(raw)
-            resolved = (self.outputs_dir / name).resolve()
-            if resolved.parent != self.outputs_dir.resolve():
-                raise InvalidAssetPath("Output paths must stay inside outputs.")
-        if not _OUTPUT_NAME.fullmatch(name) or Path(name).suffix.lower() not in _OUTPUT_SUFFIXES:
-            raise InvalidAssetPath(f"Invalid output path: {value!r}")
+            relative = self._validate_relative_name(raw)
+        resolved = (root / relative).resolve()
+        if not resolved.is_relative_to(root):
+            raise InvalidAssetPath("Output paths must stay inside outputs.")
+        resolved.parent.mkdir(parents=True, exist_ok=True)
         return resolved
 
     def media_path(self, file_id: str) -> Path:
         """Return a validated generated image/video for raw serving."""
-        name = self._validate_name(file_id)
-        if Path(name).suffix.lower() not in {*IMAGE_FORMATS, *VIDEO_FORMATS}:
+        relative = self._validate_relative_name(file_id)
+        if Path(relative).suffix.lower() not in {*IMAGE_FORMATS, *VIDEO_FORMATS}:
             raise InvalidAssetPath(f"Output is not a media file: {file_id}")
-        path = self.outputs_dir / name
-        if not path.is_file() or path.is_symlink():
+        root = self.outputs_dir.resolve()
+        candidate = root / relative
+        path = candidate.resolve()
+        if not path.is_relative_to(root):
+            raise InvalidAssetPath(f"Invalid output path: {file_id!r}")
+        if candidate.is_symlink() or candidate.parent.is_symlink():
+            raise DatasetNotFound(f"Output not found: {file_id}")
+        if not path.is_file():
             raise DatasetNotFound(f"Output not found: {file_id}")
         return path
 
@@ -435,38 +464,77 @@ class OutputStore:
         return None
 
     def _summary(self, path: Path) -> OutputSummary:
+        root = self.outputs_dir.resolve()
+        relative = path.resolve().relative_to(root).as_posix()
         suffix = path.suffix.lower()
         fmt, kind = ASSET_FORMATS[suffix]
         return OutputSummary(
-            id=path.name,
+            id=relative,
             name=path.name,
-            path=(_RELATIVE_OUTPUT_DIR / path.name).as_posix(),
+            path=(_RELATIVE_OUTPUT_DIR / relative).as_posix(),
             format=fmt,
             kind=kind,
             size_bytes=path.stat().st_size,
             modified_at=_modified_at(path),
         )
 
+    def _iter_media_files(self) -> Iterator[Path]:
+        stack: list[tuple[Path, int]] = [(self.outputs_dir, 0)]
+        directories = 0
+        files = 0
+        while stack and directories < _MAX_OUTPUT_SCAN_DIRECTORIES:
+            directory, depth = stack.pop()
+            directories += 1
+            try:
+                entries = tuple(directory.iterdir())
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    if depth < _MAX_OUTPUT_DEPTH:
+                        stack.append((entry, depth + 1))
+                    continue
+                if not entry.is_file():
+                    continue
+                suffix = entry.suffix.lower()
+                if suffix not in {*IMAGE_FORMATS, *VIDEO_FORMATS}:
+                    continue
+                if (
+                    len(entry.name) > MAX_DATASET_NAME_CHARS
+                    or not _OUTPUT_NAME.fullmatch(entry.name)
+                ):
+                    continue
+                yield entry
+                files += 1
+                if files >= _MAX_OUTPUT_SCAN_FILES:
+                    return
+
     def list_outputs(self, limit: int = 200) -> list[OutputSummary]:
         """List generated images and videos, newest first."""
         if not self.outputs_dir.is_dir():
             return []
         bounded = max(1, min(limit, 500))
-        candidates: list[Path] = []
-        for path in self.outputs_dir.iterdir():
-            if not path.is_file() or path.is_symlink():
+
+        def modified(path: Path) -> int:
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return -1
+
+        candidates = heapq.nlargest(
+            bounded,
+            self._iter_media_files(),
+            key=modified,
+        )
+        summaries: list[OutputSummary] = []
+        for path in candidates:
+            try:
+                summaries.append(self._summary(path))
+            except (OSError, ValueError):
                 continue
-            suffix = path.suffix.lower()
-            if suffix not in {*IMAGE_FORMATS, *VIDEO_FORMATS}:
-                continue
-            if (
-                len(path.name) > MAX_DATASET_NAME_CHARS
-                or not _OUTPUT_NAME.fullmatch(path.name)
-            ):
-                continue
-            candidates.append(path)
-        candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
-        return [self._summary(path) for path in candidates[:bounded]]
+        return summaries
 
     def delete_output(self, file_id: str) -> OutputSummary:
         """Delete one generated image or video and return its metadata."""

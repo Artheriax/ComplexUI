@@ -59,6 +59,11 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Values",
         "Loose string value",
     ),
+    "switch": TemplateMeta(
+        "Switch (5 Inputs)",
+        "Values",
+        "Pass one of five named inputs through",
+    ),
     "load_iris": TemplateMeta(
         "Load Iris Dataset",
         "Data Loaders",
@@ -447,15 +452,25 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Computer Vision",
         "Read a workspace image into an RGB image",
     ),
+    "load_images_from_folder": TemplateMeta(
+        "Load Images From Folder",
+        "Computer Vision",
+        "Load a folder of images as an ordered image batch",
+    ),
     "preview_media": TemplateMeta(
         "Preview Media",
         "Computer Vision",
         "Preview an image or video without writing a file",
     ),
+    "preview_mask": TemplateMeta(
+        "Preview Mask",
+        "Computer Vision",
+        "Preview MASKS without modifying them",
+    ),
     "save_media": TemplateMeta(
         "Save Media",
         "Computer Vision",
-        "Write an image or video into workspace/outputs",
+        "Write media with a configurable folder and filename template",
     ),
     "make_demo_image": TemplateMeta(
         "Synthetic Demo Image",
@@ -555,9 +570,10 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Encode a pixel image into a LATENT for img2img",
     ),
     "image_scale": TemplateMeta(
-        "Image Scale",
-        "Image Generation",
-        "Resize or crop an image to a target resolution",
+        "Image Scale (Legacy)",
+        "Computer Vision",
+        "Legacy fixed-dimension image resize",
+        hidden=True,
     ),
     "ksampler_advanced": TemplateMeta(
         "KSampler Advanced",
@@ -568,6 +584,52 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Sampler Custom",
         "Image Generation",
         "Run a sampler and SIGMAS contract with CFG",
+    ),
+    "resize_by_side": TemplateMeta(
+        "Resize By Side (Legacy)",
+        "Computer Vision",
+        "Legacy side-length image resize",
+        hidden=True,
+    ),
+    "upscale_image_by": TemplateMeta(
+        "Upscale Image By (Legacy)",
+        "Computer Vision",
+        "Legacy image resize by multiplier",
+        hidden=True,
+    ),
+    "resize_image_by_megapixels": TemplateMeta(
+        "Resize Image By Megapixels (Legacy)",
+        "Computer Vision",
+        "Legacy image resize to a megapixel count",
+        hidden=True,
+    ),
+    "upscale_latent": TemplateMeta(
+        "Upscale Latent (Legacy)",
+        "Image Generation",
+        "Legacy fixed-dimension latent resize",
+        hidden=True,
+    ),
+    "upscale_latent_by": TemplateMeta(
+        "Upscale Latent By (Legacy)",
+        "Image Generation",
+        "Legacy latent resize by multiplier",
+        hidden=True,
+    ),
+    "resize_latent_by_megapixels": TemplateMeta(
+        "Resize Latent By Megapixels (Legacy)",
+        "Image Generation",
+        "Legacy latent resize to a megapixel count",
+        hidden=True,
+    ),
+    "resize_image": TemplateMeta(
+        "Resize Image",
+        "Computer Vision",
+        "Resize images by dimensions, side, megapixels or multiplier",
+    ),
+    "resize_latent": TemplateMeta(
+        "Resize Latent",
+        "Image Generation",
+        "Resize latents by dimensions, megapixels or multiplier",
     ),
 }
 

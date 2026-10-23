@@ -168,6 +168,22 @@ class RunHistoryStore:
                 raise RunNotFound(f"Run record not found: {run_id}")
             path.unlink(missing_ok=True)
 
+    def saved_paths(self) -> set[str]:
+        """Return saved file paths recorded by retained runs."""
+        paths: set[str] = set()
+        if not self.root.is_dir():
+            return paths
+        for path in self.root.glob(f"*{_RECORD_SUFFIX}"):
+            try:
+                record = self._read_record(path)
+            except (InvalidRunRecord, RunNotFound, RunHistoryError, OSError):
+                continue
+            for node in record.nodes:
+                value = node.previews.get("saved_path")
+                if isinstance(value, str) and value.strip():
+                    paths.add(value)
+        return paths
+
     def count(self) -> int:
         if not self.root.is_dir():
             return 0

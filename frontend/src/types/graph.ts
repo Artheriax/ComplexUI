@@ -82,6 +82,7 @@ export function widgetSocketType(dataType: string): SocketType {
     kind === "path" ||
     kind === "folder" ||
     kind === "directory" ||
+    kind === "folderpath" ||
     kind === "modelpath" ||
     kind === "imagefile" ||
     kind === "videofile" ||
@@ -131,12 +132,18 @@ export interface OutputSocket {
 
 export type WidgetChoice = string | number | boolean;
 
+export interface WidgetCondition {
+  widget: string;
+  values: unknown[];
+}
+
 export interface WidgetParam {
   name: string;
   data_type: string;
   default: unknown;
   options?: WidgetChoice[];
   model_type?: string | null;
+  visible_when?: WidgetCondition[];
 }
 
 export interface SyntaxErrorInfo {
@@ -303,6 +310,11 @@ export interface ImageBatchPreview {
   thumbnail: string | null;
 }
 
+export interface BatchPreview {
+  kind: "batch";
+  count: number;
+}
+
 export interface DiffusionModelPreview {
   kind: "diffusion_model";
   arch: string;
@@ -428,6 +440,7 @@ export type PreviewValue =
   | TensorPreview
   | ImagePreview
   | ImageBatchPreview
+  | BatchPreview
   | VideoPreview
   | DiffusionModelPreview
   | ClipPreview
@@ -736,6 +749,9 @@ export function summarisePreview(value: PreviewValue): string {
     }
     if (record.kind === "image_batch") {
       return `${String(record.count)} images ${String(record.width ?? "?")}x${String(record.height ?? "?")}`;
+    }
+    if (record.kind === "batch") {
+      return `${String(record.count)} items`;
     }
     if (record.kind === "video") {
       return `video ${String(record.width ?? "?")}x${String(record.height ?? "?")}`;

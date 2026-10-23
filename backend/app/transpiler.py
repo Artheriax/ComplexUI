@@ -36,6 +36,7 @@ from .schemas import (
     NodeSchema,
     OutputSocket,
     SyntaxErrorInfo,
+    WidgetCondition,
     WidgetParam,
     normalize_socket_type,
     widget_choice_allowed,
@@ -321,6 +322,7 @@ def _find_top_level_returns(tokens: list[tokenize.TokenInfo]) -> list[int]:
     indent_stack: list[bool] = []
     pending_scope_row: int | None = None
     at_line_start = True
+    paren_depth = 0
     for index, tok in enumerate(tokens):
         if tok.type == token.INDENT:
             indent_stack.append(pending_scope_row is not None)
@@ -338,7 +340,12 @@ def _find_top_level_returns(tokens: list[tokenize.TokenInfo]) -> list[int]:
             continue
         if tok.type == token.ENDMARKER:
             break
-        if pending_scope_row is not None and tok.start[0] > pending_scope_row:
+        if (
+            pending_scope_row is not None
+            and at_line_start
+            and paren_depth == 0
+            and tok.start[0] > pending_scope_row
+        ):
             pending_scope_row = None
         if at_line_start:
             if tok.type == token.NAME and tok.string == "async":
@@ -346,6 +353,11 @@ def _find_top_level_returns(tokens: list[tokenize.TokenInfo]) -> list[int]:
             if tok.type == token.NAME and tok.string in ("def", "class"):
                 pending_scope_row = tok.start[0]
             at_line_start = False
+        if tok.type == token.OP:
+            if tok.string in "([{":
+                paren_depth += 1
+            elif tok.string in ")]}":
+                paren_depth = max(0, paren_depth - 1)
         if (
             tok.type == token.NAME
             and tok.string == "return"
@@ -536,6 +548,65 @@ def _model_selector_type(value: ast.expr | None) -> str:
     return cleaned
 
 
+def _call_target_name(value: ast.expr) -> str:
+    target = value.func if isinstance(value, ast.Call) else None
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return ""
+
+
+def _is_show_if_call(value: ast.expr) -> bool:
+    return isinstance(value, ast.Call) and _call_target_name(value) == "ShowIf"
+
+
+def _show_if_marker(value: ast.Call) -> tuple[Any, list[WidgetCondition]]:
+    if value.args:
+        raise ValueError("ShowIf accepts only keyword arguments")
+    default_set = False
+    default: Any = None
+    conditions: list[WidgetCondition] = []
+    for keyword_item in value.keywords:
+        if keyword_item.arg is None:
+            raise ValueError("ShowIf does not accept **kwargs")
+        if keyword_item.arg == "default":
+            if default_set:
+                raise ValueError("ShowIf accepts one default=... argument")
+            try:
+                default = ast.literal_eval(keyword_item.value)
+            except (ValueError, TypeError, SyntaxError) as exc:
+                raise ValueError("ShowIf default must be a literal value") from exc
+            default_set = True
+            continue
+        try:
+            expected = ast.literal_eval(keyword_item.value)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(
+                f"ShowIf condition for '{keyword_item.arg}' must be a literal value"
+            ) from exc
+        values = list(expected) if isinstance(expected, (list, tuple)) else [expected]
+        if not values:
+            raise ValueError(
+                f"ShowIf condition for '{keyword_item.arg}' needs at least one value"
+            )
+        if any(
+            not isinstance(item, (str, int, float, bool)) and item is not None
+            for item in values
+        ):
+            raise ValueError(
+                f"ShowIf condition for '{keyword_item.arg}' must contain scalar values"
+            )
+        conditions.append(
+            WidgetCondition(widget=keyword_item.arg, values=values)
+        )
+    if not default_set:
+        raise ValueError("ShowIf requires a default=... argument")
+    if not conditions:
+        raise ValueError("ShowIf requires at least one widget condition")
+    return default, conditions
+
+
 def _literal_subscript(annotation: ast.expr) -> ast.Subscript | None:
     candidate = annotation
     if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
@@ -616,6 +687,7 @@ def _extract_bindings(source: str) -> _Bindings:
 
     lines = source.split("\n")
     seen: dict[str, str] = {}
+    widget_lines: dict[str, tuple[int, int]] = {}
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             end_line = node.end_lineno or node.lineno
@@ -685,6 +757,7 @@ def _extract_bindings(source: str) -> _Bindings:
                 )
                 continue
             seen[name] = "widget"
+            widget_lines[name] = (node.lineno, node.col_offset)
             widgets.append(
                 WidgetParam(
                     name=name,
@@ -708,20 +781,34 @@ def _extract_bindings(source: str) -> _Bindings:
                     )
                 )
                 continue
-        try:
-            default = ast.literal_eval(node.value)
-        except (ValueError, TypeError, SyntaxError) as exc:
-            errors.append(
-                SyntaxErrorInfo(
-                    line=node.lineno,
-                    column=node.col_offset,
-                    message=(
-                        f"Widget default for '{name}' must be a literal "
-                        f"value: {exc}"
-                    ),
+        visible_when: list[WidgetCondition] = []
+        if isinstance(node.value, ast.Call) and _is_show_if_call(node.value):
+            try:
+                default, visible_when = _show_if_marker(node.value)
+            except ValueError as exc:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=str(exc),
+                    )
                 )
-            )
-            continue
+                continue
+        else:
+            try:
+                default = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError) as exc:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=(
+                            f"Widget default for '{name}' must be a literal "
+                            f"value: {exc}"
+                        ),
+                    )
+                )
+                continue
         if options and not widget_choice_allowed(default, options):
             errors.append(
                 SyntaxErrorInfo(
@@ -735,14 +822,58 @@ def _extract_bindings(source: str) -> _Bindings:
             )
             continue
         seen[name] = "widget"
+        widget_lines[name] = (node.lineno, node.col_offset)
         widgets.append(
             WidgetParam(
                 name=name,
                 data_type=type_text,
                 default=default,
                 options=options,
+                visible_when=visible_when,
             )
         )
+    widget_map = {widget.name: widget for widget in widgets}
+    for widget in widgets:
+        for condition in widget.visible_when:
+            controller = widget_map.get(condition.widget)
+            line, column = widget_lines.get(
+                widget.name, (1, 0)
+            )
+            if condition.widget == widget.name:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=line,
+                        column=column,
+                        message="ShowIf cannot reference its own widget",
+                    )
+                )
+                continue
+            if controller is None:
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=line,
+                        column=column,
+                        message=(
+                            f"ShowIf references unknown widget "
+                            f"'{condition.widget}'"
+                        ),
+                    )
+                )
+                continue
+            if controller.options and any(
+                not widget_choice_allowed(value, controller.options)
+                for value in condition.values
+            ):
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=line,
+                        column=column,
+                        message=(
+                            f"ShowIf values for '{condition.widget}' must be "
+                            f"one of {controller.options!r}"
+                        ),
+                    )
+                )
     return _Bindings(inputs, widgets, hoisted_imports, blank_spans, errors)
 
 

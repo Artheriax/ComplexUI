@@ -70,8 +70,28 @@ test("renders Literal choices as a select", () => {
 
   const select = screen.getByRole("combobox", { name: "level" });
   expect(select.querySelectorAll("option")).toHaveLength(3);
+  expect(select.className).toContain("w-28");
   fireEvent.change(select, { target: { value: "1" } });
   expect(onChange).toHaveBeenLastCalledWith("medium");
+});
+
+test("widens choice controls for long option labels", () => {
+  render(
+    createElement(WidgetField, {
+      widget: {
+        name: "megapixel_preset",
+        data_type: "str",
+        default: "1.00 MP - 1024p",
+        options: ["1.00 MP - 1024p", "4.75 MP - 2K Pro"],
+      },
+      value: "1.00 MP - 1024p",
+      onChange: vi.fn(),
+    }),
+  );
+
+  expect(
+    screen.getByRole("combobox", { name: "megapixel_preset" }).className,
+  ).toContain("w-40");
 });
 
 test("preserves numeric types for fixed choices", () => {

@@ -24,6 +24,7 @@ MAX_FRAME_DIMENSION = 100_000
 PROJECT_SCHEMA_VERSION = 1
 PROJECT_VERSION_RETENTION = 30
 MAX_DATASET_NAME_CHARS = 160
+MAX_OUTPUT_PATH_CHARS = 512
 MAX_DATASET_BYTES = 100 * 1024 * 1024
 MAX_MEDIA_BYTES = 500 * 1024 * 1024
 MAX_DATASET_PREVIEW_ROWS = 100
@@ -160,6 +161,7 @@ def widget_socket_type(raw: str) -> SocketType:
         "path",
         "folder",
         "directory",
+        "folderpath",
         "modelpath",
         "imagefile",
         "videofile",
@@ -186,6 +188,7 @@ def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
         or target is SocketType.ANY
         or (source is SocketType.INT and target is SocketType.FLOAT)
         or (source is SocketType.IMAGE and target is SocketType.IMAGE_BATCH)
+        or (source is SocketType.IMAGE_BATCH and target is SocketType.IMAGE)
         or (
             source in _MEDIA_TARGETS
             and target is SocketType.MEDIA
@@ -204,12 +207,18 @@ class OutputSocket(BaseModel):
     data_type: SocketType
 
 
+class WidgetCondition(BaseModel):
+    widget: str
+    values: list[Any] = Field(min_length=1)
+
+
 class WidgetParam(BaseModel):
     name: str
     data_type: str
     default: Any = None
     options: list[Any] = Field(default_factory=list)
     model_type: str | None = None
+    visible_when: list[WidgetCondition] = Field(default_factory=list)
 
 
 def widget_choice_allowed(value: Any, options: list[Any]) -> bool:
@@ -485,7 +494,7 @@ class DatasetSummary(BaseModel):
 class OutputSummary(BaseModel):
     """Metadata for one generated image or video under ``outputs/``."""
 
-    id: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
+    id: str = Field(min_length=1, max_length=MAX_OUTPUT_PATH_CHARS)
     name: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
     path: str
     format: str
@@ -497,6 +506,22 @@ class OutputSummary(BaseModel):
 class OutputDeleteResponse(BaseModel):
     status: Literal["deleted"]
     output: OutputSummary
+
+
+class OutputActionResponse(BaseModel):
+    status: Literal["opened", "revealed"]
+
+
+class OutputPathRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class FolderPickRequest(BaseModel):
+    initial: str | None = Field(default=None, max_length=4096)
+
+
+class FolderPickResponse(BaseModel):
+    path: str | None = None
 
 
 class DatasetPreview(BaseModel):

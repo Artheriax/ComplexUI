@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ReactFlowProvider } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { createElement } from "react";
@@ -364,4 +364,265 @@ test("renders inherited fixed choices for a connected value node", () => {
   expect(select.textContent).toContain("low");
   expect(select.textContent).toContain("medium");
   expect(select.textContent).toContain("high");
+});
+
+test("renders the Save Media editor for the save_media schema", () => {
+  useGraphStore.setState({
+    execution: {
+      status: "idle",
+      runId: null,
+      order: [],
+      nodeStates: {},
+      previews: {},
+      richOutputs: {},
+      cached: {},
+      error: null,
+    },
+  });
+  const saveData: AppNode["data"] = {
+    label: "Save Media",
+    templateName: "save_media",
+    templateCode: null,
+    code: "",
+    schema: {
+      node_id: "save",
+      inputs: [{ name: "media", data_type: "MEDIA" }],
+      widgets: [
+        { name: "folder", data_type: "str", default: "%date%" },
+        { name: "filename", data_type: "str", default: "%model%_%counter%" },
+        { name: "model_name", data_type: "str", default: "image" },
+        {
+          name: "format",
+          data_type: "str",
+          default: "png",
+          options: ["png", "jpg", "webp"],
+        },
+        { name: "quality", data_type: "int", default: 95 },
+        { name: "compress_level", data_type: "int", default: 6 },
+        { name: "optimize", data_type: "bool", default: true },
+        { name: "save_nonce", data_type: "int", default: 0 },
+      ],
+      outputs: [
+        { name: "saved_path", data_type: "STRING" },
+        { name: "saved", data_type: "MEDIA" },
+      ],
+      dependencies: [],
+      syntax_errors: [],
+    },
+    widgetValues: {
+      folder: "%date%",
+      filename: "%model%_%counter%",
+      model_name: "model",
+      format: "png",
+      quality: 95,
+      compress_level: 6,
+      optimize: true,
+      save_nonce: 0,
+    },
+    isTrusted: true,
+    color: "default",
+  };
+
+  render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        id: "save",
+        data: saveData,
+      }),
+    ),
+  );
+
+  expect(screen.getByLabelText("Save folder")).toBeTruthy();
+  expect(screen.getByLabelText("Filename template")).toBeTruthy();
+  expect(screen.getByText("Will save as")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+});
+
+test("renders the switch editor with named inputs", () => {
+  useGraphStore.setState({
+    execution: {
+      status: "idle",
+      runId: null,
+      order: [],
+      nodeStates: {},
+      previews: {},
+      richOutputs: {},
+      cached: {},
+      error: null,
+    },
+  });
+  const switchData: AppNode["data"] = {
+    label: "Switch (5 Inputs)",
+    templateName: "switch",
+    templateCode: null,
+    code: "",
+    schema: {
+      node_id: "switch",
+      inputs: [],
+      widgets: [
+        { name: "input_1", data_type: "ANY", default: null },
+        { name: "input_2", data_type: "ANY", default: null },
+        { name: "input_3", data_type: "ANY", default: null },
+        { name: "input_4", data_type: "ANY", default: null },
+        { name: "input_5", data_type: "ANY", default: null },
+        {
+          name: "choices",
+          data_type: "str",
+          default: "Input 1|Input 2|Input 3|Input 4|Input 5",
+        },
+        { name: "selected", data_type: "int", default: 0 },
+      ],
+      outputs: [{ name: "chosen", data_type: "ANY" }],
+      dependencies: [],
+      syntax_errors: [],
+    },
+    widgetValues: {
+      input_1: null,
+      input_2: null,
+      input_3: null,
+      input_4: null,
+      input_5: null,
+      choices: "Alpha|Beta|Gamma|Delta|Epsilon",
+      selected: 0,
+    },
+    isTrusted: true,
+    color: "default",
+  };
+
+  render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        id: "switch",
+        data: switchData,
+      }),
+    ),
+  );
+
+  expect(screen.getByLabelText("Switch selection")).toBeTruthy();
+  expect(screen.getByLabelText("Input 1 name")).toBeTruthy();
+  expect(screen.getByLabelText("Input 5 name")).toBeTruthy();
+  expect(screen.queryByText("model_name")).toBeNull();
+});
+
+test("renders only widgets whose visibility conditions match", () => {
+  useGraphStore.setState({
+    nodes: [],
+    edges: [],
+    execution: {
+      status: "idle",
+      runId: null,
+      order: [],
+      nodeStates: {},
+      previews: {},
+      richOutputs: {},
+      cached: {},
+      error: null,
+    },
+  });
+  const conditionalData: AppNode["data"] = {
+    ...data,
+    label: "Conditional Node",
+    schema: {
+      ...data.schema,
+      widgets: [
+        {
+          name: "size_mode",
+          data_type: "str",
+          default: "Resolution",
+          options: ["Resolution", "Megapixels"],
+        },
+        {
+          name: "width",
+          data_type: "int",
+          default: 512,
+          visible_when: [
+            { widget: "size_mode", values: ["Resolution"] },
+          ],
+        },
+        {
+          name: "megapixel_preset",
+          data_type: "str",
+          default: "1.00 MP - 1024p",
+          options: ["1.00 MP - 1024p", "Custom"],
+          visible_when: [
+            { widget: "size_mode", values: ["Megapixels"] },
+          ],
+        },
+        {
+          name: "custom_megapixels",
+          data_type: "float",
+          default: 1,
+          visible_when: [
+            { widget: "size_mode", values: ["Megapixels"] },
+            { widget: "megapixel_preset", values: ["Custom"] },
+          ],
+        },
+      ],
+    },
+    widgetValues: {
+      size_mode: "Resolution",
+      width: 512,
+      megapixel_preset: "1.00 MP - 1024p",
+      custom_megapixels: 1,
+    },
+  };
+  const view = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: conditionalData,
+      }),
+    ),
+  );
+
+  expect(screen.getByText("width")).toBeTruthy();
+  expect(screen.queryByText("megapixel_preset")).toBeNull();
+  expect(screen.queryByText("custom_megapixels")).toBeNull();
+
+  view.rerender(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: {
+          ...conditionalData,
+          widgetValues: {
+            ...conditionalData.widgetValues,
+            size_mode: "Megapixels",
+          },
+        },
+      }),
+    ),
+  );
+  expect(screen.queryByText("width")).toBeNull();
+  expect(screen.getByText("megapixel_preset")).toBeTruthy();
+  expect(screen.queryByText("custom_megapixels")).toBeNull();
+
+  view.rerender(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: {
+          ...conditionalData,
+          widgetValues: {
+            ...conditionalData.widgetValues,
+            size_mode: "Megapixels",
+            megapixel_preset: "Custom",
+          },
+        },
+      }),
+    ),
+  );
+  expect(screen.getByText("custom_megapixels")).toBeTruthy();
 });

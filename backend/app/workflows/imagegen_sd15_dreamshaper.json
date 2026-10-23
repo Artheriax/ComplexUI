@@ -95,7 +95,7 @@
         "y": 160
       },
       "widget_values": {
-        "path": "imagegen_sd15_dreamshaper.png"
+        "model_name": "dreamshaper_8"
       }
     }
   ],

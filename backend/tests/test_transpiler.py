@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from sklearn.neighbors import KNeighborsClassifier
 
-from app.schemas import SocketType, WidgetParam
+from app.schemas import SocketType, WidgetCondition, WidgetParam
 from app.transpiler import TranspileError, parse_node, transpile_node
 
 SPEC_EXAMPLE = '''\
@@ -160,6 +160,93 @@ def test_literal_widget_accepts_string_annotations() -> None:
     assert schema.widgets[0].data_type == "str"
 
 
+def test_show_if_widget_marker_round_trip() -> None:
+    code = (
+        "from typing import Literal\n"
+        "mode: Literal['a', 'b'] = 'a'\n"
+        "value: int = ShowIf(default=5, mode='b')\n"
+        "return value: INT"
+    )
+    result = transpile_node(code, node_id="t")
+
+    assert result.schema.syntax_errors == []
+    assert result.schema.widgets == [
+        WidgetParam(
+            name="mode",
+            data_type="str",
+            default="a",
+            options=["a", "b"],
+        ),
+        WidgetParam(
+            name="value",
+            data_type="int",
+            default=5,
+            visible_when=[
+                WidgetCondition(widget="mode", values=["b"]),
+            ],
+        ),
+    ]
+    assert result.func() == (5,)
+    assert result.func(mode="b", value=7) == (7,)
+
+
+def test_show_if_supports_multiple_conditions_and_alternatives() -> None:
+    schema = parse_node(
+        "mode: Literal['a', 'b', 'c'] = 'a'\n"
+        "preset: Literal['x', 'y'] = 'x'\n"
+        "value: float = ShowIf(\n"
+        "    default=1.0,\n"
+        "    mode=['b', 'c'],\n"
+        "    preset='y',\n"
+        ")\n"
+        "flag: bool = True\n"
+        "other: int = ShowIf(default=2, flag=False)\n"
+        "return value: FLOAT"
+    )
+
+    assert schema.syntax_errors == []
+    assert schema.widgets[2].visible_when == [
+        WidgetCondition(widget="mode", values=["b", "c"]),
+        WidgetCondition(widget="preset", values=["y"]),
+    ]
+    assert schema.widgets[4].visible_when == [
+        WidgetCondition(widget="flag", values=[False]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            "value: int = ShowIf(mode='x')\nreturn value: INT",
+            "default",
+        ),
+        (
+            "mode: str = 'x'\nvalue: int = ShowIf(default=1)\nreturn value: INT",
+            "widget condition",
+        ),
+        (
+            "value: int = ShowIf(default=1, missing='x')\nreturn value: INT",
+            "unknown widget",
+        ),
+        (
+            "mode: Literal['x'] = 'x'\n"
+            "value: int = ShowIf(default=1, mode='y')\n"
+            "return value: INT",
+            "must be one of",
+        ),
+        (
+            "value: int = ShowIf(default=1, value='x')\nreturn value: INT",
+            "its own widget",
+        ),
+    ],
+)
+def test_show_if_rejects_invalid_conditions(code: str, message: str) -> None:
+    schema = parse_node(code)
+
+    assert any(message in error.message for error in schema.syntax_errors)
+
+
 def test_literal_widget_rejects_default_outside_choices() -> None:
     schema = parse_node(
         "level: Literal['low', 'high'] = 'medium'\n"
@@ -216,6 +303,25 @@ def test_multi_typed_return_preserves_order() -> None:
 
     assert [s.name for s in result.schema.outputs] == ["d", "c"]
     assert result.func(a=1, b=2) == (2, 1)
+
+
+def test_multiline_helper_signatures_do_not_claim_top_level_returns() -> None:
+    code = (
+        "def helper(\n"
+        "    value: int,\n"
+        ") -> int:\n"
+        "    return value + 1\n"
+        "\n"
+        "result = helper(41)\n"
+        "return result: INT\n"
+    )
+    result = transpile_node(code, node_id="helper_node")
+
+    assert result.schema.syntax_errors == []
+    assert [(socket.name, socket.data_type) for socket in result.schema.outputs] == [
+        ("result", SocketType.INT)
+    ]
+    assert result.func() == (42,)
 
 
 def test_bare_return_defaults_to_any() -> None:

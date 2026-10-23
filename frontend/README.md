@@ -6,7 +6,17 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - `src/lib/api.ts` — REST client (`/api/*` via the Vite dev proxy), including
   export, dataset upload/list/preview/delete (multipart uploads use a dedicated
   FormData request), repo model-library listing, named-project/version,
-  run-history, and recovery-session requests.
+  run-history, generated-output raw/open/reveal/delete, and recovery-session
+  requests.
+- `src/lib/clipboard.ts` — copies generated images to the browser clipboard,
+  converting non-PNG outputs through a canvas and reporting unsupported
+  browsers clearly.
+- `src/lib/outputNames.ts` — Save Media token expansion, filename
+  sanitization, batch-index insertion and the "Will save as" preview.
+- `src/lib/widgetVisibility.ts` — `ShowIf` condition matching for conditional
+  widget rows and handles.
+- `src/hooks/useMediaActions.ts` — shared copy/open/reveal actions and status
+  state for output files (including external Save Media destinations).
 - `src/lib/hash.ts` — SHA-256 code hashing with the same line-ending
   normalization as `backend/app/security.py`.
 - `src/lib/persistence.ts` — `.cuigraph.json` save format, size/shape
@@ -51,21 +61,26 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - `src/components/` — `WindowTabs` (workflow windows), `Canvas` (with
   nested-canvas breadcrumbs and double-click node search), `CanvasStatusBar`
   (backend status, node count, run controls), `ComplexNode` (widgets, sockets,
-  frames, subgraph instances and shared interface managers), `CanvasContextMenu`
+  frames, subgraph instances, shared interface managers and the Save Media
+  folder/filename editor), `SaveMediaFields` (native Browse, tokens, preview,
+  format/quality controls), `SaveMediaActions` (Save/Preview/Open/Copy/Folder),
+  `SwitchFields` (renamed five-input selector), `FolderPathField` (typed path
+  plus native folder Browse), `CanvasContextMenu`
   (pane actions with a File submenu), `CodeModal` (Monaco editor with debounced
   live parsing), `DiffModal` (security review of modified code), `NodePalette`
   (square icon rail plus Nodes / Workflows / Templates / Assets drawers),
   `NodeLibrary` (searchable templates plus reusable
   subgraphs), `AssetLibrary` (Files / Outputs / Models tabs), `OutputsLibrary`
-  (generated-media gallery), `ModelsLibrary` (read-only
+  (generated-media gallery with copy-image/open/reveal actions), `ModelsLibrary` (read-only
   repo model browser with search, type filtering, refresh and auto-refresh),
   `ModelSelectorField` / `ModelPickerDialog` (type-scoped local model picker),
   `WorkflowLibrary` (collapsible example-workflow categories),
   `ProjectLibrary`, `DatasetLibrary` (upload, search, preview, delete),
-  `OutputsLibrary` (generated-media gallery, preview, delete),
+  `OutputsLibrary` (generated-media gallery, preview, copy image, open, show
+  folder, delete),
   `DatasetPickerDialog`, `DatasetPreviewDialog`, `WidgetField` (typed
-  parameters, fixed choices, step buttons and linked state),
-  `FileWidgetField` (workspace file picker for `File` widgets),
+  parameters, fixed choices, conditional visibility, step buttons and linked
+  state), `FileWidgetField` (workspace file picker for `File` widgets),
   `SelectionToolbar` (multi-select alignment, distribution, grid layout,
   frame grouping/ungrouping and reusable subgraph creation),
   `SaveProjectDialog`, `ProjectHistoryDialog`, `ShortcutsDialog`,
@@ -107,9 +122,31 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   kind-filtered **File** widgets that pick an asset or accept an `inputs/...`
   path; uploads can also be made from the picker. Execution rejects absolute
   paths and symlink escapes outside the workspace, inputs, and outputs roots.
-- **Outputs tab**: browse generated images/videos from repo-root `outputs/`
-  with search, image thumbnails, inline media preview, deletion, and automatic
-  refresh when a run completes.
+- **Save Media editor**: inline folder field with native OS Browse, filename
+  template with `%date%`, `%time%`, `%counter%`, `%model%`, `%width%`,
+  `%height%` and `%batch%` tokens, Clear/Reset, a live "Will save as" preview,
+  PNG/JPG/WebP buttons plus extra formats, and a settings popover for model
+  label/quality/compression/optimization. Metadata-only tokens are disabled
+  until metadata support lands. The default folder is `%date%` under
+  `outputs/`; absolute folders may be chosen. After a save, Save/Preview/Open/
+  Copy/Show-folder actions are available and external files are fetched through
+  run-recorded artifact endpoints.
+- **Batches and folder loading**: `IMAGE_BATCH` wires into scalar `IMAGE`
+  inputs with a batch chip and aggregate preview; each node runs once per
+  image and reports batch-aware progress. `Load Images From Folder` uses the
+  `FolderPath` widget with native Browse, and the five-input `Switch` lets users
+  rename inputs and pass the selected one through.
+- **Conditional sizing and resize fields**: widgets with `ShowIf` conditions
+  hide when their controlling mode/value does not match. Resolution and Empty
+  Latent Image switch between width/height and megapixel presets (Preview
+  through UHD, plus Custom). `Resize Image` and `Resize Latent` show only the
+  fields for dimensions, side, megapixels or multiplier mode.
+- **Outputs tab**: browse generated images/videos from repo-root `outputs/`,
+  including nested date/subfolders, with search, image thumbnails, inline
+  media preview, copy-image (clipboard), open, show-folder, deletion, and
+  automatic refresh when a run completes. Open/show-folder are disabled when
+  the backend accepts non-loopback hosts. External Save Media destinations are
+  not listed here; use the Save Media node actions instead.
 - **Models tab**: read-only browser for the repo-root `models/<type>` library.
   It shows format, size, modified time, type and fingerprint, with search, type
   filtering, a refresh button, **R** refresh, and automatic polling while open.

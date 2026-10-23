@@ -30,7 +30,7 @@ def test_template_meta_falls_back_for_unknown_names() -> None:
     assert meta.hidden is False
 
 
-def test_only_example_dataset_and_synthetic_nodes_are_hidden() -> None:
+def test_only_example_and_legacy_nodes_are_hidden() -> None:
     hidden = {name for name, meta in TEMPLATE_META.items() if meta.hidden}
     assert hidden == {
         "load_iris",
@@ -43,5 +43,12 @@ def test_only_example_dataset_and_synthetic_nodes_are_hidden() -> None:
         "make_demo_image",
         "make_demo_video",
         "tensor_dataset",
+        "image_scale",
+        "resize_by_side",
+        "upscale_image_by",
+        "resize_image_by_megapixels",
+        "upscale_latent",
+        "upscale_latent_by",
+        "resize_latent_by_megapixels",
     }
     assert len(hidden) < len(TEMPLATE_META)

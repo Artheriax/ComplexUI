@@ -95,7 +95,7 @@
         "y": 160
       },
       "widget_values": {
-        "path": "imagegen_sdxl_lightning.png"
+        "model_name": "dreamshaperxl_lightningdpmsde"
       }
     }
   ],

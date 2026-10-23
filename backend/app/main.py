@@ -36,6 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .accelerator import configured_accelerator, effective_accelerator
+from .artifacts import get_output_artifact_registry
 from .datasets import (
     MAX_UPLOAD_REQUEST_BYTES,
     DatasetNotFound,
@@ -78,6 +79,13 @@ from .network_security import (
     origin_is_allowed,
 )
 from .nvml import nvidia_available
+from .os_actions import (
+    FolderDialogBusy,
+    PathActionError,
+    open_path,
+    pick_folder,
+    reveal_path,
+)
 from .run_history import (
     InvalidRunId,
     RunHistoryError,
@@ -103,10 +111,14 @@ from .schemas import (
     ExportFormat,
     ExportRequest,
     ExportResponse,
+    FolderPickRequest,
+    FolderPickResponse,
     ModelSummary,
     ModelTypeSummary,
     NodeSchema,
+    OutputActionResponse,
     OutputDeleteResponse,
+    OutputPathRequest,
     OutputSummary,
     ParseRequest,
     ProjectCreateRequest,
@@ -739,6 +751,22 @@ def _media_response(path: Path) -> FileResponse:
     )
 
 
+_LOOPBACK_FILE_ACTION_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "[::1]",
+    "testserver",
+}
+
+
+def _file_actions_available() -> bool:
+    return all(
+        host.strip().lower() in _LOOPBACK_FILE_ACTION_HOSTS
+        for host in configured_allowed_hosts()
+    )
+
+
 @app.get("/api/uploads", response_model=list[DatasetSummary])
 def list_uploads_endpoint() -> list[DatasetSummary]:
     """List assets stored in the workspace upload directory."""
@@ -803,7 +831,7 @@ def list_outputs_endpoint(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.get("/api/outputs/{file_id}/raw")
+@app.get("/api/outputs/{file_id:path}/raw")
 def get_output_raw_endpoint(file_id: str) -> FileResponse:
     """Serve a generated image or video inline with HTTP range support."""
     try:
@@ -812,7 +840,7 @@ def get_output_raw_endpoint(file_id: str) -> FileResponse:
         raise _dataset_http_error(exc) from exc
 
 
-@app.delete("/api/outputs/{file_id}", response_model=OutputDeleteResponse)
+@app.delete("/api/outputs/{file_id:path}", response_model=OutputDeleteResponse)
 def delete_output_endpoint(file_id: str) -> OutputDeleteResponse:
     """Delete one generated image or video."""
     try:
@@ -821,6 +849,105 @@ def delete_output_endpoint(file_id: str) -> OutputDeleteResponse:
         raise _dataset_http_error(exc) from exc
     logger.info("generated output deleted: %s", file_id)
     return OutputDeleteResponse(status="deleted", output=output)
+
+
+def _require_file_actions() -> None:
+    if not _file_actions_available():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "File actions are disabled when the server accepts "
+                "non-loopback hosts."
+            ),
+        )
+
+
+@app.post("/api/outputs/{file_id:path}/open", response_model=OutputActionResponse)
+def open_output_endpoint(file_id: str) -> OutputActionResponse:
+    """Open a generated image or video with the default application."""
+    _require_file_actions()
+    try:
+        path = get_output_store().media_path(file_id)
+        open_path(path)
+    except (DatasetNotFound, InvalidAssetPath, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+    except PathActionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    logger.info("generated output opened: %s", file_id)
+    return OutputActionResponse(status="opened")
+
+
+@app.post("/api/outputs/{file_id:path}/reveal", response_model=OutputActionResponse)
+def reveal_output_endpoint(file_id: str) -> OutputActionResponse:
+    """Show a generated image or video in the platform file manager."""
+    _require_file_actions()
+    try:
+        path = get_output_store().media_path(file_id)
+        reveal_path(path)
+    except (DatasetNotFound, InvalidAssetPath, OSError) as exc:
+        raise _dataset_http_error(exc) from exc
+    except PathActionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    logger.info("generated output revealed: %s", file_id)
+    return OutputActionResponse(status="revealed")
+
+
+def _resolve_artifact(path: str) -> Path:
+    artifact = get_output_artifact_registry().resolve(path)
+    if artifact is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Saved output is not available. Run Save Media again.",
+        )
+    return artifact
+
+
+@app.get("/api/artifacts/raw")
+def get_artifact_raw_endpoint(
+    path: str = Query(min_length=1, max_length=4096),
+) -> FileResponse:
+    """Serve a media file recorded by a completed run."""
+    _require_file_actions()
+    return _media_response(_resolve_artifact(path))
+
+
+@app.post("/api/artifacts/open", response_model=OutputActionResponse)
+def open_artifact_endpoint(payload: OutputPathRequest) -> OutputActionResponse:
+    """Open a run-produced media file with the default application."""
+    _require_file_actions()
+    artifact = _resolve_artifact(payload.path)
+    try:
+        open_path(artifact)
+    except PathActionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    logger.info("saved artifact opened: %s", artifact.name)
+    return OutputActionResponse(status="opened")
+
+
+@app.post("/api/artifacts/reveal", response_model=OutputActionResponse)
+def reveal_artifact_endpoint(payload: OutputPathRequest) -> OutputActionResponse:
+    """Reveal a run-produced media file in the platform file manager."""
+    _require_file_actions()
+    artifact = _resolve_artifact(payload.path)
+    try:
+        reveal_path(artifact)
+    except PathActionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    logger.info("saved artifact revealed: %s", artifact.name)
+    return OutputActionResponse(status="revealed")
+
+
+@app.post("/api/fs/pick-folder", response_model=FolderPickResponse)
+async def pick_folder_endpoint(payload: FolderPickRequest) -> FolderPickResponse:
+    """Open a native folder dialog on the server desktop."""
+    _require_file_actions()
+    try:
+        selected = await asyncio.to_thread(pick_folder, payload.initial)
+    except FolderDialogBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PathActionError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    return FolderPickResponse(path=selected)
 
 
 @app.get("/api/uploads/{file_id}/preview", response_model=DatasetPreview)
@@ -1147,6 +1274,19 @@ async def _run_execution(
             recorder.observe(event)
         except Exception as exc:
             logger.warning("run history telemetry ignored for %s: %s", run_id[:12], exc)
+        if event.type is EventType.NODE_COMPLETED:
+            outputs = event.data.get("outputs")
+            if isinstance(outputs, dict):
+                saved_path = outputs.get("saved_path")
+                if isinstance(saved_path, str):
+                    try:
+                        get_output_artifact_registry().register(saved_path)
+                    except Exception as exc:
+                        logger.debug(
+                            "artifact registration skipped for %s: %s",
+                            run_id[:12],
+                            exc,
+                        )
         if run_logger is not None:
             _log_event(event, target=run_logger)
         manager.emit(event)

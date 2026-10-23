@@ -25,7 +25,7 @@
       "id": "save",
       "template": "save_media",
       "position": { "x": 840, "y": 40 },
-      "widget_values": { "path": "vision-detection.png" }
+      "widget_values": { "model_name": "fasterrcnn_mobilenet_v3_large_320_fpn" }
     }
   ],
   "edges": [

@@ -32,6 +32,8 @@ from urllib.parse import quote
 import numpy as np
 
 from .datasets import (
+    IMAGE_FORMATS,
+    VIDEO_FORMATS,
     DatasetNotFound,
     InvalidAssetPath,
     InvalidDataset,
@@ -75,6 +77,7 @@ __all__ = [
     "GraphError",
     "GraphPlan",
     "GraphValidationError",
+    "MAX_BATCH_ITEMS",
     "MAX_CACHE_BYTES",
     "MAX_CACHE_ENTRIES",
     "NON_CACHEABLE_SOCKET_TYPES",
@@ -91,6 +94,9 @@ __all__ = [
 
 EventSink = Callable[[ExecutionEvent], None]
 
+MAX_BATCH_ITEMS = 256
+MAX_FOLDER_FINGERPRINT_FILES = 512
+MAX_ANY_PREVIEW_CHARS = 20_000
 MAX_CACHE_ENTRIES = 64
 MAX_CACHE_BYTES = 32 * 1024 * 1024
 NON_CACHEABLE_SOCKET_TYPES = {
@@ -360,28 +366,6 @@ def _validate_model_selections(
         raise ModelSelectionError(issues)
 
 
-def _model_widget_fingerprints(
-    node: GraphNode,
-    schema: NodeSchema,
-) -> dict[str, str]:
-    """Return model file fingerprints for cache invalidation."""
-    fingerprints: dict[str, str] = {}
-    for widget in schema.widgets:
-        if widget.data_type.strip().lower() != "modelselector":
-            continue
-        selected = node.widget_values.get(widget.name, widget.default)
-        if not isinstance(selected, str) or not selected.strip():
-            fingerprints[widget.name] = "builtin"
-            continue
-        try:
-            summary = get_model_store().describe(widget.model_type or "", selected)
-        except ModelError:
-            fingerprints[widget.name] = f"missing:{selected}"
-        else:
-            fingerprints[widget.name] = summary.fingerprint
-    return fingerprints
-
-
 def _scoped_graph(
     graph: WorkflowGraph, allowed: set[str] | None
 ) -> tuple[list[GraphNode], list[GraphEdge]]:
@@ -480,11 +464,18 @@ def execute_graph(
             f"{handle}:{state_hashes[incoming[node_id][handle].source_node_id]}"
             for handle in sorted(incoming[node_id])
         ]
+        widget_values = dict(node.widget_values)
+        widget_names = {widget.name for widget in schema.widgets}
+        for handle, edge in incoming[node_id].items():
+            if handle in widget_names:
+                widget_values[handle] = result.outputs_by_name[
+                    edge.source_node_id
+                ][edge.source_handle]
         state_hash = _node_state_hash(
             node.code,
             node.widget_values,
             upstream_hashes,
-            _model_widget_fingerprints(node, schema),
+            _widget_fingerprints(node, schema, widget_values),
         )
 
         if not registry.is_trusted(node.approval_id or node_id, node.code):
@@ -545,22 +536,30 @@ def execute_graph(
         sink(ExecutionEvent(type=EventType.NODE_STARTED, node_id=node_id, data={}))
         node_started = time.perf_counter()
         transpiled = transpile_node(node.code, node_id)
+        batch_size = 1
+        current_index = 0
+        progress_state = {"batch_size": 1, "index": 0}
 
         def report_progress(
             fraction: float,
             message: str | None = None,
             *,
             _node_id: str = node_id,
+            _state: dict[str, int] = progress_state,
         ) -> None:
             try:
                 value = float(fraction)
             except (TypeError, ValueError):
                 return
-            data: dict[str, Any] = {
-                "progress": min(1.0, max(0.0, value)),
-            }
+            total = max(_state["batch_size"], 1)
+            index = _state["index"]
+            progress = min(1.0, max(0.0, (index + value) / total))
+            data: dict[str, Any] = {"progress": progress}
             if message is not None:
-                data["message"] = str(message)[:200]
+                label = str(message)[:200]
+                if total > 1:
+                    label = f"{index + 1}/{total}: {label}"
+                data["message"] = label
             sink(
                 ExecutionEvent(
                     type=EventType.NODE_PROGRESS,
@@ -575,6 +574,9 @@ def execute_graph(
 
         transpiled.func.__globals__["report_progress"] = report_progress
         transpiled.func.__globals__["raise_if_cancelled"] = raise_if_cancelled
+        transpiled.func.__globals__["outputs_root"] = (
+            get_output_store().outputs_dir.resolve()
+        )
 
         kwargs: dict[str, Any] = {widget.name: widget.default for widget in schema.widgets}
         kwargs.update({key: value for key, value in node.widget_values.items() if key in kwargs})
@@ -588,6 +590,10 @@ def execute_graph(
                     kwargs[widget.name] = _resolve_widget_file(kwargs.get(widget.name))
                 elif widget_kind in {"directory", "folder"}:
                     kwargs[widget.name] = _resolve_widget_directory(
+                        kwargs.get(widget.name)
+                    )
+                elif widget_kind == "folderpath":
+                    kwargs[widget.name] = _resolve_widget_image_folder(
                         kwargs.get(widget.name)
                     )
                 elif widget_kind == "modelpath":
@@ -630,35 +636,140 @@ def execute_graph(
                 traceback_text="",
             ) from exc
 
+        def fail_batch(
+            message: str,
+            *,
+            _node_id: str = node_id,
+        ) -> None:
+            sink(
+                ExecutionEvent(
+                    type=EventType.NODE_ERROR,
+                    node_id=_node_id,
+                    data={
+                        "line": None,
+                        "message": message,
+                        "error_type": "BatchInputError",
+                        "traceback": "",
+                        "rich_outputs": [],
+                    },
+                )
+            )
+            raise NodeExecutionError(
+                _node_id,
+                line=None,
+                message=message,
+                error_type="BatchInputError",
+                traceback_text="",
+            )
+
+        batch_inputs = [
+            socket.name
+            for socket in schema.inputs
+            if socket.data_type is SocketType.IMAGE
+            and isinstance(kwargs.get(socket.name), (list, tuple))
+        ]
+        batch_lengths = {name: len(kwargs[name]) for name in batch_inputs}
+        if batch_lengths:
+            if len(set(batch_lengths.values())) != 1:
+                detail = ", ".join(
+                    f"{name}={length}" for name, length in batch_lengths.items()
+                )
+                fail_batch(
+                    "Image batch inputs must have matching lengths: " + detail
+                )
+            batch_size = next(iter(batch_lengths.values()))
+            if batch_size > MAX_BATCH_ITEMS:
+                fail_batch(
+                    f"Image batch has {batch_size} items; the limit is "
+                    f"{MAX_BATCH_ITEMS}."
+                )
+        progress_state["batch_size"] = batch_size
+        transpiled.func.__globals__["batch_size"] = batch_size
+        transpiled.func.__globals__["batch_index"] = 0
+
         capture = OutputCapture()
         try:
             with capture.activate(transpiled.func):
-                value = transpiled.func(**kwargs)
-            outputs = _normalize_outputs(value, len(schema.outputs), node_id)
+                if batch_size == 0:
+                    outputs = tuple([] for _ in schema.outputs)
+                elif batch_inputs:
+                    buckets: list[list[Any]] = [
+                        [] for _ in schema.outputs
+                    ]
+                    for index in range(batch_size):
+                        if should_stop is not None and should_stop():
+                            raise ExecutionCancelled(
+                                "Execution cancelled by user"
+                            )
+                        current_index = index
+                        progress_state["index"] = index
+                        transpiled.func.__globals__["batch_index"] = index
+                        item_kwargs = {
+                            key: (
+                                value[index]
+                                if key in batch_inputs
+                                else value
+                            )
+                            for key, value in kwargs.items()
+                        }
+                        value = transpiled.func(**item_kwargs)
+                        item_outputs = _normalize_outputs(
+                            value, len(schema.outputs), node_id
+                        )
+                        for bucket, item in zip(
+                            buckets, item_outputs, strict=True
+                        ):
+                            bucket.append(item)
+                    outputs = tuple(buckets)
+                else:
+                    value = transpiled.func(**kwargs)
+                    outputs = _normalize_outputs(
+                        value, len(schema.outputs), node_id
+                    )
         except ExecutionCancelled:
             raise
         except Exception as exc:
             line, traceback_text = _localize_failure(exc, node_id, transpiled.line_offset)
+            message = str(exc)
+            if batch_inputs and batch_size > 1:
+                message = (
+                    f"Batch item {current_index + 1}/{batch_size}: {message}"
+                )
+            error_data: dict[str, Any] = {
+                "line": line,
+                "message": message,
+                "error_type": type(exc).__name__,
+                "traceback": traceback_text,
+                "rich_outputs": serialize_rich_outputs(capture.outputs),
+            }
+            if batch_inputs:
+                error_data["batch_index"] = current_index
+                error_data["batch_size"] = batch_size
             sink(
                 ExecutionEvent(
                     type=EventType.NODE_ERROR,
                     node_id=node_id,
-                    data={
-                        "line": line,
-                        "message": str(exc),
-                        "error_type": type(exc).__name__,
-                        "traceback": traceback_text,
-                        "rich_outputs": serialize_rich_outputs(capture.outputs),
-                    },
+                    data=error_data,
                 )
             )
             raise NodeExecutionError(
                 node_id,
                 line=line,
-                message=str(exc),
+                message=message,
                 error_type=type(exc).__name__,
                 traceback_text=traceback_text,
             ) from exc
+
+        for socket, output in zip(schema.outputs, outputs, strict=True):
+            if (
+                socket.data_type in {SocketType.IMAGE, SocketType.IMAGE_BATCH}
+                and isinstance(output, (list, tuple))
+                and len(output) > MAX_BATCH_ITEMS
+            ):
+                fail_batch(
+                    f"Image batch has {len(output)} items; the limit is "
+                    f"{MAX_BATCH_ITEMS}."
+                )
 
         rich_outputs = tuple(capture.outputs)
         if all(
@@ -689,9 +800,35 @@ def topological_sort(graph: WorkflowGraph) -> list[str]:
     return _topological_order(nodes_by_id, graph.edges)
 
 
+_NO_BATCH_PREVIEW = object()
+
+
+def _batch_value_preview(data_type: SocketType, value: Any) -> Any:
+    if isinstance(value, list):
+        if data_type in {
+            SocketType.IMAGE,
+            SocketType.IMAGE_BATCH,
+            SocketType.MEDIA,
+        }:
+            return _image_batch_or_batch_preview(value)
+        return _batch_preview(value)
+    if isinstance(value, tuple) and data_type in {
+        SocketType.IMAGE,
+        SocketType.IMAGE_BATCH,
+        SocketType.MEDIA,
+    }:
+        return _image_batch_or_batch_preview(value)
+    return _NO_BATCH_PREVIEW
+
+
 def build_output_preview(data_type: SocketType, value: Any) -> Any:
     """Build the wire/node preview metadata described in the socket spec."""
     try:
+        if data_type is SocketType.ANY:
+            return _any_preview(value)
+        batch_preview = _batch_value_preview(data_type, value)
+        if batch_preview is not _NO_BATCH_PREVIEW:
+            return batch_preview
         if data_type is SocketType.DATAFRAME:
             return _jsonable(
                 {
@@ -1081,8 +1218,9 @@ def _media_url(value: Any) -> str | None:
     output_relative = get_output_store().relative_path(value)
     if output_relative:
         output_parts = Path(output_relative).parts
-        if len(output_parts) == 2 and output_parts[0] == "outputs":
-            return f"/api/outputs/{quote(output_parts[1])}/raw"
+        if len(output_parts) >= 2 and output_parts[0] == "outputs":
+            encoded = "/".join(quote(part) for part in output_parts[1:])
+            return f"/api/outputs/{encoded}/raw"
     raw = value.strip().replace("\\", "/")
     if raw.startswith("inputs/"):
         input_parts = Path(raw).parts
@@ -1109,6 +1247,11 @@ def _media_url(value: Any) -> str | None:
     parts = relative.parts
     if len(parts) == 3 and parts[0] == "data" and parts[1] == "uploads":
         return f"/api/uploads/{quote(parts[2])}/raw"
+    if path.is_absolute() and path.suffix.lower() in {
+        *IMAGE_FORMATS,
+        *VIDEO_FORMATS,
+    }:
+        return f"/api/artifacts/raw?path={quote(str(path.resolve()))}"
     return None
 
 
@@ -1400,6 +1543,18 @@ def _resolve_widget_directory(value: Any) -> Any:
     return str(resolved)
 
 
+def _resolve_widget_image_folder(value: Any) -> str:
+    """Resolve a read-only image folder chosen for a node."""
+    if not isinstance(value, str) or not value.strip():
+        raise FileAccessError("FolderPath widgets require a directory path.")
+    root = Path(__file__).resolve().parents[2]
+    path = Path(value).expanduser()
+    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    if not resolved.is_dir():
+        raise FileAccessError(f"Image folder does not exist: {value}")
+    return str(resolved)
+
+
 def _resolve_widget_file(value: Any) -> Any:
     """Resolve uploads, generated outputs, and legacy workspace files."""
     if not isinstance(value, str) or not value.strip():
@@ -1470,11 +1625,11 @@ def _node_state_hash(
     code: str,
     widget_values: dict[str, Any],
     upstream_hashes: list[str],
-    model_fingerprints: dict[str, str] | None = None,
+    widget_fingerprints: dict[str, str] | None = None,
 ) -> str:
     payload = (
         f"{code}{json.dumps(widget_values, sort_keys=True, default=str)}"
-        f"{json.dumps(model_fingerprints or {}, sort_keys=True)}"
+        f"{json.dumps(widget_fingerprints or {}, sort_keys=True)}"
         f"{''.join(upstream_hashes)}"
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1548,3 +1703,166 @@ def _jsonable(value: Any) -> Any:
         return [_jsonable(item) for item in value]
     return repr(value)[:200]
 
+
+def _file_fingerprint(path: str) -> str:
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return "missing"
+    return f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _folder_fingerprint(path: str, *, media_only: bool = False) -> str:
+    root = Path(path)
+    try:
+        stat = root.stat()
+        entries = sorted(root.iterdir(), key=lambda item: item.name.lower())
+    except OSError:
+        return "missing"
+    fingerprints: list[str] = []
+    file_count = 0
+    for entry in entries:
+        if entry.is_symlink():
+            continue
+        if entry.is_file():
+            if media_only and entry.suffix.lower() not in {
+                *IMAGE_FORMATS,
+                *VIDEO_FORMATS,
+            }:
+                continue
+            file_count += 1
+            if len(fingerprints) < MAX_FOLDER_FINGERPRINT_FILES:
+                try:
+                    item_stat = entry.stat()
+                except OSError:
+                    continue
+                fingerprints.append(
+                    f"{entry.name}:{item_stat.st_size}:{item_stat.st_mtime_ns}"
+                )
+        elif entry.is_dir() and len(fingerprints) < MAX_FOLDER_FINGERPRINT_FILES:
+            fingerprints.append(f"{entry.name}/")
+    return (
+        f"{stat.st_mtime_ns}:{file_count}:"
+        + "|".join(fingerprints[:MAX_FOLDER_FINGERPRINT_FILES])
+    )
+
+
+def _widget_fingerprints(
+    node: GraphNode,
+    schema: NodeSchema,
+    values: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Return file, folder and model fingerprints for cache invalidation."""
+    fingerprints: dict[str, str] = {}
+    resolved_values: dict[str, Any] = (
+        node.widget_values if values is None else values
+    )
+    for widget in schema.widgets:
+        kind = widget.data_type.strip().lower()
+        value = resolved_values.get(widget.name, widget.default)
+        if kind == "modelselector":
+            if not isinstance(value, str) or not value.strip():
+                fingerprints[widget.name] = "builtin"
+                continue
+            try:
+                summary = get_model_store().describe(widget.model_type or "", value)
+            except ModelError:
+                fingerprints[widget.name] = f"missing:{value}"
+            else:
+                fingerprints[widget.name] = summary.fingerprint
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            if kind in {"file", "imagefile", "videofile"}:
+                resolved = _resolve_widget_file(value)
+                if isinstance(resolved, str):
+                    fingerprints[widget.name] = _file_fingerprint(resolved)
+            elif kind == "folderpath":
+                resolved = _resolve_widget_image_folder(value)
+                fingerprints[widget.name] = _folder_fingerprint(
+                    resolved, media_only=True
+                )
+            elif kind in {"directory", "folder"}:
+                resolved = _resolve_widget_directory(value)
+                if isinstance(resolved, str):
+                    fingerprints[widget.name] = _folder_fingerprint(resolved)
+        except (FileAccessError, ModelAccessError):
+            fingerprints[widget.name] = "missing"
+    return fingerprints
+
+
+def _batch_preview(value: Any) -> dict[str, Any]:
+    count = len(value) if isinstance(value, (list, tuple)) else 1
+    return {"kind": "batch", "count": count}
+
+
+def _image_batch_or_batch_preview(value: Any) -> dict[str, Any]:
+    try:
+        from PIL import Image
+    except ImportError:
+        return _batch_preview(value)
+    if not value or all(isinstance(item, Image.Image) for item in value):
+        return _image_batch_preview(value)
+    return _batch_preview(value)
+
+
+def _bounded_jsonable(value: Any) -> Any:
+    try:
+        converted = _jsonable(value)
+        encoded = json.dumps(converted, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return repr(value)[:200]
+    if len(encoded) > MAX_ANY_PREVIEW_CHARS:
+        return repr(value)[:200]
+    return converted
+
+
+def _any_preview(value: Any) -> Any:
+    try:
+        from PIL import Image
+    except ImportError:
+        Image = None
+    if Image is not None and isinstance(value, Image.Image):
+        return _image_preview(value)
+    if Image is not None and isinstance(value, (list, tuple)) and value and all(
+        isinstance(item, Image.Image) for item in value
+    ):
+        return _image_batch_preview(value)
+    if isinstance(value, dict):
+        if str(value.get("media_type", "")).lower() == "video":
+            return _video_preview(value)
+        return _bounded_jsonable(value)
+    if isinstance(value, (list, tuple)):
+        if (
+            len(value) == 2
+            and hasattr(value[0], "shape")
+            and hasattr(value[1], "shape")
+        ):
+            features, labels = value
+            return _jsonable(
+                {
+                    "X_shape": tuple(features.shape),
+                    "y_shape": tuple(labels.shape),
+                    "dtype": str(features.dtype),
+                }
+            )
+        return _batch_preview(value)
+    if hasattr(value, "to_dicts") and hasattr(value, "height"):
+        return _jsonable(
+            {
+                "rows": value.height,
+                "cols": value.width,
+                "head": value.head(5).to_dicts(),
+            }
+        )
+    if hasattr(value, "shape") and hasattr(value, "dtype"):
+        return _jsonable(
+            {
+                "shape": tuple(value.shape),
+                "dtype": str(value.dtype),
+                "device": str(getattr(value, "device", "cpu")),
+                "sample": _tensor_sample(value),
+            }
+        )
+    return _bounded_jsonable(value)

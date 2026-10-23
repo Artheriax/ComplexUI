@@ -5,9 +5,9 @@
   "description": "Generate an image, save it to outputs, reload it, and save a second copy.",
   "nodes": [
     { "id": "demo", "template": "make_demo_image", "position": { "x": 0, "y": 40 } },
-    { "id": "save", "template": "save_media", "position": { "x": 280, "y": 40 }, "widget_values": { "path": "vision-demo.png" } },
-    { "id": "load", "template": "load_image", "position": { "x": 560, "y": 40 } },
-    { "id": "copy", "template": "save_media", "position": { "x": 840, "y": 40 }, "widget_values": { "path": "vision-demo-copy.png" } }
+    { "id": "save", "template": "save_media", "position": { "x": 320, "y": 40 }, "widget_values": { "model_name": "demo" } },
+    { "id": "load", "template": "load_image", "position": { "x": 700, "y": 40 } },
+    { "id": "copy", "template": "save_media", "position": { "x": 1080, "y": 40 }, "widget_values": { "model_name": "demo" } }
   ],
   "edges": [
     { "source_node_id": "demo", "source_handle": "image", "target_node_id": "save", "target_handle": "media" },

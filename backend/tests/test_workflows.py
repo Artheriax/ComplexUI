@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,11 @@ GENERATION_WORKFLOWS = {
     "imagegen_sd15_sampler_custom",
     "imagegen_sdxl_lightning",
 }
+
+def _today_output(model: str, counter: int = 1) -> str:
+    day = datetime.now().strftime("%Y-%m-%d")
+    return f"outputs/{day}/{model}_{counter:03d}.png"
+
 
 ACCURACY_FLOORS = {
     "iris_knn_classification": 0.90,
@@ -388,7 +394,9 @@ def test_torchvision_workflows_emit_typed_vision_outputs() -> None:
     assert detections["count"] == len(detections["detections"])
     assert detection.previews["detect"]["annotated"]["kind"] == "image"
     assert detection.previews["save"]["saved"]["kind"] == "image"
-    assert detection.outputs_by_name["save"]["saved_path"] == "outputs/vision-detection.png"
+    assert detection.outputs_by_name["save"]["saved_path"] == _today_output(
+        "fasterrcnn_mobilenet_v3_large_320_fpn"
+    )
 
     segmentation = execute_graph(
         materialize_workflow(workflows["vision_image_segmentation"])
@@ -398,8 +406,8 @@ def test_torchvision_workflows_emit_typed_vision_outputs() -> None:
     assert len(masks["masks"]) <= 10
     assert all(item["mask"] for item in masks["masks"])
     assert segmentation.previews["segment"]["annotated"]["kind"] == "image"
-    assert segmentation.outputs_by_name["save"]["saved_path"] == (
-        "outputs/vision-segmentation.png"
+    assert segmentation.outputs_by_name["save"]["saved_path"] == _today_output(
+        "deeplabv3_mobilenet_v3_large"
     )
 
 
@@ -416,8 +424,8 @@ def test_ultralytics_workflows_emit_typed_vision_outputs() -> None:
     assert detections["backend"] == "ultralytics"
     assert detections["count"] == len(detections["detections"])
     assert detection.previews["save"]["saved"]["kind"] == "image"
-    assert detection.outputs_by_name["save"]["saved_path"] == (
-        "outputs/vision-yolo-detection.png"
+    assert detection.outputs_by_name["save"]["saved_path"] == _today_output(
+        "yolo11n"
     )
 
     segmentation = execute_graph(
@@ -428,8 +436,8 @@ def test_ultralytics_workflows_emit_typed_vision_outputs() -> None:
     assert masks["backend"] == "ultralytics"
     assert len(masks["masks"]) <= 10
     assert segmentation.previews["segment"]["annotated"]["kind"] == "image"
-    assert segmentation.outputs_by_name["save"]["saved_path"] == (
-        "outputs/vision-yolo-segmentation.png"
+    assert segmentation.outputs_by_name["save"]["saved_path"] == _today_output(
+        "yolo11n-seg"
     )
 
 

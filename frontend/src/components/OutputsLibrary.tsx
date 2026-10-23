@@ -6,11 +6,15 @@ import {
   formatDatasetDate,
   formatDatasetSize,
 } from "../lib/datasets";
+import { useMediaActions } from "../hooks/useMediaActions";
 import { useGraphStore } from "../store/useGraphStore";
 import { useOutputsStore } from "../store/useOutputsStore";
 import { DatasetPreviewDialog } from "./DatasetPreviewDialog";
 import {
+  CopyIcon,
   EyeIcon,
+  FolderIcon,
+  NewWindowIcon,
   ResetIcon,
   SpinnerIcon,
   TrashIcon,
@@ -25,7 +29,8 @@ function OutputCard({
   onPreview: (output: OutputSummary) => void;
 }) {
   const removeOutput = useOutputsStore((state) => state.removeOutput);
-
+  const actions = useMediaActions(output.path, output.kind);
+  const busy = actions.busy;
   const remove = () => {
     if (!window.confirm(`Delete “${output.name}” from the output library?`)) {
       return;
@@ -65,7 +70,7 @@ function OutputCard({
           {output.kind} · {formatDatasetSize(output.size_bytes)} ·{" "}
           {formatDatasetDate(output.modified_at)}
         </p>
-        <div className="mt-2 flex items-center justify-end gap-1">
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-1">
           <button
             type="button"
             title={`Preview ${output.name}`}
@@ -74,6 +79,38 @@ function OutputCard({
             className="flex items-center gap-1 rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
           >
             <EyeIcon className="h-3 w-3" /> Preview
+          </button>
+          {output.kind === "image" && (
+            <button
+              type="button"
+              title={`Copy ${output.name} to clipboard`}
+              aria-label={`Copy ${output.name} to clipboard`}
+              disabled={busy}
+              onClick={actions.copy}
+              className="rounded border border-zinc-700 p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-700"
+            >
+              <CopyIcon className="h-3 w-3" />
+            </button>
+          )}
+          <button
+            type="button"
+            title={`Open ${output.name}`}
+            aria-label={`Open ${output.name}`}
+            disabled={busy}
+            onClick={actions.open}
+            className="rounded border border-zinc-700 p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-700"
+          >
+            <NewWindowIcon className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            title={`Show ${output.name} in folder`}
+            aria-label={`Show ${output.name} in folder`}
+            disabled={busy}
+            onClick={actions.reveal}
+            className="rounded border border-zinc-700 p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-700"
+          >
+            <FolderIcon className="h-3 w-3" />
           </button>
           <button
             type="button"
@@ -85,6 +122,21 @@ function OutputCard({
             <TrashIcon className="h-3 w-3" />
           </button>
         </div>
+        {actions.state.kind === "working" && (
+          <p role="status" className="mt-1 text-[10px] text-zinc-500">
+            Working…
+          </p>
+        )}
+        {actions.state.kind === "success" && (
+          <p role="status" className="mt-1 text-[10px] text-emerald-400">
+            {actions.state.message}
+          </p>
+        )}
+        {actions.state.kind === "error" && (
+          <p role="alert" className="mt-1 text-[10px] text-red-400">
+            {actions.state.message}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -179,8 +231,9 @@ export function OutputsLibrary() {
         ))}
       </div>
       <div className="border-t border-zinc-800 p-2.5 text-[10px] leading-relaxed text-zinc-600">
-        Generated media lives in <span className="font-mono">outputs/</span>.
-        Refreshes automatically when a run completes.
+        Generated media lives in{" "}
+        <span className="font-mono">outputs/&lt;date&gt;/</span>. Refreshes
+        automatically when a run completes.
       </div>
       {previewOutput && (
         <DatasetPreviewDialog

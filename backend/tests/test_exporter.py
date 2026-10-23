@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 
+from app.datasets import get_output_store
 from app.exporter import ExportError, export_notebook, export_python
 from app.schemas import GraphEdge, GraphNode, WorkflowGraph
+from app.security import SecurityRegistry
 
 GENERATED_AT = datetime(2026, 10, 20, 12, 0, tzinfo=UTC)
 
@@ -84,6 +86,7 @@ def test_python_export_is_runnable_and_deduplicates_dependencies(
     assert "    import math" in exported.content
     assert "def report_progress" in exported.content
     assert "def raise_if_cancelled" in exported.content
+    assert "outputs_root = Path(" in exported.content
     assert "node_outputs['source']['result']" in exported.content
     assert "offset=1" in exported.content
     assert exported.content.index("def __node_exec_source") < exported.content.index(
@@ -197,6 +200,7 @@ def test_notebook_export_has_valid_cells_and_node_execution() -> None:
     assert "node_outputs = {}" in setup
     assert "def report_progress" in setup
     assert "def raise_if_cancelled" in setup
+    assert "outputs_root = Path(" in setup
     assert "node_outputs['source']['result']" in "".join(cells[3]["source"])
     assert "node_outputs" in "".join(cells[-1]["source"])
 
@@ -253,3 +257,100 @@ def test_export_scope_includes_only_target_ancestors() -> None:
 def test_empty_graph_cannot_be_exported() -> None:
     with pytest.raises(ExportError, match="no nodes"):
         export_python(WorkflowGraph())
+
+
+def test_python_export_resolves_outputfile_widgets(tmp_path: Path) -> None:
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="write",
+                code=(
+                    "from pathlib import Path\n"
+                    'target: OutputFile = ""\n'
+                    "Path(target).write_text('ok', encoding='utf-8')\n"
+                    "result = str(target)\n"
+                    "return result: STRING\n"
+                ),
+                widget_values={"target": "2026-10-23/exported.txt"},
+            )
+        ]
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+    target = get_output_store().outputs_dir / "2026-10-23" / "exported.txt"
+    assert repr(str(target)) in exported.content
+
+    completed = _run_exported_script(exported.content, tmp_path / "export.py")
+    assert completed.returncode == 0, completed.stderr
+    assert target.read_text(encoding="utf-8") == "ok"
+
+
+def test_exported_save_media_uses_outputs_root(tmp_path: Path) -> None:
+    registry = SecurityRegistry()
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="source",
+                code=registry.get_template("make_demo_image").code,
+                widget_values={"width": 64, "height": 64},
+            ),
+            GraphNode(
+                id="save",
+                code=registry.get_template("save_media").code,
+                widget_values={"model_name": "exported"},
+            ),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="source",
+                source_handle="image",
+                target_node_id="save",
+                target_handle="media",
+            )
+        ],
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+    completed = _run_exported_script(exported.content, tmp_path / "save.py")
+
+    assert completed.returncode == 0, completed.stderr
+    saved = list(get_output_store().outputs_dir.glob("*/exported_001.png"))
+    assert len(saved) == 1
+
+
+def test_exported_workflow_broadcasts_image_batches(tmp_path: Path) -> None:
+    source = GraphNode(
+        id="source",
+        code=(
+            "from PIL import Image\n"
+            "images = [Image.new('RGB', (4, 4)) for _ in range(3)]\n"
+            "return images: IMAGE_BATCH\n"
+        ),
+    )
+    transform = GraphNode(
+        id="transform",
+        code=(
+            "image: IMAGE\n"
+            "result = image.resize((image.width + 1, image.height + 1))\n"
+            "return result: IMAGE\n"
+        ),
+    )
+    graph = WorkflowGraph(
+        nodes=[source, transform],
+        edges=[
+            GraphEdge(
+                source_node_id="source",
+                source_handle="images",
+                target_node_id="transform",
+                target_handle="image",
+            )
+        ],
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+    assert "_run_batch_node(" in exported.content
+
+    completed = _run_exported_script(
+        exported.content, tmp_path / "batch.py"
+    )
+    assert completed.returncode == 0, completed.stderr

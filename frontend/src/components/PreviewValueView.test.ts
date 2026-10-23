@@ -183,3 +183,13 @@ test("renders the sigma schedule and advanced sampling contracts", () => {
   expect(screen.getByText("CFG 7")).toBeTruthy();
   expect(screen.getByText("dreamshaper_8")).toBeTruthy();
 });
+
+test("renders generic batch counts", () => {
+  render(
+    createElement(PreviewValueView, {
+      value: { kind: "batch", count: 4 },
+    }),
+  );
+
+  expect(screen.getByText("4 items")).toBeTruthy();
+});

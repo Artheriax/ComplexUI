@@ -26,6 +26,7 @@ export function socketTypesCompatible(
     target === "ANY" ||
     (source === "INT" && target === "FLOAT") ||
     (source === "IMAGE" && target === "IMAGE_BATCH") ||
+    (source === "IMAGE_BATCH" && target === "IMAGE") ||
     ((source === "IMAGE" ||
       source === "IMAGE_BATCH" ||
       source === "VIDEO") &&

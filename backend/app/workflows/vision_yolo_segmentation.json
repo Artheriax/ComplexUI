@@ -21,7 +21,7 @@
       "id": "save",
       "template": "save_media",
       "position": { "x": 840, "y": 40 },
-      "widget_values": { "path": "vision-yolo-segmentation.png" }
+      "widget_values": { "model_name": "yolo11n-seg" }
     }
   ],
   "edges": [

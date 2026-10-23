@@ -30,15 +30,16 @@
     },
     {
       "id": "scale",
-      "template": "image_scale",
+      "template": "resize_image",
       "position": {
         "x": 360,
         "y": 260
       },
       "widget_values": {
+        "mode": "By Dimensions",
         "width": 512,
         "height": 512,
-        "method": "lanczos",
+        "resample": "lanczos",
         "crop": false
       }
     },
@@ -111,7 +112,7 @@
         "y": 160
       },
       "widget_values": {
-        "path": "imagegen_sd15_img2img.png"
+        "model_name": "dreamshaper_8"
       }
     }
   ],
@@ -124,7 +125,7 @@
     },
     {
       "source_node_id": "scale",
-      "source_handle": "scaled",
+      "source_handle": "result",
       "target_node_id": "encode",
       "target_handle": "pixels"
     },

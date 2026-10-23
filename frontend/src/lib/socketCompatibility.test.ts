@@ -46,6 +46,7 @@ test("maps widget python types onto socket types", () => {
   expect(widgetSocketType("ImageFile")).toBe("STRING");
   expect(widgetSocketType("VideoFile")).toBe("STRING");
   expect(widgetSocketType("OutputFile")).toBe("STRING");
+  expect(widgetSocketType("FolderPath")).toBe("STRING");
   expect(widgetSocketType("DATAFRAME")).toBe("DATAFRAME");
   expect(widgetSocketType("IMAGE")).toBe("IMAGE");
   expect(widgetSocketType("unknown")).toBe("ANY");
@@ -61,7 +62,7 @@ test("matches exact and ANY socket types", () => {
   expect(socketTypesCompatible("IMAGE", "MEDIA")).toBe(true);
   expect(socketTypesCompatible("IMAGE_BATCH", "MEDIA")).toBe(true);
   expect(socketTypesCompatible("IMAGE", "IMAGE_BATCH")).toBe(true);
-  expect(socketTypesCompatible("IMAGE_BATCH", "IMAGE")).toBe(false);
+  expect(socketTypesCompatible("IMAGE_BATCH", "IMAGE")).toBe(true);
   expect(socketTypesCompatible("VIDEO", "MEDIA")).toBe(true);
   expect(socketTypesCompatible("MEDIA", "IMAGE")).toBe(false);
   expect(socketTypesCompatible("IMAGE", "VIDEO")).toBe(false);

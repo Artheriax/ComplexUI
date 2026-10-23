@@ -49,8 +49,13 @@ execution toggles persist in browser storage.
 Nodes can stream coarse step progress through `NODE_PROGRESS`; the node footer
 and Execution panel show the percentage and message, and **Stop** cancels
 cooperatively inside a running node when it calls `raise_if_cancelled()`.
-Generated images and videos saved under `outputs/` appear in the Assets
-**Outputs** tab with search, media preview, and deletion.
+Save Media has an inline folder/filename editor with a native Browse dialog,
+`%date%`/`%time%`/`%counter%`/`%model%`/`%width%`/`%height%`/`%batch%` tokens,
+a live path preview, format/quality controls and batch indices. It defaults to
+`outputs/<YYYY-MM-DD>/`, but users can pick any absolute folder; outputs files
+appear in the Assets **Outputs** tab, while external files are reached through
+the node's preview/open/copy/show-folder actions. External actions are limited
+to files recorded by a completed run.
 
 The development environment pins `torch`/`torchvision` to the cu130 index on
 Windows and the CPU index on Linux; macOS resolves the platform's PyPI wheels.
@@ -61,9 +66,16 @@ through NVML. Switching between CPU and CUDA torch builds reinstalls the torch
 family, and large wheel downloads use `COMPLEXUI_INSTALL_TIMEOUT_SECONDS`
 (default 1200).
 
-The bundled catalog ships **104 node templates** (94 production nodes across
-11 categories plus 10 example/synthetic helpers that stay hidden and power the
-bundled workflows) and **27 ready-to-run example workflows**. Browser-style
+The bundled catalog ships **115 node templates** (98 production nodes across
+11 categories plus 17 hidden example and legacy aliases) and **27 ready-to-run
+example workflows**. Image batches use `IMAGE_BATCH` sockets: any node with a
+scalar `IMAGE` input runs once per image, while `MEDIA`/`IMAGE_BATCH` inputs
+receive the whole list. `Load Images From Folder` feeds a bounded folder batch;
+`Resize Image` and `Resize Latent` expose mode-specific dimensions, side,
+megapixel and multiplier controls, and `Preview Mask` is batch-aware. Resolution
+and Empty Latent Image switch between explicit dimensions and megapixel presets
+from Preview through UHD, with a custom megapixel field. The five-input `Switch`
+passes one named input through. Browser-style
 workflow tabs keep multiple graphs open at once, each with its own undo history,
 execution output and project identity; open tabs are restored after a reload.
 The left rail expands **Nodes**, **Workflows**, **Templates**, and **Assets** drawers: drag a template, open a bundled workflow or saved
@@ -183,7 +195,7 @@ history in `runs/`, uploaded assets in repo-root `inputs/`
 move to `.trash/`. Logs
 follow the workspace unless `COMPLEXUI_LOG_DIR` is set explicitly. `File`
 widgets store input paths such as `inputs/iris.csv` and can
-read generated files through `outputs/<name>`; exported scripts and notebooks
+read generated files through `outputs/<folder>/<name>`; exported scripts and notebooks
 therefore expect those paths to remain available. File access rejects paths
 outside the workspace, inputs, and generated-output roots.
 

@@ -41,12 +41,14 @@ encoder = imageio_ffmpeg.write_frames(
 encoder.send(None)
 
 rng = np.random.default_rng(int(seed))
+margin_x = min(40, max(4, width // 4))
+margin_y = min(40, max(4, height // 4))
 objects = []
 for index in range(4):
     objects.append(
         {
-            "x": int(rng.integers(40, width - 40)),
-            "y": int(rng.integers(40, height - 40)),
+            "x": int(rng.integers(margin_x, max(margin_x + 1, width - margin_x))),
+            "y": int(rng.integers(margin_y, max(margin_y + 1, height - margin_y))),
             "vx": int(rng.integers(-4, 5)),
             "vy": int(rng.integers(-4, 5)),
             "radius": int(rng.integers(12, 28)),

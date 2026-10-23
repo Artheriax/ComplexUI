@@ -109,12 +109,15 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
         [],
         ["latent"],
         [
+            "size_mode",
             "width",
             "height",
             "batch_size",
+            "megapixel_preset",
+            "custom_megapixels",
             "aspect_ratio",
+            "custom_ratio",
             "orientation",
-            "megapixels",
             "divisible_by",
         ],
     ),
@@ -162,11 +165,14 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
         [],
         ["width", "height"],
         [
+            "size_mode",
             "width",
             "height",
+            "megapixel_preset",
+            "custom_megapixels",
             "aspect_ratio",
+            "custom_ratio",
             "orientation",
-            "megapixels",
             "divisible_by",
         ],
     ),
@@ -222,7 +228,20 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "load_json": ([], ["df"], ["path"]),
     "load_image": ([], ["image"], ["path", "max_pixels"]),
     "preview_media": (["media"], ["media"], []),
-    "save_media": (["media"], ["saved_path", "saved"], ["path"]),
+    "save_media": (
+        ["media"],
+        ["saved_path", "saved"],
+        [
+            "folder",
+            "filename",
+            "model_name",
+            "format",
+            "quality",
+            "compress_level",
+            "optimize",
+            "save_nonce",
+        ],
+    ),
     "make_demo_image": ([], ["image"], ["width", "height", "seed"]),
     "torchvision_classifier": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
     "torchvision_detector": ([], ["model"], ["local_model", "architecture", "weights", "device"]),
@@ -369,6 +388,93 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     ),
     "evaluate_torch": (["model", "data"], ["metrics"], []),
     "dataframe_to_tensors": (["df"], ["data"], ["target_column", "device"]),
+    "load_images_from_folder": (
+        [],
+        ["images"],
+        ["folder", "max_images", "max_pixels", "sort_by"],
+    ),
+    "preview_mask": (["masks"], ["masks"], []),
+    "switch": (
+        [],
+        ["chosen"],
+        [
+            "input_1",
+            "input_2",
+            "input_3",
+            "input_4",
+            "input_5",
+            "choices",
+            "selected",
+        ],
+    ),
+    "resize_by_side": (
+        ["image"],
+        ["result"],
+        [
+            "side",
+            "side_resolution",
+            "round_to",
+            "aspect_ratio",
+            "custom_ratio",
+            "crop_from",
+            "allow_upscale",
+            "resample",
+        ],
+    ),
+    "upscale_image_by": (["image"], ["result"], ["scale_by", "resample"]),
+    "resize_image_by_megapixels": (
+        ["image"],
+        ["result"],
+        ["megapixels", "round_to", "allow_upscale", "resample"],
+    ),
+    "upscale_latent": (
+        ["samples"],
+        ["latent"],
+        ["width", "height", "method", "crop"],
+    ),
+    "upscale_latent_by": (["samples"], ["latent"], ["scale_by", "method"]),
+    "resize_latent_by_megapixels": (
+        ["samples"],
+        ["latent"],
+        ["megapixels", "round_to", "allow_upscale", "method"],
+    ),
+    "resize_image": (
+        ["image"],
+        ["result"],
+        [
+            "mode",
+            "width",
+            "height",
+            "crop",
+            "side",
+            "side_resolution",
+            "aspect_ratio",
+            "custom_ratio",
+            "crop_from",
+            "allow_upscale",
+            "round_to",
+            "megapixel_preset",
+            "custom_megapixels",
+            "scale_by",
+            "resample",
+        ],
+    ),
+    "resize_latent": (
+        ["samples"],
+        ["latent"],
+        [
+            "mode",
+            "width",
+            "height",
+            "crop",
+            "megapixel_preset",
+            "custom_megapixels",
+            "round_to",
+            "allow_upscale",
+            "scale_by",
+            "method",
+        ],
+    ),
 }
 
 
@@ -890,6 +996,7 @@ def test_widget_socket_types_match_python_scalars() -> None:
     assert widget_socket_type("bool") is SocketType.BOOL
     assert widget_socket_type("str") is SocketType.STRING
     assert widget_socket_type("file") is SocketType.STRING
+    assert widget_socket_type("folderpath") is SocketType.STRING
     assert widget_socket_type("DATAFRAME") is SocketType.DATAFRAME
     assert widget_socket_type("mystery") is SocketType.ANY
     assert socket_types_compatible(SocketType.FLOAT, SocketType.FLOAT)
@@ -901,7 +1008,7 @@ def test_widget_socket_types_match_python_scalars() -> None:
     assert socket_types_compatible(SocketType.IMAGE, SocketType.MEDIA)
     assert socket_types_compatible(SocketType.IMAGE_BATCH, SocketType.MEDIA)
     assert socket_types_compatible(SocketType.IMAGE, SocketType.IMAGE_BATCH)
-    assert not socket_types_compatible(SocketType.IMAGE_BATCH, SocketType.IMAGE)
+    assert socket_types_compatible(SocketType.IMAGE_BATCH, SocketType.IMAGE)
     assert socket_types_compatible(SocketType.VIDEO, SocketType.MEDIA)
     assert not socket_types_compatible(SocketType.MEDIA, SocketType.IMAGE)
     assert not socket_types_compatible(SocketType.IMAGE, SocketType.VIDEO)

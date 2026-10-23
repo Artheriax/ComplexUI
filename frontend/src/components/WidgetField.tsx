@@ -1,5 +1,6 @@
 import type { WidgetChoice, WidgetParam } from "../types/graph";
 import { FileWidgetField } from "./FileWidgetField";
+import { FolderPathField } from "./FolderPathField";
 import { ModelSelectorField } from "./ModelSelectorField";
 
 interface WidgetFieldProps {
@@ -20,6 +21,8 @@ const stepButtonClass =
   "nodrag flex h-5 w-5 items-center justify-center rounded border border-zinc-700 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700";
 const selectClass =
   "nodrag w-28 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
+const wideSelectClass =
+  "nodrag w-40 shrink-0 rounded border border-zinc-700 bg-zinc-950 px-1 py-0.5 text-xs text-zinc-100 outline-none focus:border-cyan-500 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-500";
 
 const PATH_WIDGET_KINDS = new Set([
   "file",
@@ -29,6 +32,7 @@ const PATH_WIDGET_KINDS = new Set([
   "path",
   "folder",
   "directory",
+  "folderpath",
   "modelpath",
 ]);
 
@@ -99,6 +103,17 @@ export function WidgetField({
     );
   }
 
+  if (kind === "folderpath") {
+    return (
+      <FolderPathField
+        widget={widget}
+        value={value}
+        onChange={onChange}
+        disabled={connected}
+      />
+    );
+  }
+
   if (kind === "file" || kind === "imagefile" || kind === "videofile") {
     const assetKind =
       kind === "imagefile" ? "image" : kind === "videofile" ? "video" : "table";
@@ -120,7 +135,11 @@ export function WidgetField({
       );
       return (
         <select
-          className={selectClass}
+          className={
+            options.some((option) => choiceLabel(option).length > 14)
+              ? wideSelectClass
+              : selectClass
+          }
           value={selectedIndex >= 0 ? String(selectedIndex) : ""}
           disabled={connected}
           onChange={(event) => {

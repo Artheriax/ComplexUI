@@ -230,7 +230,7 @@ def test_api_persists_completed_run_and_serves_detail(
     assert body["node_labels"] == {"run-node": "My Node"}
     assert body["nodes"][0]["label"] == "My Node"
     assert body["nodes"][0]["status"] == "completed"
-    assert body["nodes"][0]["previews"] == {"value": "1"}
+    assert body["nodes"][0]["previews"] == {"value": 1}
 
     deleted = client.delete(f"/api/runs/{persisted_run_id}")
     assert deleted.status_code == 200
