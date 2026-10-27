@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { pickFolder } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import {
   previewSavePath,
   SAVE_DISABLED_TOKENS,
@@ -166,7 +167,7 @@ export function SaveMediaFields({
       setBrowseState("idle");
     } catch (cause) {
       setBrowseState("error");
-      setBrowseError(cause instanceof Error ? cause.message : String(cause));
+      setBrowseError(errorMessage(cause));
     }
   };
 

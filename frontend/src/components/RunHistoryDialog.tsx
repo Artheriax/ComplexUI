@@ -9,6 +9,7 @@ import type {
   RunNodeRecord,
   RunSummary,
 } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import { PreviewValueView } from "./PreviewValueView";
 import { RichOutputView } from "./RichOutputView";
 import {
@@ -254,7 +255,7 @@ export function RunHistoryDialog({ onClose }: { onClose: () => void }) {
       }
     } catch (cause) {
       if (request === detailRequest.current) {
-        setDetailError(cause instanceof Error ? cause.message : String(cause));
+        setDetailError(errorMessage(cause));
       }
     } finally {
       if (request === detailRequest.current) {
@@ -282,7 +283,7 @@ export function RunHistoryDialog({ onClose }: { onClose: () => void }) {
           setDetailError(null);
         }
       } catch (cause) {
-        setListError(cause instanceof Error ? cause.message : String(cause));
+        setListError(errorMessage(cause));
       } finally {
         setLoadingRuns(false);
       }
@@ -310,7 +311,7 @@ export function RunHistoryDialog({ onClose }: { onClose: () => void }) {
         }
       } catch (cause) {
         if (active) {
-          setListError(cause instanceof Error ? cause.message : String(cause));
+          setListError(errorMessage(cause));
         }
       } finally {
         if (active) {

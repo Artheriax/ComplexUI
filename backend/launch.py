@@ -17,6 +17,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -36,6 +37,11 @@ from typing import IO
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
+
+FRONTEND_INSTALL_STAMP = ".complexui-install-stamp"
+MIN_NODE_VERSION = (20, 19)
+MIN_NODE_22_VERSION = (22, 12)
+_NODE_VERSION_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
 RESET = "\x1b[0m"
 BOLD = "\x1b[1m"
@@ -272,6 +278,50 @@ def is_loopback_host(host: str) -> bool:
     return host.strip().lower() in {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
+def url_host(host: str) -> str:
+    """Format a bind address for use inside an HTTP URL."""
+    value = host.strip()
+    if value.startswith("[") and value.endswith("]"):
+        return value
+    if ":" in value:
+        return f"[{value}]"
+    return value
+
+
+def parse_node_version(text: str) -> tuple[int, int, int] | None:
+    match = _NODE_VERSION_RE.search(text)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def node_version_supported(version: tuple[int, int, int]) -> bool:
+    """Match Vite 8's engine range: 20.19+ or 22.12+."""
+    major, minor, _patch = version
+    if major == 20:
+        return minor >= MIN_NODE_VERSION[1]
+    if major == 21:
+        return False
+    return (major, minor) >= MIN_NODE_22_VERSION
+
+
+def ensure_node_version(theme: Theme) -> int:
+    """Fail early with an actionable message when Node is too old."""
+    version = _run_version(["node", "--version"])
+    parsed = parse_node_version(version or "")
+    if parsed is None:
+        theme.warn("could not determine the Node.js version; continuing anyway")
+        return 0
+    if node_version_supported(parsed):
+        return 0
+    major = f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+    theme.fail(
+        f"Node.js {major} is not supported; install Node.js 20.19+ or 22.12+ "
+        "(see https://nodejs.org/) and retry"
+    )
+    return 2
+
+
 def require_tool(name: str) -> str:
     found = shutil.which(name)
     if found is None:
@@ -288,6 +338,7 @@ def build_backend_command(args: argparse.Namespace, *, reload: bool) -> list[str
     command = [
         "uv",
         "run",
+        "--no-dev",
         "python",
         "-m",
         "uvicorn",
@@ -317,11 +368,25 @@ def build_frontend_command(npm: str, args: argparse.Namespace) -> list[str]:
     return command
 
 
+def frontend_origins(args: argparse.Namespace) -> list[str]:
+    """Browser origins the Vite dev server may use for this launch."""
+    hosts: list[str] = ["localhost", "127.0.0.1"]
+    if is_loopback_host(args.host):
+        hosts.append(url_host(args.host))
+    elif args.host.strip() not in {"", "0.0.0.0", "::"}:
+        hosts.append(url_host(args.host))
+    return [
+        f"http://{host}:{args.frontend_port}"
+        for host in dict.fromkeys(hosts)
+    ]
+
+
 def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[str, str]:
     environment = os.environ.copy()
     environment["COMPLEXUI_LOG_LEVEL"] = args.log_level
     environment["COMPLEXUI_LOG_FORMAT"] = args.log_format
     environment["COMPLEXUI_ACCELERATOR"] = args.accelerator
+    environment.setdefault("COMPLEXUI_CORS_ORIGINS", ",".join(frontend_origins(args)))
     if args.no_log_file:
         environment["COMPLEXUI_LOG_DIR"] = "0"
     elif args.log_dir:
@@ -330,6 +395,22 @@ def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[s
         environment.setdefault("COMPLEXUI_ALLOWED_HOSTS", "*")
     if serve_dist:
         environment["COMPLEXUI_SERVE_DIST"] = str(FRONTEND_DIR / "dist")
+    return environment
+
+
+def frontend_environment(args: argparse.Namespace) -> dict[str, str]:
+    """Give Vite the backend target so non-default ports work unmodified.
+
+    In dev mode the launcher owns the backend, so its URL always matches the
+    flags. Frontend-only mode may point at an external backend, so an explicit
+    ``COMPLEXUI_BACKEND_URL`` there takes precedence.
+    """
+    environment = os.environ.copy()
+    backend_url = f"http://{url_host(probe_host(args.host))}:{args.backend_port}"
+    if args.mode == "frontend":
+        environment.setdefault("COMPLEXUI_BACKEND_URL", backend_url)
+    else:
+        environment["COMPLEXUI_BACKEND_URL"] = backend_url
     return environment
 
 
@@ -431,15 +512,58 @@ def run_streamed(label: str, command: list[str], cwd: Path, env: dict[str, str] 
     return completed.returncode
 
 
+def _lockfile_digest() -> str | None:
+    """Return a content hash of the frontend lockfile when it exists."""
+    try:
+        return hashlib.sha256(
+            (FRONTEND_DIR / "package-lock.json").read_bytes()
+        ).hexdigest()
+    except OSError:
+        return None
+
+
+def _installed_digest() -> str | None:
+    try:
+        stamp = FRONTEND_DIR / "node_modules" / FRONTEND_INSTALL_STAMP
+        return stamp.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _write_install_stamp(digest: str) -> None:
+    try:
+        stamp = FRONTEND_DIR / "node_modules" / FRONTEND_INSTALL_STAMP
+        stamp.write_text(digest + "\n", encoding="utf-8")
+    except OSError:
+        pass  # best-effort marker; the next launch simply reinstalls
+
+
 def ensure_frontend_dependencies(npm: str, theme: Theme) -> int:
-    """Run ``npm install`` once when ``frontend/node_modules`` is missing."""
-    if (FRONTEND_DIR / "node_modules").is_dir():
-        return 0
-    theme.info("frontend dependencies missing; running `npm install` (one-time)...")
-    code = run_streamed("npm install", [npm, "install"], FRONTEND_DIR, None)
+    """Install or refresh ``frontend/node_modules`` when it is missing/stale.
+
+    A lockfile hash is stored beside the installed packages so changing
+    ``package-lock.json`` triggers one incremental ``npm install``. Fresh clones
+    use ``npm ci`` when a lockfile is present so the first install is exact.
+    """
+    modules = FRONTEND_DIR / "node_modules"
+    digest = _lockfile_digest()
+    if modules.is_dir():
+        if digest is None or _installed_digest() == digest:
+            return 0
+        label = "npm install"
+        command = [npm, "install"]
+        theme.info("frontend lockfile changed; refreshing dependencies...")
+    else:
+        has_lockfile = (FRONTEND_DIR / "package-lock.json").is_file()
+        label = "npm ci" if has_lockfile else "npm install"
+        command = [npm, "ci" if has_lockfile else "install"]
+        theme.info(f"frontend dependencies missing; running `{label}` (one-time)...")
+    code = run_streamed(label, command, FRONTEND_DIR, None)
     if code != 0:
-        theme.fail(f"`npm install` failed (exit code {code})")
+        theme.fail(f"`{label}` failed (exit code {code})")
         return code
+    if digest is not None:
+        _write_install_stamp(digest)
     theme.ok("frontend dependencies installed")
     return 0
 
@@ -467,19 +591,6 @@ def run_check(args: argparse.Namespace, theme: Theme, npm: str) -> int:
             return code
     theme.ok("all checks passed")
     return 0
-
-
-def warn_port_mismatches(args: argparse.Namespace, theme: Theme) -> None:
-    if args.backend_port != 8000:
-        theme.warn(
-            "frontend/vite.config.ts proxies /api and /ws to port 8000; "
-            f"--backend-port {args.backend_port} requires updating the proxy to match"
-        )
-    if args.frontend_port != 5173:
-        theme.warn(
-            "backend CORS allows only http://localhost:5173; "
-            f"--frontend-port {args.frontend_port} requires updating the CORS list"
-        )
 
 
 def supervise(processes: dict[str, subprocess.Popen]) -> int:
@@ -599,8 +710,8 @@ def print_banner(
     uv = _run_version(["uv", "--version"]) or "unavailable"
     node = _run_version(["node", "--version"]) or "unavailable"
     npm = _run_version(["npm", "--version"]) or "unavailable"
-    url_host = probe_host(args.host)
-    backend_url = f"http://{url_host}:{args.backend_port}"
+    display_host = url_host(probe_host(args.host))
+    backend_url = f"http://{display_host}:{args.backend_port}"
     ui_url = (
         f"http://localhost:{args.frontend_port}"
         if args.mode == "dev"
@@ -682,18 +793,18 @@ def launch_servers(
                 "frontend",
                 build_frontend_command(npm, args),
                 FRONTEND_DIR,
-                os.environ.copy(),
+                frontend_environment(args),
                 theme,
                 console=console,
             )
 
-        health_url = f"http://{probe_host(args.host)}:{args.backend_port}/api/health"
+        health_url = f"http://{url_host(probe_host(args.host))}:{args.backend_port}/api/health"
         if not wait_for_http(health_url, HEALTH_TIMEOUT_SECONDS):
             theme.fail(f"backend did not become ready at {health_url}")
             return 1
         theme.ok(f"backend ready at {health_url}")
 
-        ui_url = f"http://{probe_host(args.host)}:{args.backend_port}"
+        ui_url = f"http://{url_host(probe_host(args.host))}:{args.backend_port}"
         if with_frontend:
             ui_url = f"http://localhost:{args.frontend_port}"
             if not wait_for_http(ui_url, HEALTH_TIMEOUT_SECONDS):
@@ -703,7 +814,7 @@ def launch_servers(
 
         health = _fetch_json(health_url)
         metrics = _fetch_json(
-            f"http://{probe_host(args.host)}:{args.backend_port}/api/system/metrics"
+            f"http://{url_host(probe_host(args.host))}:{args.backend_port}/api/system/metrics"
         )
         print_banner(args, theme, health, metrics)
         theme.info(f"UI: {theme.paint(ui_url, BOLD)}  (Ctrl+C to stop)")
@@ -735,6 +846,9 @@ def main(argv: list[str] | None = None) -> int:
 
     npm = ""
     if args.mode in ("dev", "frontend", "prod", "check"):
+        code = ensure_node_version(theme)
+        if code != 0:
+            return code
         npm = require_tool("npm")
     if args.mode in ("dev", "backend", "prod", "check"):
         require_tool("uv")
@@ -751,13 +865,12 @@ def main(argv: list[str] | None = None) -> int:
         console = ConsoleRenderer()
         theme.console = console
         theme.info(f"frontend-only mode on http://localhost:{args.frontend_port}")
-        warn_port_mismatches(args, theme)
         processes = {
             "frontend": spawn(
                 "frontend",
                 build_frontend_command(npm, args),
                 FRONTEND_DIR,
-                os.environ.copy(),
+                frontend_environment(args),
                 theme,
                 console=console,
             )
@@ -772,7 +885,6 @@ def main(argv: list[str] | None = None) -> int:
             shutdown_all(processes)
 
     if args.mode == "prod":
-        warn_port_mismatches(args, theme)
         code = run_streamed(
             "frontend build", [npm, "run", "build"], FRONTEND_DIR, None
         )
@@ -799,7 +911,6 @@ def main(argv: list[str] | None = None) -> int:
             serve_dist=False,
         )
 
-    warn_port_mismatches(args, theme)
     return launch_servers(
         args,
         theme,

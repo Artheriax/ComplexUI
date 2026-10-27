@@ -4,7 +4,6 @@ import type {
   AppEdge,
   AppNode,
   InputSocket,
-  NodeSchema,
   OutputSocket,
   SocketType,
   SubgraphDefinition,
@@ -19,6 +18,7 @@ import {
   widgetSocketType,
 } from "../types/graph";
 import type { WorkflowGraphPayload } from "../types/graph";
+import { emptyNodeSchema } from "./graphEditing";
 
 const FALLBACK_WIDTH = 250;
 const MAX_FLAT_NODES = 200;
@@ -29,21 +29,6 @@ export class SubgraphError extends Error {}
 
 export function localNodeId(path: string, nodeId: string): string {
   return path ? `sub:${path}/${nodeId}` : nodeId;
-}
-
-function emptySchema(
-  nodeId: string,
-  inputs: InputSocket[] = [],
-  outputs: OutputSocket[] = [],
-): NodeSchema {
-  return {
-    node_id: nodeId,
-    inputs,
-    outputs,
-    widgets: [],
-    dependencies: [],
-    syntax_errors: [],
-  };
 }
 
 export function createSubgraphManagerNodes(
@@ -60,7 +45,7 @@ export function createSubgraphManagerNodes(
         templateName: null,
         templateCode: null,
         code: "",
-        schema: emptySchema(SUBGRAPH_INPUT_NODE_ID, [], definition.inputs),
+        schema: emptyNodeSchema(SUBGRAPH_INPUT_NODE_ID, [], definition.inputs),
         widgetValues: {},
         isTrusted: true,
         color: "sky",
@@ -77,7 +62,7 @@ export function createSubgraphManagerNodes(
         templateName: null,
         templateCode: null,
         code: "",
-        schema: emptySchema(SUBGRAPH_OUTPUT_NODE_ID, definition.outputs, []),
+        schema: emptyNodeSchema(SUBGRAPH_OUTPUT_NODE_ID, definition.outputs, []),
         widgetValues: {},
         isTrusted: true,
         color: "amber",
@@ -103,7 +88,7 @@ export function createSubgraphInstanceNode(
       templateName: null,
       templateCode: null,
       code: "",
-      schema: emptySchema(id, definition.inputs, definition.outputs),
+      schema: emptyNodeSchema(id, definition.inputs, definition.outputs),
       widgetValues: {},
       isTrusted: true,
       color: "default",
@@ -424,7 +409,7 @@ export function syncSubgraphInstanceSchemas(
       ...node,
       data: {
         ...node.data,
-        schema: emptySchema(node.id, definition.inputs, definition.outputs),
+        schema: emptyNodeSchema(node.id, definition.inputs, definition.outputs),
       },
     };
   });

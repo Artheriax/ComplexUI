@@ -7,7 +7,6 @@ frontend import/export so saved and downloaded workflows remain portable.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -31,6 +30,7 @@ from .schemas import (
     WorkspaceSession,
     WorkspaceSessionRequest,
 )
+from .storage import utc_timestamp, write_json_atomic
 
 _DEFAULT_WORKSPACE = Path(__file__).resolve().parents[1] / "workspace"
 _WORKSPACE_ENV = "COMPLEXUI_WORKSPACE"
@@ -92,7 +92,7 @@ def _validate_version(version: str) -> str:
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return utc_timestamp()
 
 
 def _version_id() -> str:
@@ -118,16 +118,7 @@ class ProjectStore:
         return self.versions_dir / _validate_slug(slug)
 
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_json_atomic(path, payload)
 
     def _read_document(self, path: Path) -> SavedWorkflowDocument:
         if not path.is_file():

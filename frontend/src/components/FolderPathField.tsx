@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { pickFolder } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import type { WidgetParam } from "../types/graph";
 import { FolderIcon, SpinnerIcon, WarningIcon } from "./icons";
 
@@ -30,7 +31,7 @@ export function FolderPathField({
         onChange(selected);
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBrowsing(false);
     }

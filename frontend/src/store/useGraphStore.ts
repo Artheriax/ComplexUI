@@ -36,6 +36,7 @@ import type {
   TemplateCreatePayload,
   WorkspaceSession,
 } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import {
   idleExecution,
   pruneExecution,
@@ -43,7 +44,11 @@ import {
   reduceRunStatus,
 } from "../lib/executionEvents";
 import type { GraphExecutionState } from "../lib/executionEvents";
-import { mergeWidgetValues, reconcileEdges } from "../lib/graphEditing";
+import {
+  emptyNodeSchema,
+  mergeWidgetValues,
+  reconcileEdges,
+} from "../lib/graphEditing";
 import { sha256Hex } from "../lib/hash";
 import { advanceSeedNodes } from "../lib/seedNodes";
 import {
@@ -359,21 +364,6 @@ factor: float = 2.0
 result = factor * 21
 return result: ANY
 `;
-
-function emptySchema(
-  nodeId: string,
-  inputs: NodeSchema["inputs"] = [],
-  outputs: NodeSchema["outputs"] = [],
-): NodeSchema {
-  return {
-    node_id: nodeId,
-    inputs,
-    widgets: [],
-    outputs,
-    dependencies: [],
-    syntax_errors: [],
-  };
-}
 
 interface SizedNode {
   node: AppNode;
@@ -844,7 +834,7 @@ async function buildSavedWorkflow(
           templateName: null,
           templateCode: null,
           code: "",
-          schema: emptySchema(savedNode.id),
+          schema: emptyNodeSchema(savedNode.id),
           widgetValues: {},
           isTrusted: true,
           color: savedNode.color ?? "default",
@@ -872,7 +862,7 @@ async function buildSavedWorkflow(
           templateName: null,
           templateCode: null,
           code: "",
-          schema: emptySchema(
+          schema: emptyNodeSchema(
             savedNode.id,
             definition.inputs,
             definition.outputs,
@@ -890,13 +880,13 @@ async function buildSavedWorkflow(
       schema = await parseCode(savedNode.code, savedNode.id);
     } catch (error) {
       schema = {
-        ...emptySchema(savedNode.id),
+        ...emptyNodeSchema(savedNode.id),
         syntax_errors: [
           {
             line: 1,
             column: 0,
             message: `Failed to re-parse restored code: ${
-              error instanceof Error ? error.message : String(error)
+              errorMessage(error)
             }`,
           },
         ],
@@ -1233,7 +1223,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           projectsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
         return false;
       }
@@ -1294,7 +1284,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           templatesError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
       }
     },
@@ -1332,7 +1322,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           workflowsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
       }
     },
@@ -1393,7 +1383,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         set({
           projectsLoaded: true,
           projectsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
       }
     },
@@ -1431,7 +1421,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           projectsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
         return false;
       }
@@ -1518,7 +1508,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         return true;
       } catch (error) {
         const message =
-          error instanceof Error ? error.message : String(error);
+          errorMessage(error);
         set((current) =>
           current.activeWindowId === windowId
             ? {
@@ -1560,7 +1550,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           projectsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
         return false;
       }
@@ -1607,7 +1597,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
       } catch (error) {
         set({
           projectsError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
         return false;
       }
@@ -1880,7 +1870,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
 
     addScratchNode: (position) => {
       const id = crypto.randomUUID();
-      const schema = emptySchema(id);
+      const schema = emptyNodeSchema(id);
       const node: AppNode = {
         id,
         type: "complex",
@@ -2176,7 +2166,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           templateName: null,
           templateCode: null,
           code: "",
-          schema: emptySchema(frameId),
+          schema: emptyNodeSchema(frameId),
           widgetValues: {},
           isTrusted: true,
           color: "default",
@@ -2572,7 +2562,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         return false;
       }
       let code = SCRATCH_NODE_CODE;
-      let schema = emptySchema(nodeId);
+      let schema = emptyNodeSchema(nodeId);
       let label = "Scratch node";
       let templateCode: string | null = null;
       let isTrusted = false;
@@ -3328,7 +3318,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
         set({
           approvalBusy: false,
           approvalError:
-            error instanceof Error ? error.message : String(error),
+            errorMessage(error),
         });
       }
     },
@@ -3361,7 +3351,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               templateName: null,
               templateCode: null,
               code: "",
-              schema: emptySchema(savedNode.id),
+              schema: emptyNodeSchema(savedNode.id),
               widgetValues: {},
               isTrusted: true,
               color: savedNode.color ?? "default",
@@ -3389,7 +3379,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
               templateName: null,
               templateCode: null,
               code: "",
-              schema: emptySchema(
+              schema: emptyNodeSchema(
                 savedNode.id,
                 definition.inputs,
                 definition.outputs,
@@ -3407,13 +3397,13 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           schema = await parseCode(savedNode.code, savedNode.id);
         } catch (error) {
           schema = {
-            ...emptySchema(savedNode.id),
+            ...emptyNodeSchema(savedNode.id),
             syntax_errors: [
               {
                 line: 1,
                 column: 0,
                 message: `Failed to re-parse restored code: ${
-                  error instanceof Error ? error.message : String(error)
+                  errorMessage(error)
                 }`,
               },
             ],
@@ -3720,7 +3710,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             ...current.execution,
             status: "idle",
             error: {
-              message: error instanceof Error ? error.message : String(error),
+              message: errorMessage(error),
               errorType: "Subgraph",
               nodeId: null,
               line: null,
@@ -3871,7 +3861,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
             ...state.execution,
             status: "idle",
             error: {
-              message: error instanceof Error ? error.message : String(error),
+              message: errorMessage(error),
               errorType: "Unknown",
               nodeId: null,
               line: null,
@@ -4013,7 +4003,7 @@ export const useGraphStore = create<GraphStore>((set, get) => {
           execution: {
             ...state.execution,
             error: {
-              message: error instanceof Error ? error.message : String(error),
+              message: errorMessage(error),
               errorType: "Cancel",
               nodeId: null,
               line: null,

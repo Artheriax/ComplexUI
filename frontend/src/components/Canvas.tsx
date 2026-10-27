@@ -32,6 +32,7 @@ import {
   buildDisplayEdges,
   CONNECTION_LINE_TYPE_BY_STYLE,
 } from "../lib/edgePresentation";
+import { DRAG_MIME, DRAG_SUBGRAPH_MIME } from "../lib/drag";
 import { isInteractiveControlTarget } from "../lib/interactiveTarget";
 import { resolveTargetSocket } from "../lib/socketCompatibility";
 import { useBundleDragStore } from "../store/useBundleDragStore";
@@ -58,9 +59,6 @@ import { SaveTemplateDialog } from "./SaveTemplateDialog";
 import { SweepDialog } from "./SweepDialog";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { ArrowLeftIcon, SubgraphIcon } from "./icons";
-
-export const DRAG_MIME = "application/x-complexui-template";
-export const DRAG_SUBGRAPH_MIME = "application/x-complexui-subgraph";
 
 const nodeTypes = { complex: ComplexNode };
 

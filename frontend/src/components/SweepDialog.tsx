@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
+import { errorMessage } from "../lib/errors";
 import { useGraphStore } from "../store/useGraphStore";
 import type { WidgetParam } from "../types/graph";
 import { BoltIcon, CheckIcon } from "./icons";
@@ -101,7 +102,7 @@ export function SweepDialog({ nodeId, onClose }: SweepDialogProps) {
         setError("Sweep stopped before every run completed.");
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }

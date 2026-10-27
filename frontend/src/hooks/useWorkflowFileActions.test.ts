@@ -86,3 +86,17 @@ test("honours the confirmation prompt when enabled", () => {
 
   expect(clearCanvas).toHaveBeenCalledTimes(1);
 });
+
+test("import errors keep the live execution status", async () => {
+  useGraphStore.setState((state) => ({
+    execution: { ...state.execution, status: "running", runId: "run-1" },
+  }));
+  const { result } = renderHook(() => useWorkflowFileActions());
+
+  await result.current.importFile(new File(["not json"], "bad.cuigraph.json"));
+
+  const execution = useGraphStore.getState().execution;
+  expect(execution.status).toBe("running");
+  expect(execution.runId).toBe("run-1");
+  expect(execution.error?.errorType).toBe("Import");
+});

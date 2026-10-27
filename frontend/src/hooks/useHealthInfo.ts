@@ -2,16 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { fetchHealth } from "../lib/api";
 import type { HealthInfo } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 export interface HealthInfoState {
   health: HealthInfo | null;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** Load backend runtime diagnostics once on mount, with manual refresh. */

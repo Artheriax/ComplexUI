@@ -4,7 +4,7 @@ import { createElement } from "react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useDialogA11y } from "./useDialogA11y";
+import { isDialogOpen, useDialogA11y } from "./useDialogA11y";
 
 afterEach(cleanup);
 
@@ -90,6 +90,17 @@ describe("useDialogA11y", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(innerClose).toHaveBeenCalledTimes(1);
     expect(outerClose).not.toHaveBeenCalled();
+  });
+
+  it("reports whether a dialog is mounted", () => {
+    expect(isDialogOpen()).toBe(false);
+    const { unmount } = render(
+      createElement(TestDialog, { label: "Test dialog", onClose: () => {} }),
+    );
+    expect(isDialogOpen()).toBe(true);
+
+    unmount();
+    expect(isDialogOpen()).toBe(false);
   });
 
   it("restores focus when it unmounts", () => {

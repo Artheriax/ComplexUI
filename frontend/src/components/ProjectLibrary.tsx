@@ -122,6 +122,7 @@ export function ProjectLibrary() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search workflows…"
+          aria-label="Search workflows"
           className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-cyan-600"
         />
         <button

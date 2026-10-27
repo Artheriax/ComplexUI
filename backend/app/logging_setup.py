@@ -23,6 +23,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any
 
+from .schemas import RUN_HISTORY_RETENTION, EventType, ExecutionEvent
 from .workspace import workspace_root
 
 __all__ = [
@@ -35,7 +36,10 @@ __all__ = [
     "PollingAccessFilter",
     "configure_logging",
     "install_access_log_filter",
+    "log_execution_event",
+    "prune_run_logs",
     "resolve_log_dir",
+    "run_log_path",
 ]
 
 _DIM = "\x1b[2m"
@@ -122,6 +126,151 @@ def install_access_log_filter() -> logging.Logger:
             access_logger.removeFilter(existing)
     access_logger.addFilter(PollingAccessFilter())
     return access_logger
+
+
+def run_log_path(log_dir: str | Path, run_id: str) -> Path:
+    """Return the per-run log path inside ``log_dir/runs``."""
+    return Path(log_dir).expanduser() / "runs" / f"{run_id}.txt"
+
+
+def prune_run_logs(
+    log_dir: str | Path,
+    *,
+    keep: int = RUN_HISTORY_RETENTION,
+) -> None:
+    """Delete old per-run logs, keeping the newest ``keep`` files."""
+    if keep < 0:
+        raise ValueError("keep must be non-negative")
+    directory = Path(log_dir).expanduser() / "runs"
+    if not directory.is_dir():
+        return
+    paths = sorted(
+        directory.glob("*.txt"),
+        key=lambda candidate: candidate.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for stale in paths[keep:]:
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            # A log file locked by another process must not break execution.
+            continue
+
+
+def log_execution_event(
+    event: ExecutionEvent,
+    *,
+    target: logging.Logger | None = None,
+) -> None:
+    """Narrate execution telemetry on the console or a per-run log."""
+    log = target if target is not None else logging.getLogger("complexui.execution")
+    data = event.data
+    run_id = str(data.get("run_id", ""))
+    short_run = run_id[:12]
+    extra: dict[str, Any] = {
+        "run_id": run_id or None,
+        "node_id": event.node_id or None,
+    }
+    if event.type is EventType.EXECUTION_STARTED:
+        order = data.get("order")
+        node_count = len(order) if isinstance(order, list) else 0
+        log.info("run %s started: %d node(s)", short_run, node_count, extra=extra)
+        log.debug("run %s order: %s", short_run, order, extra=extra)
+    elif event.type is EventType.NODE_STARTED:
+        log.info("  [start] %s", event.node_id, extra=extra)
+    elif event.type is EventType.INSTALLING_DEPS:
+        dependencies = data.get("dependencies") or []
+        extra["dependencies"] = dependencies
+        log.info(
+            "  [deps ] %s installing: %s",
+            event.node_id,
+            ", ".join(str(dep) for dep in dependencies),
+            extra=extra,
+        )
+    elif event.type is EventType.NODE_PROGRESS:
+        progress = data.get("progress")
+        percent = (
+            f" ({round(float(progress) * 100)}%)"
+            if isinstance(progress, (int, float))
+            else ""
+        )
+        message = str(data.get("message") or "").strip()
+        log.info(
+            "  [progress] %s %s%s",
+            event.node_id,
+            message,
+            percent,
+            extra=extra,
+        )
+    elif event.type is EventType.NODE_COMPLETED:
+        cached = bool(data.get("cached"))
+        extra["cached"] = cached
+        if cached:
+            log.info("  [done ] %s (cached)", event.node_id, extra=extra)
+        else:
+            duration = data.get("duration_ms")
+            if isinstance(duration, (int, float)):
+                extra["duration_ms"] = duration
+            log.info("  [done ] %s in %sms", event.node_id, duration, extra=extra)
+    elif event.type is EventType.NODE_ERROR:
+        extra["error_type"] = data.get("error_type")
+        extra["line"] = data.get("line")
+        log.error(
+            "  [error] %s: %s (line %s): %s",
+            event.node_id,
+            data.get("error_type"),
+            data.get("line"),
+            data.get("message", ""),
+            extra=extra,
+        )
+    elif event.type is EventType.EXECUTION_COMPLETED:
+        cached_map = data.get("cached")
+        cached_map = cached_map if isinstance(cached_map, dict) else {}
+        cached_count = sum(1 for value in cached_map.values() if value)
+        duration = data.get("duration_ms")
+        extra["cached"] = cached_count
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+            log.info(
+                "run %s completed in %sms: %d node(s), %d cached",
+                short_run,
+                duration,
+                len(cached_map),
+                cached_count,
+                extra=extra,
+            )
+        else:
+            log.info(
+                "run %s completed: %d node(s), %d cached",
+                short_run,
+                len(cached_map),
+                cached_count,
+                extra=extra,
+            )
+    elif event.type is EventType.EXECUTION_FAILED:
+        failed_node = data.get("node_id")
+        extra["error_type"] = data.get("error_type")
+        extra["line"] = data.get("line")
+        duration = data.get("duration_ms")
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+        log.error(
+            "run %s failed%s: %s",
+            short_run,
+            f" at {failed_node}" if failed_node else "",
+            data.get("message"),
+            extra=extra,
+        )
+        traceback_text = data.get("traceback")
+        if isinstance(traceback_text, str) and traceback_text:
+            log.debug("run %s traceback:\n%s", short_run, traceback_text, extra=extra)
+    elif event.type is EventType.EXECUTION_CANCELLED:
+        duration = data.get("duration_ms")
+        if isinstance(duration, (int, float)):
+            extra["duration_ms"] = duration
+        log.warning("run %s cancelled", short_run, extra=extra)
+    else:
+        log.debug("event %s node=%s", event.type.value, event.node_id, extra=extra)
 
 
 class LogFormat(StrEnum):

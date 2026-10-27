@@ -1607,7 +1607,7 @@ def _resolve_output_file(value: Any) -> str:
         raise FileAccessError("OutputFile widgets require a file name.")
     try:
         return str(get_output_store().resolve_path(value))
-    except Exception as exc:
+    except (InvalidAssetPath, OSError) as exc:
         raise FileAccessError(str(exc)) from exc
 
 

@@ -301,12 +301,17 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 | Right-click empty canvas | Open the canvas/File menu |
 | Double-click node | Edit code, enter a subgraph or rename a frame |
 
-Canvas shortcuts are ignored while the code/diff modals are open or focus is
-inside a text field; `Ctrl+S` still works in fields so a save is never lost.
-History is kept per workflow window for the session and is not written to
-`.cuigraph.json` exports. On macOS, `Cmd` works in place of `Ctrl`.
+Canvas shortcuts are ignored while any modal dialog is open or focus is inside a
+text field outside a dialog; `Ctrl+S` still saves from ordinary inputs so work
+is not lost. History is kept per workflow window for the session and is not
+written to `.cuigraph.json` exports. On macOS, `Cmd` works in place of `Ctrl`.
 
 ## Development
+
+Node.js `^20.19.0` or `>=22.12.0` is required (Vite 8's engine range);
+`frontend/.nvmrc` pins 22. From a fresh clone install with `npm ci` so the
+committed `package-lock.json` is authoritative. `../start.cmd dev` does this
+automatically and sets both ports for you.
 
 The dev server proxies `/api` and `/ws` to `http://127.0.0.1:8000`, so start
 the backend first:
@@ -317,9 +322,17 @@ cd ../backend
 uv run uvicorn app.main:app --reload
 
 # terminal 2 — frontend
-npm install
+npm ci
 npm run dev            # http://localhost:5173
 ```
+
+When the backend runs elsewhere or on another port, set
+`COMPLEXUI_BACKEND_URL` (for example `http://127.0.0.1:9000`) instead of editing
+`vite.config.ts`; both the HTTP proxy and the WebSocket target follow it. The
+launcher sets this variable together with the backend's CORS origins whenever
+`--backend-port`/`--frontend-port` override the defaults. In launcher
+`frontend`-only mode an existing value is preserved, so it can target a backend
+on another machine.
 
 ## Verification
 

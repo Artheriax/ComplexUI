@@ -607,8 +607,11 @@ def test_crashed_worker_reports_failure_and_recovers(
         json={"node_id": "crash", "code_hash": code_hash(crash_code)},
     )
     assert approved.status_code == 200
-    monkeypatch.setenv(ENV_NODE_TIMEOUT, "5")
-    monkeypatch.setenv(ENV_RUN_TIMEOUT, "10")
+    # This test only needs the crash to surface promptly; the recovery chain
+    # imports pandas/sklearn from a cold worker, so leave ample headroom for
+    # slow/loaded machines instead of turning machine speed into a failure.
+    monkeypatch.setenv(ENV_NODE_TIMEOUT, "60")
+    monkeypatch.setenv(ENV_RUN_TIMEOUT, "120")
     monkeypatch.setenv(ENV_MAX_MEMORY_MB, "0")
 
     status, events = _run_graph(client, {"nodes": [{"id": "crash", "code": crash_code}]})
@@ -687,6 +690,73 @@ def test_cancel_interrupts_between_nodes(client: TestClient) -> None:
     assert "EXECUTION_FAILED" not in types
 
 
+def test_connection_manager_broadcasts_and_drops_failed_clients() -> None:
+    import asyncio
+    from typing import cast
+
+    from starlette.websockets import WebSocket
+
+    from app.main import ConnectionManager
+    from app.schemas import EventType, ExecutionEvent
+
+    class FakeWebSocket:
+        def __init__(self, *, fail: bool = False) -> None:
+            self.fail = fail
+            self.received = 0
+
+        async def send_json(self, payload: dict[str, object]) -> None:
+            assert payload["type"] == "EXECUTION_STARTED"
+            self.received += 1
+            if self.fail:
+                raise RuntimeError("client closed")
+
+    async def scenario() -> tuple[FakeWebSocket, FakeWebSocket]:
+        manager = ConnectionManager()
+        good = FakeWebSocket()
+        bad = FakeWebSocket(fail=True)
+        manager._connections = {
+            cast(WebSocket, good),
+            cast(WebSocket, bad),
+        }
+        await manager._broadcast(
+            ExecutionEvent(
+                type=EventType.EXECUTION_STARTED,
+                node_id="",
+                data={"run_id": "run-1", "order": []},
+            )
+        )
+        assert manager._connections == {good}
+        return good, bad
+
+    good, bad = asyncio.run(scenario())
+    assert good.received == 1
+    assert bad.received == 1
+
+
+def test_connection_manager_queue_drops_oldest_event_when_full() -> None:
+    import asyncio
+
+    from app.main import ConnectionManager
+    from app.schemas import EventType, ExecutionEvent
+
+    async def scenario() -> list[int]:
+        manager = ConnectionManager()
+        manager._queue = asyncio.Queue(maxsize=2)
+        for index in range(3):
+            manager.emit(
+                ExecutionEvent(
+                    type=EventType.NODE_STARTED,
+                    node_id="n1",
+                    data={"index": index},
+                )
+            )
+        queue = manager._queue
+        assert queue is not None
+        return [int(queue.get_nowait().data["index"]) for _ in range(2)]
+
+    assert asyncio.run(scenario()) == [1, 2]
+
+
 def test_coordinator_cancel_semantics() -> None:
     from app.main import ExecutionCoordinator
 
@@ -708,6 +778,26 @@ def test_coordinator_cancel_semantics() -> None:
     local.finish()
     assert local.running is False
     assert local.cancel() is False
+
+
+def test_coordinator_stale_finish_does_not_clear_newer_run() -> None:
+    from app.main import ExecutionCoordinator
+
+    local = ExecutionCoordinator()
+    first = local.try_begin()
+    assert first is not None
+    local.finish(first[0])
+
+    second = local.try_begin()
+    assert second is not None
+    # A slow cleanup path from the previous run must not clear this run.
+    local.finish(first[0])
+    assert local.run_id == second[0]
+    assert local.cancel() is True
+    assert second[1].is_set() is True
+
+    local.finish(second[0])
+    assert local.running is False
 
 
 def test_coordinator_finish_begin_race_keeps_stop_event() -> None:

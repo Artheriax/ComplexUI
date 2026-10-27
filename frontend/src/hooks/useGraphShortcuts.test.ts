@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, renderHook } from "@testing-library/react";
+import { cleanup, renderHook, render } from "@testing-library/react";
+import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useGraphStore } from "../store/useGraphStore";
 import type { NodeSchema, TemplateInfo } from "../types/graph";
+import { useDialogA11y } from "./useDialogA11y";
 import { useGraphShortcuts } from "./useGraphShortcuts";
 
 const schema: NodeSchema = {
@@ -25,6 +27,16 @@ const template: TemplateInfo = {
   code_hash: "demo-hash",
   node_schema: schema,
 };
+
+function TestDialog() {
+  const ref = useDialogA11y<HTMLDivElement>(() => {});
+  return createElement("div", {
+    ref,
+    role: "dialog",
+    "aria-modal": "true",
+    tabIndex: -1,
+  });
+}
 
 function resetStore(): void {
   useGraphStore.setState({
@@ -211,12 +223,28 @@ describe("useGraphShortcuts", () => {
     expect(useGraphStore.getState().nodes).toHaveLength(1);
   });
 
-  it("ignores events while a modal is open", () => {
+  it("ignores events while the code editor is open", () => {
     addNode();
     useGraphStore.setState({ editingNodeId: "some-node" });
 
     press({ key: "z", ctrlKey: true });
     expect(useGraphStore.getState().nodes).toHaveLength(1);
+  });
+
+  it("ignores canvas shortcuts while a dialog is mounted", () => {
+    addNode();
+    const requestSave = vi.fn();
+    useGraphStore.setState({ requestSave });
+    const { unmount } = render(createElement(TestDialog));
+
+    const selectEvent = press({ key: "a", ctrlKey: true });
+    expect(selectEvent.defaultPrevented).toBe(false);
+    expect(useGraphStore.getState().nodes[0]?.selected).not.toBe(true);
+
+    const saveEvent = press({ key: "s", ctrlKey: true });
+    expect(saveEvent.defaultPrevented).toBe(false);
+    expect(requestSave).not.toHaveBeenCalled();
+    unmount();
   });
 
   it("leaves shortcuts untouched when they do not apply", () => {

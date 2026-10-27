@@ -113,22 +113,38 @@ path-scoped ids (`sub:<path>/<id>`).
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) (Python 3.12+) — backend runtime and tooling
-- Node.js 20+ with npm — frontend build tooling
+- Node.js `^20.19.0` or `>=22.12.0` with npm — frontend build tooling (the
+  range required by Vite 8; `frontend/.nvmrc` pins 22)
 
 ## Quickstart
+
+Windows:
 
 ```cmd
 start.cmd
 ```
 
-That launches **dev mode** (backend with auto-reload on `http://127.0.0.1:8000`,
-Vite dev server on `http://localhost:5173`) and opens nothing by default; visit
+macOS/Linux:
+
+```sh
+./start.sh
+```
+
+Both launch **dev mode** (backend with auto-reload on `http://127.0.0.1:8000`,
+Vite dev server on `http://localhost:5173`) and open nothing by default; visit
 the UI URL printed at the end of startup. `Ctrl+C` stops both processes cleanly.
 
 On a fresh clone the launcher bootstraps everything by itself: `uv` creates and
-syncs `backend/.venv`, and `npm install` runs automatically in `frontend/` the
-first time it is needed — no manual setup beyond having `uv` and Node.js
-installed.
+syncs `backend/.venv` without optional ML/dev packages (`uv run --no-dev`), and
+`npm ci` runs automatically in `frontend/` when `node_modules` is missing; later
+lockfile changes use an incremental `npm install`.
+Serving modes therefore start fast; run `start.cmd check` (or
+`uv sync --dev`/`uv sync --all-groups`) when you need the test and ML tooling.
+
+Custom ports work end-to-end: `--backend-port`/`--frontend-port` update the Vite
+proxy (`COMPLEXUI_BACKEND_URL`) and backend CORS origins automatically. For an
+existing external deployment, set `COMPLEXUI_CORS_ORIGINS` to a comma-separated
+list (or `0` to disable CORS) instead of editing source.
 
 Other modes via the launcher (`start.cmd <mode>` or `uv run python launch.py <mode>`
 from `backend/`):
@@ -173,10 +189,12 @@ logs, or `NO_COLOR=1` / `--no-color` for plain output.
 
 Daily plain-text logs are written to `backend/workspace/logs/` and retained for
 14 days; each execution also gets `backend/workspace/logs/runs/<run_id>.txt`.
-Set `COMPLEXUI_LOG_DIR` to another directory or `0` to disable file logs, or use
-launcher flags `--log-dir PATH` / `--no-log-file`. Independently of logging, the
-50 newest terminal runs are retained as JSON records in `workspace/runs/` and
-are browsable from the Execution panel.
+The 50 newest per-run logs follow run-history retention and are pruned as runs
+finish; deleting a run from the UI removes its log too. Set `COMPLEXUI_LOG_DIR`
+to another directory or `0` to disable file logs, or use launcher flags
+`--log-dir PATH` / `--no-log-file`. Independently of logging, the 50 newest
+terminal runs are retained as JSON records in `workspace/runs/` and are
+browsable from the Execution panel.
 
 Execution isolation uses `COMPLEXUI_NODE_TIMEOUT_SECONDS` (default 600),
 `COMPLEXUI_RUN_TIMEOUT_SECONDS` (default 3600), and

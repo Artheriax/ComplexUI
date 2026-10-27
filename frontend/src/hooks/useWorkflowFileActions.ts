@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { exportWorkflow } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import {
   downloadTextFile,
   downloadWorkflow,
@@ -16,9 +17,8 @@ function reportError(error: unknown, errorType: string): void {
   useGraphStore.setState((state) => ({
     execution: {
       ...state.execution,
-      status: "idle",
       error: {
-        message: error instanceof Error ? error.message : String(error),
+        message: errorMessage(error),
         errorType,
         nodeId: null,
         line: null,

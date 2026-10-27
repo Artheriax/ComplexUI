@@ -256,7 +256,7 @@ machine is trusted: node code already runs with the backend user's permissions.
 | `/api/cancel` | POST | Ask the running execution to stop between nodes or during a dependency install (`202`; `409` when idle). Completed nodes stay cached. |
 | `/api/runs` | GET | List the newest retained terminal run summaries (`limit` 1-200, default 50). |
 | `/api/runs/{run_id}` | GET | Load one terminal run with order, labels, per-node statuses/timings/outputs and failure details. |
-| `/api/runs/{run_id}` | DELETE | Delete one retained run record. |
+| `/api/runs/{run_id}` | DELETE | Delete one retained run record and its per-run log. |
 | `/ws/execution` | WS | Streams `EXECUTION_STARTED`, per-node `NODE_STARTED`/`NODE_PROGRESS`/`NODE_COMPLETED`/`NODE_ERROR` (including `rich_outputs`), and `EXECUTION_COMPLETED`/`EXECUTION_FAILED`/`EXECUTION_CANCELLED` events as JSON. |
 
 Requests enforce node-code, graph-size, and target-count caps; advertised
@@ -269,6 +269,10 @@ server binds
 loopback by default and accepts only loopback `Host` headers and WebSocket
 `Origin`s; set `COMPLEXUI_ALLOWED_HOSTS` (comma-separated) for custom hostnames
 or use the launcher's `--allow-network` flag, which disables the guard and warns.
+CORS defaults to the local Vite origins (`http://localhost:5173` and
+`http://127.0.0.1:5173`); set `COMPLEXUI_CORS_ORIGINS` to a comma-separated list
+for another frontend origin, or `0` to disable CORS middleware. The launcher
+derives both the Vite proxy target and the CORS list from its port flags.
 The API has no authentication and executes node code, so non-loopback exposure
 is only appropriate on trusted networks.
 
@@ -298,6 +302,7 @@ Defaults and environment overrides:
 | `COMPLEXUI_ACCELERATOR` | `auto` | `cpu`, `cuda`, or `auto` (NVML GPU detection); the launcher flag `--accelerator` overrides it |
 | `COMPLEXUI_TORCH_CUDA_INDEX` | `https://download.pytorch.org/whl/cu130` | CUDA wheel index for CUDA torch installs |
 | `COMPLEXUI_INSTALL_TIMEOUT_SECONDS` | `1200` | PEP 723 dependency install timeout |
+| `COMPLEXUI_CORS_ORIGINS` | local Vite origins | Comma-separated allowed CORS origins; `0` disables CORS |
 
 On Unix the worker also applies an address-space limit; the parent monitors
 resident memory on all platforms. Timeout, memory-limit and crash failures are
@@ -394,7 +399,8 @@ rich output total. A truncation notice is emitted when a limit drops content.
 Rich outputs are runtime-only and are not exported in `.cuigraph.json`; terminal
 run-history records retain a bounded snapshot for later inspection.
 
-Start the server (CORS pre-configured for `http://localhost:5173`):
+Start the server (CORS pre-configured for `http://localhost:5173`; override with
+`COMPLEXUI_CORS_ORIGINS`):
 
 ```sh
 uv run uvicorn app.main:app --reload
@@ -407,8 +413,12 @@ uv run uvicorn app.main:app --port 8000
 # PowerShell: $env:COMPLEXUI_SERVE_DIST = "..\frontend\dist"
 ```
 
-Operator launcher (preferred): `uv run python launch.py [dev|backend|frontend|prod|check]`
-or the repo-root `start.cmd`. Console logging honors `COMPLEXUI_LOG_LEVEL`
+Operator launcher (preferred): `uv run python launch.py [dev|backend|frontend|prod|check]`,
+the repo-root `start.cmd` (Windows) or `./start.sh` (macOS/Linux). Serving modes
+sync but do not install dev/ML dependencies (`uv run --no-dev`); `check` syncs
+the dev group. Frontend dependencies are installed with `npm ci` on a fresh
+clone and refreshed with `npm install` when the lockfile hash changes.
+Console logging honors `COMPLEXUI_LOG_LEVEL`
 (default `INFO`), `COMPLEXUI_LOG_FORMAT` (`text` or newline-delimited `json`;
 uvicorn access lines remain plain text), `NO_COLOR` / `FORCE_COLOR`, and
 `--no-color` / `--log-level` / `--log-format`. Successful polling requests for
@@ -417,8 +427,9 @@ access logger.
 
 Plain-text logs are also written daily to `backend/workspace/logs/` (14 days
 retained), with one file per execution under `backend/workspace/logs/runs/`.
-Set `COMPLEXUI_LOG_DIR` to relocate them, or `0` to disable files. The launcher
-accepts `--log-dir PATH` and `--no-log-file`.
+Per-run logs are pruned to the newest 50 as new runs finish and are deleted with
+their run record. Set `COMPLEXUI_LOG_DIR` to relocate them, or `0` to disable
+files. The launcher accepts `--log-dir PATH` and `--no-log-file`.
 
 Run the test suite from this directory:
 

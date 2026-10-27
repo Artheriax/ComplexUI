@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
+import { isDialogOpen } from "./useDialogA11y";
 import { isTextEntryTarget } from "./useGraphShortcuts";
 
 export function useViewportShortcuts(
@@ -9,6 +10,9 @@ export function useViewportShortcuts(
 ): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isDialogOpen()) {
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey) {
         return;
       }

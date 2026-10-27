@@ -2,15 +2,12 @@ import { useEffect, useState } from "react";
 
 import { fetchSystemMetrics } from "../lib/api";
 import type { SystemMetrics } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 export interface SystemMetricsState {
   metrics: SystemMetrics | null;
   error: string | null;
   updating: boolean;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** Poll system metrics while the monitor is visible, pausing in hidden tabs. */
@@ -30,8 +27,11 @@ export function useSystemMetrics(
     let disposed = false;
     let timer: number | undefined;
     let controller: AbortController | null = null;
+    let sequence = 0;
+    let inFlight = false;
 
     function schedule(delay: number): void {
+      window.clearTimeout(timer);
       if (!disposed) {
         timer = window.setTimeout(() => {
           void poll();
@@ -39,40 +39,60 @@ export function useSystemMetrics(
       }
     }
 
+    function cancelInFlight(): void {
+      if (!inFlight) {
+        return;
+      }
+      sequence += 1;
+      controller?.abort();
+      controller = null;
+      inFlight = false;
+      setUpdating(false);
+    }
+
     async function poll(): Promise<void> {
-      if (disposed) {
+      if (disposed || inFlight) {
         return;
       }
-      if (document.visibilityState === "hidden") {
-        schedule(intervalMs);
+      if (document.visibilityState !== "visible") {
+        window.clearTimeout(timer);
         return;
       }
+      const current = ++sequence;
+      inFlight = true;
       controller = new AbortController();
       setUpdating(true);
       try {
         const next = await fetchSystemMetrics(controller.signal);
-        if (!disposed) {
+        if (!disposed && current === sequence) {
           setMetrics(next);
           setError(null);
         }
       } catch (cause) {
         if (
           disposed ||
+          current !== sequence ||
           (cause instanceof DOMException && cause.name === "AbortError")
         ) {
           return;
         }
         setError(errorMessage(cause));
       } finally {
-        if (!disposed) {
-          setUpdating(false);
-          schedule(intervalMs);
+        if (current === sequence) {
+          inFlight = false;
+          controller = null;
+          if (!disposed) {
+            setUpdating(false);
+            schedule(intervalMs);
+          }
         }
       }
     }
 
     const onVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
+      if (document.visibilityState === "hidden") {
+        window.clearTimeout(timer);
+        cancelInFlight();
         return;
       }
       window.clearTimeout(timer);
@@ -83,6 +103,7 @@ export function useSystemMetrics(
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       disposed = true;
+      sequence += 1;
       controller?.abort();
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibilityChange);

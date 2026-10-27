@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
 import { useGraphStore } from "../store/useGraphStore";
+import { errorMessage } from "../lib/errors";
 import { SaveIcon } from "./icons";
 
 interface SaveTemplateDialogProps {
@@ -72,7 +73,7 @@ export function SaveTemplateDialog({
       });
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(errorMessage(cause));
     } finally {
       setBusy(false);
     }

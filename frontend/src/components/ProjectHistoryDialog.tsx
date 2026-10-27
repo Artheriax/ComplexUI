@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 
 import { fetchProjectVersions } from "../lib/api";
 import type { ProjectSummary, ProjectVersionInfo } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import { useDialogA11y } from "../hooks/useDialogA11y";
 import { useGraphStore } from "../store/useGraphStore";
 import { CloseIcon, SpinnerIcon } from "./icons";
@@ -45,7 +46,7 @@ export function ProjectHistoryDialog({
         }
       } catch (cause) {
         if (active) {
-          setError(cause instanceof Error ? cause.message : String(cause));
+          setError(errorMessage(cause));
         }
       } finally {
         if (active) {

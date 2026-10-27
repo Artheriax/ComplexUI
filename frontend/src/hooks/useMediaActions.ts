@@ -6,6 +6,7 @@ import {
   savedMediaRawUrl,
 } from "../lib/api";
 import { copyImageFromUrl } from "../lib/clipboard";
+import { errorMessage } from "../lib/errors";
 
 export type MediaActionState =
   | { kind: "idle" }
@@ -48,7 +49,7 @@ export function useMediaActions(
     } catch (cause) {
       setState({
         kind: "error",
-        message: cause instanceof Error ? cause.message : String(cause),
+        message: errorMessage(cause),
       });
     }
   };

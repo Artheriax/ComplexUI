@@ -6,6 +6,7 @@ import {
   uploadDataset,
 } from "../lib/api";
 import type { DatasetSummary } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 interface DatasetStore {
   datasets: DatasetSummary[];
@@ -18,10 +19,6 @@ interface DatasetStore {
   uploadFiles: (files: File[]) => Promise<DatasetSummary[]>;
   removeDataset: (datasetId: string) => Promise<boolean>;
   clearDatasetError: () => void;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 export const useDatasetsStore = create<DatasetStore>((set, get) => ({

@@ -5,6 +5,7 @@ import { useDialogA11y } from "../hooks/useDialogA11y";
 import { datasetRawUrl, fetchDatasetPreview } from "../lib/api";
 import type { DatasetPreview, DatasetSummary } from "../lib/api";
 import { formatDatasetSize } from "../lib/datasets";
+import { errorMessage } from "../lib/errors";
 import { CloseIcon, SpinnerIcon, WarningIcon } from "./icons";
 
 interface DatasetPreviewDialogProps {
@@ -31,9 +32,18 @@ export function DatasetPreviewDialog({
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
   const isTable = dataset.kind === "table";
   const mediaUrl = rawUrl ?? datasetRawUrl(dataset.id);
-  const [preview, setPreview] = useState<DatasetPreview | null>(null);
-  const [loading, setLoading] = useState(isTable);
-  const [error, setError] = useState<string | null>(null);
+  const [loadedPreview, setLoadedPreview] = useState<DatasetPreview | null>(
+    null,
+  );
+  const [loadError, setLoadError] = useState<{
+    datasetId: string;
+    message: string;
+  } | null>(null);
+  const preview =
+    loadedPreview?.dataset.id === dataset.id ? loadedPreview : null;
+  const error =
+    loadError?.datasetId === dataset.id ? loadError.message : null;
+  const loading = isTable && preview === null && error === null;
 
   useEffect(() => {
     if (!isTable) {
@@ -44,16 +54,17 @@ export function DatasetPreviewDialog({
       try {
         const loaded = await fetchDatasetPreview(dataset.id);
         if (active) {
-          setPreview(loaded);
-          setError(null);
+          setLoadedPreview(loaded);
+          setLoadError((current) =>
+            current?.datasetId === dataset.id ? null : current,
+          );
         }
       } catch (cause) {
         if (active) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
+          setLoadError({
+            datasetId: dataset.id,
+            message: errorMessage(cause),
+          });
         }
       }
     })();
@@ -116,7 +127,12 @@ export function DatasetPreviewDialog({
                   src={mediaUrl}
                   alt={dataset.name}
                   className="max-h-[62vh] max-w-full rounded object-contain"
-                  onError={() => setError("Unable to load this image.")}
+                  onError={() =>
+                    setLoadError({
+                      datasetId: dataset.id,
+                      message: "Unable to load this image.",
+                    })
+                  }
                 />
               ) : (
                 <video
@@ -124,7 +140,12 @@ export function DatasetPreviewDialog({
                   controls
                   preload="metadata"
                   className="max-h-[62vh] max-w-full rounded"
-                  onError={() => setError("Unable to load this video.")}
+                  onError={() =>
+                    setLoadError({
+                      datasetId: dataset.id,
+                      message: "Unable to load this video.",
+                    })
+                  }
                 >
                   Your browser does not support video playback.
                 </video>

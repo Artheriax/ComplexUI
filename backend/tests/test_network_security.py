@@ -15,9 +15,12 @@ from app.executor import clear_cache
 from app.main import app, coordinator
 from app.network_security import (
     DEFAULT_ALLOWED_HOSTS,
+    DEFAULT_CORS_ORIGINS,
     ENV_ALLOWED_HOSTS,
+    ENV_CORS_ORIGINS,
     RequestSizeLimitMiddleware,
     configured_allowed_hosts,
+    configured_cors_origins,
     origin_is_allowed,
 )
 from app.schemas import (
@@ -48,6 +51,31 @@ def test_allowed_hosts_default_to_loopback(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.delenv(ENV_ALLOWED_HOSTS, raising=False)
 
     assert configured_allowed_hosts() == list(DEFAULT_ALLOWED_HOSTS)
+
+
+def test_cors_origins_default_to_vite(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV_CORS_ORIGINS, raising=False)
+
+    assert configured_cors_origins() == list(DEFAULT_CORS_ORIGINS)
+
+
+def test_cors_origins_parse_and_normalize(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        ENV_CORS_ORIGINS,
+        " HTTP://Localhost:5200/ , not-a-url, http://ui.local:5200/path, "
+        "https://ui.local ",
+    )
+
+    assert configured_cors_origins() == [
+        "http://localhost:5200",
+        "https://ui.local",
+    ]
+
+
+def test_empty_cors_origins_disables_cors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(ENV_CORS_ORIGINS, " , ")
+
+    assert configured_cors_origins() == []
 
 
 def test_allowed_hosts_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

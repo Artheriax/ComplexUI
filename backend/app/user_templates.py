@@ -13,10 +13,10 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any
 
 from .schemas import MAX_NODE_CODE_CHARS
+from .storage import normalize_code, write_json_atomic, write_text_atomic
 from .workspace import workspace_root
 
 __all__ = [
@@ -158,35 +158,17 @@ class UserTemplateStore:
         code_path = self._code_path(candidate)
         if code_path.exists() and not overwrite:
             raise UserTemplateConflict(f"Template '{candidate}' already exists")
-        normalized = code.replace("\r\n", "\n").replace("\r", "\n")
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=self.root,
-            prefix=f".{candidate}-",
-            suffix=".py",
-            delete=False,
-        ) as handle:
-            handle.write(normalized)
-            temp_code = Path(handle.name)
-        temp_code.replace(code_path)
-        metadata = {
-            "title": clean_title,
-            "category": clean_category,
-            "description": clean_description,
-        }
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=self.root,
-            prefix=f".{candidate}-",
-            suffix=".json",
-            delete=False,
-        ) as handle:
-            json.dump(metadata, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            temp_metadata = Path(handle.name)
-        temp_metadata.replace(self._metadata_path(candidate))
+        normalized = normalize_code(code)
+        code_path = self._code_path(candidate)
+        write_text_atomic(code_path, normalized)
+        write_json_atomic(
+            self._metadata_path(candidate),
+            {
+                "title": clean_title,
+                "category": clean_category,
+                "description": clean_description,
+            },
+        )
         return UserTemplateRecord(
             name=candidate,
             title=clean_title,

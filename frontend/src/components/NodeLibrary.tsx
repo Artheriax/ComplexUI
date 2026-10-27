@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
 import type { DragEvent } from "react";
 
+import { DRAG_MIME, DRAG_SUBGRAPH_MIME } from "../lib/drag";
 import { groupTemplates } from "../lib/templateSearch";
 import { useGraphStore } from "../store/useGraphStore";
 import { SOCKET_COLORS } from "../types/graph";
 import type { SubgraphDefinition, TemplateInfo } from "../types/graph";
-import { DRAG_MIME, DRAG_SUBGRAPH_MIME } from "./Canvas";
 import { CategorySection } from "./CategorySection";
 import { PlusIcon, SpinnerIcon, SubgraphIcon, WarningIcon } from "./icons";
 
@@ -142,6 +142,7 @@ export function NodeLibrary() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search templates…"
+          aria-label="Search templates"
           className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-cyan-600"
         />
       </div>

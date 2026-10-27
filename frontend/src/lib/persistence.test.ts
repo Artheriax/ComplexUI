@@ -578,9 +578,11 @@ describe("downloadTextFile", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("triggers a named blob download for exported artifacts", () => {
+    vi.useFakeTimers();
     const createObjectURL = vi.fn(() => "blob:export");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
@@ -597,6 +599,9 @@ describe("downloadTextFile", () => {
     expect(clicked).toHaveLength(1);
     expect(clicked[0]?.download).toBe("workflow.py");
     expect(clicked[0]?.href).toContain("blob:export");
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1000);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:export");
   });
 });

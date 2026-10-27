@@ -15,6 +15,7 @@ import mimetypes
 import os
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import quote
@@ -70,12 +71,16 @@ from .logging_setup import (
     FileFormatter,
     configure_logging,
     install_access_log_filter,
+    log_execution_event,
+    prune_run_logs,
     resolve_log_dir,
+    run_log_path,
 )
 from .models import InvalidModelPath, get_model_store
 from .network_security import (
     RequestSizeLimitMiddleware,
     configured_allowed_hosts,
+    configured_cors_origins,
     origin_is_allowed,
 )
 from .nvml import nvidia_available
@@ -142,7 +147,7 @@ from .schemas import (
     WorkspaceSessionRequest,
     WorkspaceSessionResponse,
 )
-from .security import code_hash, get_security_registry
+from .security import TemplateRecord, code_hash, get_security_registry
 from .system_metrics import collect_system_metrics
 from .template_catalog import template_meta
 from .transpiler import TranspileError, parse_node
@@ -177,6 +182,10 @@ install_access_log_filter()
 logger = logging.getLogger("complexui.server")
 
 _SEND_TIMEOUT_SECONDS = 2.0
+_MEMORY_SAMPLE_INTERVAL_SECONDS = 1.0
+_EVENT_QUEUE_SIZE = 1024
+_TEMPLATE_SCHEMA_CACHE_LIMIT = 256
+_TEMPLATE_SCHEMAS: dict[tuple[str, str], NodeSchema] = {}
 
 
 class ConnectionManager:
@@ -193,7 +202,7 @@ class ConnectionManager:
         loop = asyncio.get_running_loop()
         if self._loop is not loop:
             self._loop = loop
-            self._queue = asyncio.Queue()
+            self._queue = asyncio.Queue(maxsize=_EVENT_QUEUE_SIZE)
             self._connections.clear()
             self._drainer = None
         if self._drainer is None or self._drainer.done():
@@ -205,22 +214,28 @@ class ConnectionManager:
             return
         while True:
             event = await queue.get()
-            _log_event(event)
+            log_execution_event(event)
             await self._broadcast(event)
 
     async def _broadcast(self, event: ExecutionEvent) -> None:
+        connections = list(self._connections)
+        if not connections:
+            return
         payload = event.model_dump(mode="json")
-        dead: list[WebSocket] = []
-        for connection in list(self._connections):
-            try:
-                await asyncio.wait_for(
-                    connection.send_json(payload),
-                    timeout=_SEND_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                dead.append(connection)
-        for connection in dead:
-            self._connections.discard(connection)
+        results = await asyncio.gather(
+            *(self._send(connection, payload) for connection in connections),
+            return_exceptions=True,
+        )
+        for connection, result in zip(connections, results, strict=True):
+            if isinstance(result, BaseException):
+                self._connections.discard(connection)
+
+    @staticmethod
+    async def _send(connection: WebSocket, payload: dict[str, Any]) -> None:
+        await asyncio.wait_for(
+            connection.send_json(payload),
+            timeout=_SEND_TIMEOUT_SECONDS,
+        )
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -234,20 +249,23 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket) -> None:
         self._connections.discard(websocket)
 
+    def _enqueue(self, event: ExecutionEvent) -> None:
+        queue = self._queue
+        if queue is None:
+            return
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
     def emit(self, event: ExecutionEvent) -> None:
         """Enqueue an event from the event loop thread."""
-        if self._queue is not None:
-            self._queue.put_nowait(event)
-
-    def emit_from_thread(self, event: ExecutionEvent) -> None:
-        """Enqueue an event from a worker thread (executor callback)."""
-        loop, queue = self._loop, self._queue
-        if loop is None or queue is None or loop.is_closed():
-            return
-        try:
-            loop.call_soon_threadsafe(queue.put_nowait, event)
-        except RuntimeError:
-            return
+        self._enqueue(event)
 
 
 class ExecutionCoordinator:
@@ -284,130 +302,26 @@ class ExecutionCoordinator:
             self._stop_event.set()
             return True
 
-    def finish(self) -> None:
+    def finish(self, run_id: str | None = None) -> None:
+        """Clear the active run, ignoring a stale run's late cleanup.
+
+        Passing the finishing ``run_id`` prevents a slow cleanup path from
+        clearing the state of a newer run that already started.
+        """
         with self._lock:
+            if run_id is not None and self._run_id != run_id:
+                return
             self._run_id = None
             self._stop_event = None
 
 
-def _log_event(event: ExecutionEvent, *, target: logging.Logger | None = None) -> None:
-    """Narrate every execution telemetry event on the console or a run log."""
-    log = target if target is not None else logger
-    data = event.data
-    run_id = str(data.get("run_id", ""))
-    short_run = run_id[:12]
-    extra: dict[str, Any] = {
-        "run_id": run_id or None,
-        "node_id": event.node_id or None,
-    }
-    if event.type is EventType.EXECUTION_STARTED:
-        order = data.get("order")
-        node_count = len(order) if isinstance(order, list) else 0
-        log.info("run %s started: %d node(s)", short_run, node_count, extra=extra)
-        log.debug("run %s order: %s", short_run, order, extra=extra)
-    elif event.type is EventType.NODE_STARTED:
-        log.info("  [start] %s", event.node_id, extra=extra)
-    elif event.type is EventType.INSTALLING_DEPS:
-        dependencies = data.get("dependencies") or []
-        extra["dependencies"] = dependencies
-        log.info(
-            "  [deps ] %s installing: %s",
-            event.node_id,
-            ", ".join(str(dep) for dep in dependencies),
-            extra=extra,
-        )
-    elif event.type is EventType.NODE_PROGRESS:
-        progress = data.get("progress")
-        percent = (
-            f" ({round(float(progress) * 100)}%)"
-            if isinstance(progress, (int, float))
-            else ""
-        )
-        message = str(data.get("message") or "").strip()
-        log.info(
-            "  [progress] %s %s%s",
-            event.node_id,
-            message,
-            percent,
-            extra=extra,
-        )
-    elif event.type is EventType.NODE_COMPLETED:
-        cached = bool(data.get("cached"))
-        extra["cached"] = cached
-        if cached:
-            log.info("  [done ] %s (cached)", event.node_id, extra=extra)
-        else:
-            duration = data.get("duration_ms")
-            if isinstance(duration, (int, float)):
-                extra["duration_ms"] = duration
-            log.info("  [done ] %s in %sms", event.node_id, duration, extra=extra)
-    elif event.type is EventType.NODE_ERROR:
-        extra["error_type"] = data.get("error_type")
-        extra["line"] = data.get("line")
-        log.error(
-            "  [error] %s: %s (line %s): %s",
-            event.node_id,
-            data.get("error_type"),
-            data.get("line"),
-            data.get("message", ""),
-            extra=extra,
-        )
-    elif event.type is EventType.EXECUTION_COMPLETED:
-        cached_map = data.get("cached")
-        cached_map = cached_map if isinstance(cached_map, dict) else {}
-        cached_count = sum(1 for value in cached_map.values() if value)
-        duration = data.get("duration_ms")
-        extra["cached"] = cached_count
-        if isinstance(duration, (int, float)):
-            extra["duration_ms"] = duration
-            log.info(
-                "run %s completed in %sms: %d node(s), %d cached",
-                short_run,
-                duration,
-                len(cached_map),
-                cached_count,
-                extra=extra,
-            )
-        else:
-            log.info(
-                "run %s completed: %d node(s), %d cached",
-                short_run,
-                len(cached_map),
-                cached_count,
-                extra=extra,
-            )
-    elif event.type is EventType.EXECUTION_FAILED:
-        failed_node = data.get("node_id")
-        extra["error_type"] = data.get("error_type")
-        extra["line"] = data.get("line")
-        duration = data.get("duration_ms")
-        if isinstance(duration, (int, float)):
-            extra["duration_ms"] = duration
-        log.error(
-            "run %s failed%s: %s",
-            short_run,
-            f" at {failed_node}" if failed_node else "",
-            data.get("message"),
-            extra=extra,
-        )
-        traceback_text = data.get("traceback")
-        if isinstance(traceback_text, str) and traceback_text:
-            log.debug("run %s traceback:\n%s", short_run, traceback_text, extra=extra)
-    elif event.type is EventType.EXECUTION_CANCELLED:
-        duration = data.get("duration_ms")
-        if isinstance(duration, (int, float)):
-            extra["duration_ms"] = duration
-        log.warning("run %s cancelled", short_run, extra=extra)
-    else:
-        log.debug("event %s node=%s", event.type.value, event.node_id, extra=extra)
-
-
 _ALLOWED_HOSTS = configured_allowed_hosts()
+_CORS_ORIGINS = configured_cors_origins()
 
 app = FastAPI(title="ComplexUI Backend", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -432,6 +346,7 @@ logger.info(
 )
 if _LOG_DIR is not None:
     logger.info("daily logs: %s", _LOG_DIR)
+logger.info("CORS origins: %s", ", ".join(_CORS_ORIGINS) or "disabled")
 logger.info("workspace: %s", get_project_store().root)
 logger.info("models: %s", get_model_store().root)
 if "*" in _ALLOWED_HOSTS:
@@ -453,6 +368,19 @@ def parse_endpoint(payload: ParseRequest) -> NodeSchema:
         len(schema.outputs),
         len(schema.widgets),
     )
+    return schema
+
+
+def _template_schema(record: TemplateRecord) -> NodeSchema:
+    """Parse one template, reusing the schema until its code changes."""
+    key = (record.name, record.code_hash)
+    cached = _TEMPLATE_SCHEMAS.get(key)
+    if cached is not None:
+        return cached
+    schema = parse_node(record.code, record.name)
+    if len(_TEMPLATE_SCHEMAS) >= _TEMPLATE_SCHEMA_CACHE_LIMIT:
+        _TEMPLATE_SCHEMAS.clear()
+    _TEMPLATE_SCHEMAS[key] = schema
     return schema
 
 
@@ -486,7 +414,7 @@ def list_templates() -> list[TemplateInfo]:
                 source=source,
                 code=record.code,
                 code_hash=record.code_hash,
-                node_schema=parse_node(record.code, record.name),
+                node_schema=_template_schema(record),
             )
         )
     return templates
@@ -578,13 +506,19 @@ def list_workflows() -> list[WorkflowTemplateInfo]:
     )
 
 
+@lru_cache(maxsize=1)
+def _installed_torch_version() -> str | None:
+    """Read the installed torch distribution once; it cannot change in-process."""
+    try:
+        return importlib.metadata.version("torch")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 @app.get("/api/health")
 def health_endpoint() -> dict[str, object]:
     """Liveness probe used by the launcher and external tools."""
-    try:
-        torch_version = importlib.metadata.version("torch")
-    except importlib.metadata.PackageNotFoundError:
-        torch_version = None
+    torch_version = _installed_torch_version()
     limits = execution_limits()
     return {
         "status": "ok",
@@ -681,6 +615,12 @@ def delete_run_endpoint(run_id: str) -> RunDeleteResponse:
     except RunHistoryError as exc:
         logger.error("run history delete failed for %s: %s", run_id[:12], exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    log_dir = resolve_log_dir()
+    if log_dir is not None:
+        try:
+            run_log_path(log_dir, run_id).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.debug("run log delete skipped for %s: %s", run_id[:12], exc)
     return RunDeleteResponse(status="deleted", run_id=run_id)
 
 
@@ -1119,7 +1059,11 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
         raise HTTPException(status_code=409, detail="An execution is already running")
 
     try:
-        plan = validate_graph(payload.graph, targets=payload.targets)
+        plan = await asyncio.to_thread(
+            validate_graph,
+            payload.graph,
+            targets=payload.targets,
+        )
     except TranspileError as exc:
         logger.error(
             "execute rejected: syntax error in node '%s' (line %d)",
@@ -1157,7 +1101,7 @@ async def execute_endpoint(payload: ExecuteRequest) -> ExecuteResponse:
         )
 
     run = coordinator.try_begin()
-    if run is None:  # unreachable: no await since the check above
+    if run is None:
         raise HTTPException(status_code=409, detail="An execution is already running")
     run_id, stop_event = run
     targets = payload.targets
@@ -1220,11 +1164,16 @@ def _open_run_log(
     log_dir = resolve_log_dir()
     if log_dir is None:
         return None, None
-    path = log_dir / "runs" / f"{run_id}.txt"
+    path = run_log_path(log_dir, run_id)
+    handler: logging.FileHandler | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(path, encoding="utf-8")
+        # Count this run's file toward the retention limit.
+        prune_run_logs(log_dir)
     except OSError as exc:
+        if handler is not None:
+            handler.close()
         logger.warning("run log disabled for %s: %s", run_id[:12], exc)
         return None, None
     handler.setFormatter(FileFormatter())
@@ -1267,6 +1216,7 @@ async def _run_execution(
     abnormal: tuple[str, str, str | None] | None = None
     current_node_id: str | None = None
     node_started_at: float | None = None
+    next_memory_check = 0.0
 
     def emit_event(event: ExecutionEvent) -> None:
         event.data.setdefault("run_id", run_id)
@@ -1288,7 +1238,7 @@ async def _run_execution(
                             exc,
                         )
         if run_logger is not None:
-            _log_event(event, target=run_logger)
+            log_execution_event(event, target=run_logger)
         manager.emit(event)
 
     async def persist_run(
@@ -1387,7 +1337,8 @@ async def _run_execution(
                         current_node_id,
                     )
                     break
-                if limits.max_memory_bytes > 0:
+                if limits.max_memory_bytes > 0 and now >= next_memory_check:
+                    next_memory_check = now + _MEMORY_SAMPLE_INTERVAL_SECONDS
                     pid = handle.process.pid
                     used = process_memory_bytes(pid) if pid is not None else None
                     if used is not None and used > limits.max_memory_bytes:
@@ -1457,7 +1408,7 @@ async def _run_execution(
         if kind == "completed":
             apply_cache(terminal.get("cache"))
             await persist_run(RunStatus.COMPLETED, duration_ms=duration_ms)
-            coordinator.finish()
+            coordinator.finish(run_id)
             emit_event(
                 ExecutionEvent(
                     type=EventType.EXECUTION_COMPLETED,
@@ -1473,7 +1424,7 @@ async def _run_execution(
         elif kind == "cancelled":
             apply_cache(terminal.get("cache"))
             await persist_run(RunStatus.CANCELLED, duration_ms=duration_ms)
-            coordinator.finish()
+            coordinator.finish(run_id)
             emit_event(
                 ExecutionEvent(
                     type=EventType.EXECUTION_CANCELLED,
@@ -1491,7 +1442,7 @@ async def _run_execution(
                 duration_ms=duration_ms,
                 error=error,
             )
-            coordinator.finish()
+            coordinator.finish(run_id)
             emit_event(
                 ExecutionEvent(
                     type=EventType.EXECUTION_FAILED,
@@ -1515,7 +1466,7 @@ async def _run_execution(
                 terminate=abnormal is not None,
             )
         _close_run_log(run_logger, run_handler)
-        coordinator.finish()
+        coordinator.finish(run_id)
 
 
 def _elapsed_ms(started: float) -> float:

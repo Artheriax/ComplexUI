@@ -114,6 +114,7 @@ export function DatasetLibrary() {
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search assets…"
+          aria-label="Search assets"
           className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-cyan-600"
         />
         <label

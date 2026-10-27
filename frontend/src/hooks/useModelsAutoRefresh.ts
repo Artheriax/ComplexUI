@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 
+import { isDialogOpen } from "./useDialogA11y";
 import { isTextEntryTarget } from "./useGraphShortcuts";
 import { useModelsStore } from "../store/useModelsStore";
 
@@ -38,6 +39,7 @@ export function useModelsAutoRefresh(
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (
+        isDialogOpen() ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||

@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -31,11 +28,24 @@ from .schemas import (
     RunStatus,
     RunSummary,
 )
+from .storage import utc_timestamp, write_json_atomic
 from .workspace import workspace_root
 
 _RUN_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 _RECORD_SUFFIX = ".json"
 _RICH_OUTPUTS_ADAPTER = TypeAdapter(list[RichOutput])
+_SUMMARY_EXCLUDES = {
+    "nodes",
+    "order",
+    "targets",
+    "node_labels",
+    "error",
+    "schema_version",
+}
+
+
+def _summary(record: RunRecord) -> RunSummary:
+    return RunSummary(**record.model_dump(exclude=_SUMMARY_EXCLUDES))
 
 
 class RunHistoryError(Exception):
@@ -55,7 +65,7 @@ class InvalidRunRecord(RunHistoryError):
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return utc_timestamp(milliseconds=True)
 
 
 def _validate_run_id(run_id: str) -> str:
@@ -75,16 +85,7 @@ class RunHistoryStore:
         return self.root / f"{_validate_run_id(run_id)}{_RECORD_SUFFIX}"
 
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        write_json_atomic(path, payload)
 
     def _read_record(self, path: Path) -> RunRecord:
         if not path.is_file():
@@ -103,18 +104,7 @@ class RunHistoryStore:
         with self._lock:
             self._write_json(path, record.model_dump(mode="json"))
             self._prune()
-        return RunSummary(
-            **record.model_dump(
-                exclude={
-                    "nodes",
-                    "order",
-                    "targets",
-                    "node_labels",
-                    "error",
-                    "schema_version",
-                }
-            )
-        )
+        return _summary(record)
 
     def _prune(self) -> None:
         if not self.root.is_dir():
@@ -137,20 +127,7 @@ class RunHistoryStore:
                 record = self._read_record(path)
             except (InvalidRunRecord, RunNotFound, RunHistoryError, OSError):
                 continue
-            summaries.append(
-                RunSummary(
-                    **record.model_dump(
-                        exclude={
-                            "nodes",
-                            "order",
-                            "targets",
-                            "node_labels",
-                            "error",
-                            "schema_version",
-                        }
-                    )
-                )
-            )
+            summaries.append(_summary(record))
         summaries.sort(key=lambda item: (item.started_at, item.run_id), reverse=True)
         return summaries[:limit]
 

@@ -21,7 +21,9 @@ from app.logging_setup import (
     _should_color,
     configure_logging,
     install_access_log_filter,
+    prune_run_logs,
     resolve_log_dir,
+    run_log_path,
 )
 
 
@@ -286,13 +288,13 @@ def test_json_formatter_includes_exception_text() -> None:
 
 
 def test_execution_events_log_structured_context() -> None:
-    from app.main import _log_event
+    from app.logging_setup import log_execution_event
     from app.schemas import EventType, ExecutionEvent
 
     stream = io.StringIO()
     logger = configure_logging("DEBUG", log_format="json", stream=stream)
 
-    _log_event(
+    log_execution_event(
         ExecutionEvent(
             type=EventType.NODE_ERROR,
             node_id="n1",
@@ -318,14 +320,15 @@ def test_execution_events_log_structured_context() -> None:
 def test_per_run_log_captures_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.main import _close_run_log, _log_event, _open_run_log
+    from app.logging_setup import log_execution_event
+    from app.main import _close_run_log, _open_run_log
     from app.schemas import EventType, ExecutionEvent
 
     monkeypatch.setenv("COMPLEXUI_LOG_DIR", str(tmp_path))
     run_logger, handler = _open_run_log("run-test")
     assert run_logger is not None
     assert handler is not None
-    _log_event(
+    log_execution_event(
         ExecutionEvent(
             type=EventType.EXECUTION_STARTED,
             node_id="",
@@ -333,7 +336,7 @@ def test_per_run_log_captures_events(
         ),
         target=run_logger,
     )
-    _log_event(
+    log_execution_event(
         ExecutionEvent(
             type=EventType.EXECUTION_COMPLETED,
             node_id="",
@@ -349,6 +352,53 @@ def test_per_run_log_captures_events(
     assert "run run-test started: 2 node(s)" in content
     assert "run run-test completed in 12.5ms" in content
     assert run_logger.handlers == []
+
+
+def test_open_run_log_counts_current_file_against_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.main import _close_run_log, _open_run_log
+
+    monkeypatch.setenv("COMPLEXUI_LOG_DIR", str(tmp_path))
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for index in range(55):
+        (runs / f"old-{index}.txt").write_text(str(index), encoding="utf-8")
+
+    run_logger, handler = _open_run_log("new-run")
+    try:
+        assert run_logger is not None
+        assert handler is not None
+        assert (runs / "new-run.txt").is_file()
+        assert len(list(runs.glob("*.txt"))) == 50
+    finally:
+        _close_run_log(run_logger, handler)
+
+
+def test_prune_run_logs_keeps_newest_files(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for index in range(4):
+        path = runs / f"run-{index}.txt"
+        path.write_text(str(index), encoding="utf-8")
+        stat = path.stat()
+        os.utime(path, (stat.st_atime, stat.st_mtime + index))
+
+    prune_run_logs(tmp_path, keep=2)
+
+    assert sorted(path.name for path in runs.glob("*.txt")) == [
+        "run-2.txt",
+        "run-3.txt",
+    ]
+
+
+def test_prune_run_logs_rejects_negative_retention(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="keep"):
+        prune_run_logs(tmp_path, keep=-1)
+
+
+def test_run_log_path_stays_under_run_directory(tmp_path: Path) -> None:
+    assert run_log_path(tmp_path, "abc").parent == tmp_path / "runs"
 
 
 def test_should_color_prefers_explicit_value(monkeypatch) -> None:

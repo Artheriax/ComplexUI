@@ -12,15 +12,20 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 __all__ = [
     "DEFAULT_ALLOWED_HOSTS",
+    "DEFAULT_CORS_ORIGINS",
     "ENV_ALLOWED_HOSTS",
+    "ENV_CORS_ORIGINS",
     "MAX_REQUEST_BYTES",
     "RequestSizeLimitMiddleware",
     "configured_allowed_hosts",
+    "configured_cors_origins",
     "origin_is_allowed",
 ]
 
 ENV_ALLOWED_HOSTS = "COMPLEXUI_ALLOWED_HOSTS"
+ENV_CORS_ORIGINS = "COMPLEXUI_CORS_ORIGINS"
 DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "[::1]", "testserver")
+DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
 
@@ -37,6 +42,34 @@ def configured_allowed_hosts() -> list[str]:
         return list(DEFAULT_ALLOWED_HOSTS)
     hosts = [item.strip().lower() for item in raw.split(",") if item.strip()]
     return hosts or list(DEFAULT_ALLOWED_HOSTS)
+
+
+def configured_cors_origins() -> list[str]:
+    """Return browser origins allowed to call the REST API.
+
+    Only the Vite dev server origins are allowed by default. The launcher sets
+    ``COMPLEXUI_CORS_ORIGINS`` to match ``--frontend-port``; set it explicitly
+    when running Vite behind a custom hostname. An empty value disables CORS
+    (useful for same-origin production deployments).
+    """
+    raw = os.environ.get(ENV_CORS_ORIGINS)
+    if raw is None:
+        return list(DEFAULT_CORS_ORIGINS)
+    origins: list[str] = []
+    for item in raw.split(","):
+        value = item.strip().rstrip("/").lower()
+        if not value:
+            continue
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            continue
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            continue
+        if parsed.path or parsed.query or parsed.fragment:
+            continue
+        origins.append(value)
+    return origins
 
 
 def _normalize_host(host: str) -> str:

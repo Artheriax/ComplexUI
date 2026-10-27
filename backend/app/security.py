@@ -8,11 +8,15 @@ the user for the current session via ``POST /api/approve``.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from .storage import normalize_code
 from .user_templates import get_user_template_store
+
+logger = logging.getLogger("complexui.security")
 
 DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
@@ -25,11 +29,6 @@ __all__ = [
     "get_security_registry",
     "normalize_code",
 ]
-
-
-def normalize_code(code: str) -> str:
-    """Normalize line endings so hashes are platform independent."""
-    return code.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def code_hash(code: str) -> str:
@@ -86,7 +85,8 @@ class SecurityRegistry:
     def _load_user_templates(self) -> None:
         try:
             records = get_user_template_store().list_templates()
-        except Exception:
+        except Exception as exc:
+            logger.warning("user templates could not be loaded: %s", exc)
             return
         for record in records:
             if record.name in self._templates_by_name:

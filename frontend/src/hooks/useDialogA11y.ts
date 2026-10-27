@@ -12,6 +12,11 @@ const FOCUSABLE_SELECTOR = [
 
 const dialogStack: symbol[] = [];
 
+/** True while a modal dialog is mounted and trapping focus. */
+export function isDialogOpen(): boolean {
+  return dialogStack.length > 0;
+}
+
 /**
  * Focus management for modal dialogs: initial focus, Tab trapping, Escape to
  * close and focus restoration. Only the topmost dialog handles keyboard input,

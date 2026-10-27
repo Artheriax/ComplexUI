@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import { deleteOutput, fetchOutputs } from "../lib/api";
 import type { OutputSummary } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 interface OutputsStore {
   outputs: OutputSummary[];
@@ -12,10 +13,6 @@ interface OutputsStore {
   loadOutputs: (force?: boolean) => Promise<void>;
   removeOutput: (outputId: string) => Promise<boolean>;
   clearOutputError: () => void;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 export const useOutputsStore = create<OutputsStore>((set, get) => ({

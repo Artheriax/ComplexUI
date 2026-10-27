@@ -81,6 +81,51 @@ def test_ensure_frontend_dependencies_propagates_failure(
     assert launch.ensure_frontend_dependencies("npm", _theme()) == 7
 
 
+def test_ensure_frontend_dependencies_uses_npm_ci_for_fresh_clone(
+    tmp_path: Path, monkeypatch
+) -> None:
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(launch, "FRONTEND_DIR", tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run_streamed(label: str, command: list[str], cwd: Path, env) -> int:
+        calls.append(command)
+        (cwd / "node_modules").mkdir(exist_ok=True)
+        return 0
+
+    monkeypatch.setattr(launch, "run_streamed", fake_run_streamed)
+
+    assert launch.ensure_frontend_dependencies("npm", _theme()) == 0
+    assert calls == [["npm", "ci"]]
+    assert launch._installed_digest() == launch._lockfile_digest()
+
+
+def test_ensure_frontend_dependencies_refreshes_changed_lockfile(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lockfile = tmp_path / "package-lock.json"
+    lockfile.write_text('{"lockfileVersion": 3}\n', encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(launch, "FRONTEND_DIR", tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_run_streamed(label: str, command: list[str], cwd: Path, env) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(launch, "run_streamed", fake_run_streamed)
+
+    assert launch.ensure_frontend_dependencies("npm", _theme()) == 0
+    assert calls == [["npm", "install"]]
+
+    lockfile.write_text('{"lockfileVersion": 3, "changed": true}\n', encoding="utf-8")
+    assert launch.ensure_frontend_dependencies("npm", _theme()) == 0
+    assert calls == [["npm", "install"], ["npm", "install"]]
+
+    assert launch.ensure_frontend_dependencies("npm", _theme()) == 0
+    assert len(calls) == 2
+
+
 def test_non_loopback_host_requires_allow_network() -> None:
     with pytest.raises(SystemExit):
         launch.parse_args(["backend", "--host", "0.0.0.0"])
@@ -203,3 +248,66 @@ def test_frontend_keeps_loopback_binding_by_default() -> None:
     command = launch.build_frontend_command("npm", args)
 
     assert "--host" not in command
+
+
+def test_backend_command_skips_optional_dev_toolchain() -> None:
+    args = launch.parse_args(["backend"])
+
+    command = launch.build_backend_command(args, reload=False)
+
+    assert command[:4] == ["uv", "run", "--no-dev", "python"]
+
+
+def test_custom_ports_propagate_to_vite_and_cors(monkeypatch) -> None:
+    monkeypatch.delenv("COMPLEXUI_CORS_ORIGINS", raising=False)
+    monkeypatch.delenv("COMPLEXUI_BACKEND_URL", raising=False)
+    args = launch.parse_args(
+        ["dev", "--backend-port", "8010", "--frontend-port", "5200"]
+    )
+
+    backend_environment = launch.backend_environment(args, serve_dist=False)
+    frontend_environment = launch.frontend_environment(args)
+
+    assert backend_environment["COMPLEXUI_CORS_ORIGINS"] == (
+        "http://localhost:5200,http://127.0.0.1:5200"
+    )
+    assert frontend_environment["COMPLEXUI_BACKEND_URL"] == (
+        "http://127.0.0.1:8010"
+    )
+
+
+def test_explicit_cors_origins_are_preserved(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_CORS_ORIGINS", "http://ui.local:5200")
+    args = launch.parse_args(["dev", "--frontend-port", "5200"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_CORS_ORIGINS"] == "http://ui.local:5200"
+
+
+def test_frontend_only_mode_keeps_explicit_backend_url(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_BACKEND_URL", "http://gpu-box.local:9000")
+    args = launch.parse_args(["frontend"])
+
+    environment = launch.frontend_environment(args)
+
+    assert environment["COMPLEXUI_BACKEND_URL"] == "http://gpu-box.local:9000"
+
+
+def test_dev_mode_overrides_backend_url_with_flags(monkeypatch) -> None:
+    monkeypatch.setenv("COMPLEXUI_BACKEND_URL", "http://stale.local:9000")
+    args = launch.parse_args(["dev", "--backend-port", "8010"])
+
+    environment = launch.frontend_environment(args)
+
+    assert environment["COMPLEXUI_BACKEND_URL"] == "http://127.0.0.1:8010"
+
+
+def test_node_version_support_matches_vite_engines() -> None:
+    assert launch.node_version_supported((20, 19, 0)) is True
+    assert launch.node_version_supported((20, 18, 0)) is False
+    assert launch.node_version_supported((21, 7, 0)) is False
+    assert launch.node_version_supported((22, 12, 0)) is True
+    assert launch.node_version_supported((24, 1, 0)) is True
+    assert launch.parse_node_version("v22.12.0") == (22, 12, 0)
+    assert launch.parse_node_version("no version") is None

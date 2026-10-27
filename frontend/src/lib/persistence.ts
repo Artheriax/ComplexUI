@@ -846,7 +846,8 @@ export function downloadTextFile(
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(url);
+  // Revoking synchronously can cancel the download in some browsers.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function downloadWorkflow(saved: SavedWorkflow): void {

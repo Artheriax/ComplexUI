@@ -2,6 +2,7 @@ import Editor from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
 
 import { parseCode } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import "../lib/monaco";
 import { useDialogA11y } from "../hooks/useDialogA11y";
 import { useGraphStore } from "../store/useGraphStore";
@@ -46,7 +47,7 @@ export function CodeModal({ nodeId }: CodeModalProps) {
         }
       } catch (error) {
         if (sequenceRef.current === sequence) {
-          setParseError(error instanceof Error ? error.message : String(error));
+          setParseError(errorMessage(error));
         }
       } finally {
         if (sequenceRef.current === sequence) {
@@ -74,7 +75,7 @@ export function CodeModal({ nodeId }: CodeModalProps) {
     setSaving(true);
     void saveNodeCode(nodeId, code, draftSchema)
       .catch((error: unknown) => {
-        setParseError(error instanceof Error ? error.message : String(error));
+        setParseError(errorMessage(error));
       })
       .finally(() => setSaving(false));
   };

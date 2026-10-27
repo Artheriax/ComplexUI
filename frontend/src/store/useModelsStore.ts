@@ -5,6 +5,7 @@ import {
   fetchModels,
 } from "../lib/api";
 import type { ModelSummary, ModelTypeSummary } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 interface ModelsStore {
   types: ModelTypeSummary[];
@@ -23,10 +24,6 @@ interface ModelsStore {
   ensureType: (modelType: string) => Promise<void>;
   hasModel: (modelType: string, path: string) => boolean;
   clearError: () => void;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 const inFlightTypes = new Set<string>();

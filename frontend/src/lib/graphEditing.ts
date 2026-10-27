@@ -1,5 +1,26 @@
-import type { AppEdge, NodeSchema, WidgetParam } from "../types/graph";
+import type {
+  AppEdge,
+  InputSocket,
+  NodeSchema,
+  OutputSocket,
+  WidgetParam,
+} from "../types/graph";
 import { defaultWidgetValues } from "../types/graph";
+
+export function emptyNodeSchema(
+  nodeId: string,
+  inputs: InputSocket[] = [],
+  outputs: OutputSocket[] = [],
+): NodeSchema {
+  return {
+    node_id: nodeId,
+    inputs,
+    widgets: [],
+    outputs,
+    dependencies: [],
+    syntax_errors: [],
+  };
+}
 
 export function widgetValueAllowed(
   widget: WidgetParam,

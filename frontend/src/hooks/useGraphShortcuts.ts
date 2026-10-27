@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { useGraphStore } from "../store/useGraphStore";
 import { isFrameNode, isRunnableNode } from "../types/graph";
+import { isDialogOpen } from "./useDialogA11y";
 
 export function isTextEntryTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
@@ -19,6 +20,9 @@ export function isTextEntryTarget(target: EventTarget | null): boolean {
 export function useGraphShortcuts(): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isDialogOpen()) {
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey)) {
         return;
       }
