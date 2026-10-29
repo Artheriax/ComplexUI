@@ -110,15 +110,17 @@ FastAPI service and node-code toolchain for ComplexUI.
   runs, used for external Save Media preview/copy/open/reveal actions.
 - `app/os_actions.py` — platform open/reveal helpers and the native folder
   dialog (Windows PowerShell, macOS `osascript`, Linux `zenity`/`kdialog`).
-- `app/templates/` — 126 official ML node templates across 11 categories:
+- `app/templates/` — 135 official ML node templates across 11 categories:
   scalar values (int/float/bool/string), data loaders (sklearn sets,
-  synthetic/messy generators, CSV/Parquet/Excel/NDJSON), cleaning, EDA,
-  preprocessing, imbalanced-data samplers, models (scikit-learn +
-  XGBoost/LightGBM), evaluation, the PyTorch tensor path, image generation
-  (SD1.5/SDXL checkpoints plus diffusers component loaders for Stable
-  Diffusion, FLUX 1/2/3, Qwen Image 2.1, Z-Image, Krea 2, Ideogram 4, Fibo 2,
-  Anima and MOSS, CLIP/dual-CLIP, VAE, conditioning, scheduler and sampler
-  nodes), and computer vision (torchvision image
+  synthetic/messy generators, CSV/Parquet/Excel/NDJSON), cleaning, EDA
+  (histogram, scatter, box, bar and correlation heatmap), preprocessing,
+  imbalanced-data samplers, models (scikit-learn + XGBoost/LightGBM) with
+  feature-importance charts, evaluation (confusion matrix and regression
+  diagnostics), the PyTorch tensor path (training-history chart), image
+  generation (SD1.5/SDXL checkpoints plus diffusers component loaders for
+  Stable Diffusion, FLUX 1/2/3, Qwen Image 2.1, Z-Image, Krea 2, Ideogram 4,
+  Fibo 2, Anima and MOSS, CLIP/dual-CLIP, VAE, conditioning, scheduler and
+  sampler nodes), and computer vision (torchvision image
   classification/detection/segmentation, video classification, YOLO
   image/video detection and segmentation, image/video loaders, media preview
   and media saving). Resolution and Empty Latent Image share
@@ -172,7 +174,7 @@ FastAPI service and node-code toolchain for ComplexUI.
   checkpoint remain dequantized. GGUF headers are detected and tagged, but no
   GGUF weight runtime is wired into the loaders yet. Quantized VAEs are out of
   scope.
-- `app/workflows/` — 38 example workflow definitions (JSON) served by the API
+- `app/workflows/` — 39 example workflow definitions (JSON) served by the API
   and validated at load time, including offline vision image/video pipelines
   and local image-generation workflows.
 

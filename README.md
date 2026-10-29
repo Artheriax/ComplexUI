@@ -131,9 +131,13 @@ through NVML. Switching between CPU and CUDA torch builds reinstalls the torch
 family, and large wheel downloads use `COMPLEXUI_INSTALL_TIMEOUT_SECONDS`
 (default 1200).
 
-The bundled catalog ships **126 node templates** (109 production nodes across
-11 categories plus 17 hidden example and legacy aliases) and **38 ready-to-run
-example workflows**. Image batches use `IMAGE_BATCH` sockets: any node with a
+The bundled catalog ships **135 node templates** (118 production nodes across
+11 categories plus 17 hidden example and legacy aliases) and **39 ready-to-run
+example workflows**. EDA, evaluation, model and PyTorch templates render Plotly
+charts (histograms, scatter/box/bar plots, correlation and confusion heatmaps,
+feature importance, regression diagnostics and training history) alongside
+their JSON summaries.
+Image batches use `IMAGE_BATCH` sockets: any node with a
 scalar `IMAGE` input runs once per image, while `MEDIA`/`IMAGE_BATCH` inputs
 receive the whole list. `Load Images From Folder` feeds a bounded folder batch;
 `Resize Image` and `Resize Latent` expose mode-specific dimensions, side,

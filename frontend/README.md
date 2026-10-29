@@ -113,7 +113,9 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - Categorized node library with search and collapsible sections that start
   collapsed (production templates across values, data loaders, cleaning, EDA,
   preprocessing, imbalanced data, models, evaluation, PyTorch and Computer
-  Vision). Example dataset loaders and synthetic test nodes are hidden from the
+  Vision). EDA, evaluation, model and PyTorch nodes render Plotly charts in the
+  output pane.
+  Example dataset loaders and synthetic test nodes are hidden from the
   palette — they power the bundled workflows.
 - **Workflow windows**: the top bar is a tab strip of open workflows. The `+`
   button creates a blank window; opening a saved workflow or bundled template
@@ -121,7 +123,7 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   window keeps its own graph, viewport, undo history, execution state and
   project identity. Open windows are restored from localStorage, and only one
   backend run is allowed at a time (the running tab shows a spinner).
-- **Templates drawer**: 38 ready-to-run examples with collapsible categories;
+- **Templates drawer**: 39 ready-to-run examples with collapsible categories;
   opening one adds a fully wired graph (nodes, widgets and positions) in a new
   window.
 - **Assets drawer**: **Files** tab uploads CSV, TSV, Parquet, Excel, NDJSON,

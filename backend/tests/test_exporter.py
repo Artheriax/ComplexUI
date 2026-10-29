@@ -102,6 +102,37 @@ def test_python_export_is_runnable_and_deduplicates_dependencies(
     assert "ComplexUI workflow completed: 2 node(s)." in completed.stdout
 
 
+def test_python_export_includes_display_helper(tmp_path: Path) -> None:
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="display",
+                code=(
+                    "value = 'visible'\n"
+                    "display(value)\n"
+                    "return value: STRING\n"
+                ),
+            )
+        ]
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+    assert "def display(value: object) -> None:" in exported.content
+    assert 'globals().get("get_ipython")' in exported.content
+
+    completed = _run_exported_script(
+        exported.content, tmp_path / "display.py"
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "visible" in completed.stdout
+
+    notebook = json.loads(
+        export_notebook(graph, generated_at=GENERATED_AT).content
+    )
+    setup = "".join(notebook["cells"][1]["source"])
+    assert "def display(value: object) -> None:" in setup
+
+
 def test_export_keeps_future_imports_before_runtime_helpers() -> None:
     graph = WorkflowGraph(
         nodes=[

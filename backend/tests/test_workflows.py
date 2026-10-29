@@ -43,6 +43,7 @@ EXPECTED_WORKFLOWS = {
     "imagegen_sdxl_lightning",
     "imagegen_z_image",
     "iris_knn_classification",
+    "iris_visual_eda",
     "messy_data_cleaning_pipeline",
     "pca_kmeans_segmentation",
     "smote_imbalanced_pipeline",

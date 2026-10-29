@@ -191,6 +191,31 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "EDA",
         "Class counts, shares and imbalance ratio",
     ),
+    "histogram": TemplateMeta(
+        "Histogram",
+        "EDA",
+        "Distribution of a numeric column with optional grouping",
+    ),
+    "scatter_plot": TemplateMeta(
+        "Scatter Plot",
+        "EDA",
+        "Numeric relationship with colour and size encoding",
+    ),
+    "box_plot": TemplateMeta(
+        "Box Plot",
+        "EDA",
+        "Quartiles and outliers, optionally split by a group",
+    ),
+    "bar_chart": TemplateMeta(
+        "Bar Chart",
+        "EDA",
+        "Category counts or aggregated numeric values",
+    ),
+    "correlation_heatmap": TemplateMeta(
+        "Correlation Heatmap",
+        "EDA",
+        "Heatmap of Pearson or Spearman correlations",
+    ),
     "train_test_split": TemplateMeta(
         "Train / Test Split",
         "Preprocessing",
@@ -336,6 +361,11 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Models",
         "Leaf-wise gradient boosting regressor",
     ),
+    "feature_importance": TemplateMeta(
+        "Feature Importance",
+        "Models",
+        "Rank model importances or linear coefficients",
+    ),
     "evaluate_metrics": TemplateMeta(
         "Evaluate Classifier",
         "Evaluation",
@@ -345,6 +375,16 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "Evaluate Regression",
         "Evaluation",
         "MAE, RMSE and R2 on a test set",
+    ),
+    "regression_diagnostics": TemplateMeta(
+        "Regression Diagnostics",
+        "Evaluation",
+        "Actual-vs-predicted and residual plots with R2",
+    ),
+    "confusion_matrix": TemplateMeta(
+        "Confusion Matrix",
+        "Evaluation",
+        "Annotated class confusion heatmap for a model",
     ),
     "cross_validate_classifier": TemplateMeta(
         "Cross-Validate Classifier",
@@ -361,6 +401,11 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
         "MLP Trainer (Torch)",
         "PyTorch",
         "Train a small MLP, returns loss curve",
+    ),
+    "training_history": TemplateMeta(
+        "Training History",
+        "PyTorch",
+        "Metric curve with optional moving-average smoothing",
     ),
     "evaluate_torch": TemplateMeta(
         "Evaluate Torch Model",

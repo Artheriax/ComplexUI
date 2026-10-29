@@ -1,0 +1,21 @@
+{
+  "name": "iris_visual_eda",
+  "title": "Iris Visual EDA",
+  "category": "Data Quality & EDA",
+  "description": "Load iris and fan out to histogram, scatter, box, bar and correlation charts.",
+  "nodes": [
+    { "id": "load", "template": "load_iris", "position": { "x": 0, "y": 240 } },
+    { "id": "hist", "template": "histogram", "position": { "x": 300, "y": 0 }, "widget_values": { "column": "sepal length (cm)", "bins": 20, "group_by": "target" } },
+    { "id": "scatter", "template": "scatter_plot", "position": { "x": 300, "y": 120 }, "widget_values": { "x": "sepal length (cm)", "y": "petal length (cm)", "color_by": "target" } },
+    { "id": "box", "template": "box_plot", "position": { "x": 300, "y": 240 }, "widget_values": { "value_column": "petal width (cm)", "group_by": "target" } },
+    { "id": "bar", "template": "bar_chart", "position": { "x": 300, "y": 360 }, "widget_values": { "category": "target" } },
+    { "id": "corr", "template": "correlation_heatmap", "position": { "x": 300, "y": 480 }, "widget_values": { "method": "pearson" } }
+  ],
+  "edges": [
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "hist", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "scatter", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "box", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "bar", "target_handle": "df" },
+    { "source_node_id": "load", "source_handle": "df", "target_node_id": "corr", "target_handle": "df" }
+  ]
+}
