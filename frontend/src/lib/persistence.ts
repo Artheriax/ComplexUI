@@ -265,7 +265,7 @@ function validatePosition(
     : fallback;
 }
 
-function validateSockets(value: unknown, label: string): OutputSocket[] {
+function validateSockets(value: unknown, label: string): InputSocket[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -294,6 +294,7 @@ function validateSockets(value: unknown, label: string): OutputSocket[] {
     return {
       name: record.name,
       data_type: record.data_type as SocketType,
+      ...(record.optional === true ? { optional: true } : {}),
     };
   });
 }

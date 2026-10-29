@@ -33,6 +33,9 @@ RUN_RECORD_SCHEMA_VERSION = 1
 RUN_HISTORY_RETENTION = 50
 MAX_RUN_RICH_OUTPUT_BYTES = 5 * 1024 * 1024
 
+ModelSelectKind = Literal["file", "folder", "any"]
+MODEL_SELECT_KINDS: tuple[ModelSelectKind, ...] = ("file", "folder", "any")
+
 
 class SocketType(StrEnum):
     """First-class socket data types (classical ML, tensor and vision paths)."""
@@ -200,6 +203,7 @@ def socket_types_compatible(source: SocketType, target: SocketType) -> bool:
 class InputSocket(BaseModel):
     name: str
     data_type: SocketType
+    optional: bool = False
 
 
 class OutputSocket(BaseModel):
@@ -218,6 +222,9 @@ class WidgetParam(BaseModel):
     default: Any = None
     options: list[Any] = Field(default_factory=list)
     model_type: str | None = None
+    model_select: ModelSelectKind = "file"
+    model_required: bool = False
+    model_include: list[str] = Field(default_factory=list, max_length=8)
     visible_when: list[WidgetCondition] = Field(default_factory=list)
 
 
@@ -356,6 +363,7 @@ class RunNodeRecord(BaseModel):
     previews: dict[str, Any] = Field(default_factory=dict)
     rich_outputs: list[RichOutput] = Field(default_factory=list)
     rich_outputs_truncated: bool = False
+    metrics: dict[str, Any] | None = None
     error: RunErrorRecord | None = None
 
 
@@ -456,7 +464,7 @@ class SystemMetricsResponse(BaseModel):
 
 
 class ModelSummary(BaseModel):
-    """Metadata for one file in the repo-root local model library."""
+    """Metadata for one file or diffusers-style folder in the model library."""
 
     id: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
     name: str = Field(min_length=1, max_length=MAX_DATASET_NAME_CHARS)
@@ -468,6 +476,75 @@ class ModelSummary(BaseModel):
     mtime_ns: int = Field(ge=0)
     fingerprint: str
     executable: bool = False
+    is_directory: bool = False
+    parameter_count: int | None = Field(default=None, ge=0)
+    quantization: QuantizationInfo | None = None
+    memory: ModelMemoryEstimate | None = None
+
+
+class QuantizationInfo(BaseModel):
+    """Pre-quantized checkpoint metadata discovered without loading weights."""
+
+    format: str = "none"
+    label: str = "None"
+    runtime: str = "native"
+    source: str = "none"
+    mode: str = "pre_quantized"
+    variant: str | None = None
+    weight_bits: int | None = Field(default=None, ge=1, le=32)
+    group_size: int | None = Field(default=None, ge=1)
+    block_size: int | None = Field(default=None, ge=1)
+    scale_dtype: str | None = None
+    compute_dtype: str | None = None
+    activation: str | None = None
+    accumulation: str | None = None
+    quantized_layer_count: int | None = Field(default=None, ge=0)
+    excluded_layers: list[str] = Field(default_factory=list, max_length=256)
+    valid: bool = True
+    warnings: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ModelMemoryEstimate(BaseModel):
+    """Approximate memory footprint for one model selection."""
+
+    weights_bytes: int = Field(ge=0)
+    quantization_overhead_bytes: int = Field(default=0, ge=0)
+    resident_estimate_bytes: int = Field(ge=0)
+    offload_ram_estimate_bytes: int = Field(ge=0)
+    confidence: str = "low"
+    assumptions: list[str] = Field(default_factory=list, max_length=16)
+    unknown: bool = False
+
+
+class WorkflowModelEstimate(BaseModel):
+    """One model reference discovered in a workflow graph."""
+
+    node_id: str = Field(min_length=1, max_length=MAX_NODE_IDENTIFIER_CHARS)
+    widget: str = Field(min_length=1, max_length=MAX_NODE_IDENTIFIER_CHARS)
+    value: str = Field(max_length=1024)
+    model_id: str | None = None
+    model_type: str | None = None
+    memory: ModelMemoryEstimate | None = None
+    error: str | None = None
+
+
+class WorkflowMemoryEstimate(BaseModel):
+    """Approximate resident/offloaded memory for every model in a workflow."""
+
+    models: list[WorkflowModelEstimate] = Field(
+        default_factory=list, max_length=MAX_GRAPH_NODES
+    )
+    weights_bytes: int = Field(ge=0)
+    resident_estimate_bytes: int = Field(ge=0)
+    offload_ram_estimate_bytes: int = Field(ge=0)
+    unknown: bool = False
+    warnings: list[str] = Field(default_factory=list, max_length=16)
+
+
+class WorkflowEstimateRequest(BaseModel):
+    """Request body for the server-side workflow memory estimate."""
+
+    workflow: WorkflowGraph
 
 
 class ModelTypeSummary(BaseModel):

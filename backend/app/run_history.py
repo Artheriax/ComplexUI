@@ -223,6 +223,8 @@ class RunRecorder:
             rich, truncated = self._bounded_rich_outputs(event.data.get("rich_outputs"))
             node.rich_outputs = rich
             node.rich_outputs_truncated = truncated
+            metrics = event.data.get("metrics")
+            node.metrics = metrics if isinstance(metrics, dict) else None
             return
         line = event.data.get("line")
         node.status = RunNodeStatus.ERROR
@@ -237,6 +239,8 @@ class RunRecorder:
         rich, truncated = self._bounded_rich_outputs(event.data.get("rich_outputs"))
         node.rich_outputs = rich
         node.rich_outputs_truncated = truncated
+        metrics = event.data.get("metrics")
+        node.metrics = metrics if isinstance(metrics, dict) else None
 
     def _bounded_rich_outputs(self, payload: Any) -> tuple[list[RichOutput], bool]:
         if not isinstance(payload, list) or not payload:

@@ -125,12 +125,50 @@ def test_parse_endpoint_returns_node_schema(client: TestClient) -> None:
             "default": 5,
             "options": [],
             "model_type": None,
+            "model_select": "file",
+            "model_required": False,
+            "model_include": [],
             "visible_when": [],
         }
     ]
     assert body["outputs"][0]["name"] == "k"
     assert body["outputs"][0]["data_type"] == "ANY"
     assert body["syntax_errors"] == []
+
+
+def test_parse_endpoint_returns_optional_input_sockets(client: TestClient) -> None:
+    code = (
+        "from typing import Optional\n"
+        "image1: Optional[IMAGE] = None\n"
+        "image2: IMAGE | None = None\n"
+        "return image1: ANY, image2: ANY\n"
+    )
+
+    response = client.post("/api/parse", json={"code": code})
+
+    assert response.status_code == 200
+    assert response.json()["inputs"] == [
+        {"name": "image1", "data_type": "IMAGE", "optional": True},
+        {"name": "image2", "data_type": "IMAGE", "optional": True},
+    ]
+
+
+def test_parse_endpoint_returns_model_selector_metadata(client: TestClient) -> None:
+    code = (
+        'model: ModelSelector = ModelSelector(\n'
+        '    type="vae", select="any", required=True, include=["diffusion"]\n'
+        ")\n"
+        "return model: STRING\n"
+    )
+
+    response = client.post("/api/parse", json={"code": code})
+
+    assert response.status_code == 200
+    widget = response.json()["widgets"][0]
+    assert widget["model_type"] == "vae"
+    assert widget["model_select"] == "any"
+    assert widget["model_required"] is True
+    assert widget["model_include"] == ["diffusion"]
 
 
 def test_parse_endpoint_returns_literal_choices(client: TestClient) -> None:
@@ -150,6 +188,9 @@ def test_parse_endpoint_returns_literal_choices(client: TestClient) -> None:
             "default": "low",
                 "options": ["low", "medium", "high"],
                 "model_type": None,
+                "model_select": "file",
+                "model_required": False,
+                "model_include": [],
                 "visible_when": [],
             }
         ]
@@ -237,6 +278,30 @@ def test_health_endpoint_reports_readiness(
         "run_timeout_seconds",
         "max_memory_mb",
     }
+    assert set(body["optimizations"]) == {
+        "attention",
+        "precision",
+        "memory",
+        "compile",
+    }
+    assert body["optimizations"]["attention"]["configured"] in {
+        "auto",
+        "sdpa",
+        "sdpa-flash",
+        "sdpa-mem-efficient",
+        "sdpa-cudnn",
+        "sdpa-math",
+        "xformers",
+        "flash-attn",
+        "flash-attn4",
+        "sageattention",
+        "comfy_kitchen_sol",
+        "comfy_kitchen_int8",
+    }
+    formats = body["quantization"]["formats"]
+    assert {"int8_w8a8", "int8_convrot_w4a4", "gguf", "nvfp4"} <= set(formats)
+    assert formats["int8_w8a8"]["runtime"] == "comfy_kitchen"
+    assert formats["int8_w8a8"]["installed"] in {True, False}
 
 
 def test_status_endpoint_reports_idle_and_running(client: TestClient) -> None:

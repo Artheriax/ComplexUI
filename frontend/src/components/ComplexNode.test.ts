@@ -77,6 +77,39 @@ test("renders node progress while running", () => {
   expect(progressbar?.getAttribute("aria-valuenow")).toBe("50");
 });
 
+test("marks optional inputs with a hollow handle and label", () => {
+  useGraphStore.setState({ edges: [] });
+  const optionalData: AppNode["data"] = {
+    ...data,
+    schema: {
+      ...data.schema,
+      inputs: [
+        { name: "required", data_type: "IMAGE" },
+        { name: "image1", data_type: "IMAGE", optional: true },
+      ],
+    },
+  };
+
+  const { container } = render(
+    createElement(
+      ReactFlowProvider,
+      null,
+      createElement(ComplexNode, {
+        ...nodeProps(),
+        data: optionalData,
+      } as NodeProps<AppNode>),
+    ),
+  );
+
+  expect(screen.getByText("optional")).toBeTruthy();
+  const requiredHandle = container.querySelector('[data-handle-id="required"]');
+  const optionalHandle = container.querySelector('[data-handle-id="image1"]');
+  expect(requiredHandle?.className).not.toContain("cu-handle-optional");
+  expect(optionalHandle?.className).toContain("cu-handle-optional");
+  expect(optionalHandle?.getAttribute("data-socket-optional")).toBe("true");
+  expect(optionalHandle?.getAttribute("title")).toContain("Optional input");
+});
+
 test("renders inline rich outputs from the execution state", () => {
   useGraphStore.setState({
     execution: {

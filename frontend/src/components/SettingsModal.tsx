@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { useDialogA11y } from "../hooks/useDialogA11y";
 import { useHealthInfo } from "../hooks/useHealthInfo";
+import type { OptimizationHealth } from "../lib/api";
 import { useGraphStore } from "../store/useGraphStore";
 import type {
   CanvasBackgroundVariant,
@@ -360,12 +361,17 @@ function RuntimeDiagnostics({
     torch: string | null;
     torch_cuda: boolean;
     nvidia: boolean;
+    optimizations?: OptimizationHealth;
   } | null;
   loading: boolean;
   error: string | null;
   backendConnected: boolean;
   onRefresh: () => void;
 }) {
+  const attention = health?.optimizations?.attention;
+  const memory = health?.optimizations?.memory;
+  const precision = health?.optimizations?.precision;
+  const compile = health?.optimizations?.compile;
   const rows = [
     ["Backend", backendConnected ? "connected" : "offline"],
     [
@@ -382,6 +388,18 @@ function RuntimeDiagnostics({
     [
       "NVIDIA GPU",
       health ? (health.nvidia ? "detected" : "not detected") : "—",
+    ],
+    ["Attention", attention?.configured ?? "—"],
+    [
+      "Memory",
+      memory ? `${memory.profile} · ${memory.allocator}` : "—",
+    ],
+    ["Compile", compile?.mode ?? "—"],
+    [
+      "FP16 accum",
+      precision
+        ? (precision.fp16_accumulation ? "experimental" : "off")
+        : "—",
     ],
   ];
   return (

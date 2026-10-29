@@ -125,6 +125,27 @@ scope so they can be implemented without re-discovering the current state.
 
 9. Attention, precision and quantization optimizations
 
+**P0 shipped:** capability-checked PyTorch SDPA backends, storage/compute/
+accumulation tracking, guarded FP16 accumulation, opt-in `torch.compile` with
+eager fallback, channels-last, launcher flags and diagnostics. **P1 attention
+shipped:** optional SageAttention 2/2++, FlashAttention 2/4, xFormers and Comfy
+Kitchen INT8/SOL adapters with package/device gating and safe SDPA fallback,
+plus an attention benchmark mode. The launcher backend is the global default and
+`Attention Backend` applies a per-MODEL override only during the diffusion
+forward. SageAttention 2.2 post6 + triton-windows was validated end-to-end on an
+RTX 5080 (sm120) SDXL workflow. **P1 quantization metadata shipped:** Comfy
+`.comfy_quant`, native GGUF headers, sidecar JSON, legacy scaled FP8 and the
+format registry feed Models Library tags, `/api/health` and static memory
+estimates. **Pre-quantized component loading shipped:** diffusers/transformers
+component folders load Comfy `int8_tensorwise`, `convrot_w4a4`, FP8, MXFP8 and
+NVFP4 weights through `comfy_kitchen`; INT8/ConvRot use native kernels while the
+other formats keep quantized storage with a dequantized linear fallback. Single-
+file SD1.5/SDXL quantized checkpoints are converted to diffusers and the UNet is
+re-patched with native INT8/ConvRot weights; CLIP components stay dequantized.
+First-class GGUF weight loading and native single-file CLIP patching remain
+deferred; quantized VAEs are explicitly out of scope. CUDA Graphs and GGUF
+weight loading remain P2.
+
 9.1 Attention backend registry
 
 - Replace the fixed attention selector with a capability-based registry.
@@ -150,6 +171,92 @@ scope so they can be implemented without re-discovering the current state.
 - Add mocked contract tests and small local fixtures; avoid model downloads in the test suite.
 - Document expected speed, VRAM, quality and compatibility trade-offs.
 
+**Remaining quantized work (as of 2026-10-29):**
+
+- [ ] GGUF weight loading. Metadata detection, variant tagging and capability
+  gating are done. Still needed: read GGUF tensor types, dequantize with the
+  `gguf` runtime, restore `comfy.gguf.orig_shape.*` tensors, choose a component
+  config per architecture, and test against synthetic GGUF fixtures. No real
+  GGUF checkpoint is available in the repo.
+- [ ] Native FP8, MXFP8 and NVFP4 linear kernels. These formats currently keep
+  packed storage but fall back to dequantization for each linear forward.
+  Either wire Comfy Kitchen `scaled_mm_*`/FP8 kernels with activation
+  quantization, or explicitly keep and document the slower fallback.
+- [ ] Native single-file CLIP/CLIP-Dual patching. Single-file SD1.5/SDXL UNets
+  are re-patched with native INT8/ConvRot weights, but CLIP components from the
+  same checkpoint remain dequantized. Diffusers component-folder CLIP already
+  supports native INT8/ConvRot.
+- [ ] `input_scale` consumption for FP8/NVFP4. `pre_quant_scale` is applied;
+  calibrated `input_scale` values are currently ignored with a warning because
+  the kernels use dynamic activation scaling.
+- [ ] Single-file compatibility for architectures other than SD1.5/SDXL
+  (FLUX, SD3/3.5, Qwen Image, etc.). Those paths currently require diffusers
+  component folders.
+- [ ] Real quantized checkpoint validation. All current tests are synthetic
+  contract tests; no actual INT8/ConvRot/FP8/NVFP4/GGUF checkpoint has been
+  loaded end-to-end.
+- [ ] Workflow memory-estimate UI. The server-side `POST /api/estimate/workflow`
+  exists, but no canvas placement or client surface has been chosen.
+- [ ] CUDA Graphs and the full benchmark suite. `torch.compile` modes including
+  `max-autotune-no-cudagraphs` are available; explicit graph capture and the
+  §7 benchmark protocol remain deferred.
+- [ ] Optional: quantized VAE loading is explicitly **not required** and should
+  stay out of scope.
+
+**Implementation map for other agents:**
+
+| Area | Primary code | Contract tests |
+| --- | --- | --- |
+| Metadata, format registry, gates | `backend/app/quantization.py` | `backend/tests/test_quantization.py` |
+| Component-folder quantized loading | `backend/app/quantized_loading.py` | `backend/tests/test_quantized_loading.py` |
+| Single-file conversion and native UNet patch | `backend/app/single_file_quantization.py` | `backend/tests/test_single_file_quantization.py` |
+| Loader nodes | `backend/app/templates/load_checkpoint.py`, `load_diffusion_model.py`, `load_clip.py`, `load_clip_dual.py` | `test_diffusion_nodes.py`, `test_component_loaders.py` |
+| Model/workflow estimates | `backend/app/memory_estimate.py`, `workflow_estimate.py`, `/api/estimate/workflow` in `main.py` | `test_memory_estimate.py` |
+| Attention registry and scoped overrides | `backend/app/attention_dispatch.py`, `optimizations.py`, `templates/attention_backend.py` | `test_attention_runtime.py`, `test_optimizations.py` |
+| Compile/launch flags | `backend/launch.py`, `backend/app/optimizations.py` | `test_launch.py`, `test_compile_runtime.py` |
+
+**Reference sources:**
+
+- Comfy quantization format:
+  https://github.com/Comfy-Org/ComfyUI/blob/master/QUANTIZATION.md
+- Comfy quant format registry and kernels:
+  https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/quant_ops.py
+- Comfy mixed-precision module loading:
+  https://github.com/Comfy-Org/ComfyUI/blob/master/comfy/ops.py
+- Comfy Kitchen runtime (INT8/ConvRot/FP8/MXFP8/NVFP4 layouts, SOL/INT8 attention):
+  https://github.com/Comfy-Org/comfy-kitchen
+- City96 GGUF loader and conversion tools:
+  https://github.com/city96/ComfyUI-GGUF and
+  https://github.com/city96/ComfyUI-GGUF/blob/main/tools/convert.py
+- GGUF Python reader/dequantizer: https://pypi.org/project/gguf/
+  and GGUF spec: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md
+- Diffusers single-file loading:
+  https://huggingface.co/docs/diffusers/main/en/api/loaders/single_file
+  and key conversion helpers:
+  https://github.com/huggingface/diffusers/blob/main/src/diffusers/loaders/single_file_utils.py
+- torchao quantization overview:
+  https://docs.pytorch.org/ao/stable/contributing/quantization_overview.html
+- SageAttention: https://github.com/thu-ml/SageAttention
+- FlashAttention: https://github.com/Dao-AILab/flash-attention
+- xFormers: https://github.com/facebookresearch/xformers
+- PyTorch SDPA:
+  https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+- PyTorch `torch.compile` and CUDA graphs:
+  https://pytorch.org/docs/stable/generated/torch.compile.html and
+  https://pytorch.org/docs/stable/torch.compiler_cudagraph_trees.html
+- PyTorch CUDA allocator configuration:
+  https://pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf
+
+**Validated local environment (2026-10-29):** torch `2.14.1+cu130`,
+diffusers `0.42.1`, transformers `5.20.2`, comfy-kitchen `0.2.40`,
+torchao `0.18.0`, gguf `0.19.0`, SageAttention
+`2.2.0+cu130torch2.10.0andhigher.post6`, triton-windows `3.9.0.post30`.
+`flash-attn-4==4.0.0b37` resolves and imports metadata, but `flash_attn.cute`
+is unavailable on Windows because its CuTeDSL path imports `fcntl`; treat FA4
+as Linux-only until that changes. Optional packages are installed in the
+backend venv only and are not in `pyproject.toml`; `uv sync --exact` may remove
+them.
+
 9.3 Compilation and execution acceleration
 
 - Investigate optional `torch.compile`, CUDA Graphs and channels-last memory format where supported.
@@ -159,6 +266,14 @@ scope so they can be implemented without re-discovering the current state.
 - Keep eager execution available as the compatibility fallback.
 
 10. Memory management, offloading and OOM handling
+
+**P0 shipped:** model-level offload, independent VAE slicing/tiling with
+auto-tiled retry, CUDA allocator launch configuration, node-boundary OOM cleanup
+and actionable errors, per-node VRAM/CPU metrics and run-history display.
+**P1 shipped:** sequential/leaf, block and group offload through diffusers hooks
+with streamed prefetch and pinned host buffers, plus `low_cpu_mem_usage` loader
+hints. Full meta-device/sharded loading and a custom faulting allocator remain
+P2.
 
 - Provide model-level, sequential and group/block offloading where supported by the architecture and runtime.
 - Expose VAE slicing and tiling independently; preserve existing VAE tiling behavior.

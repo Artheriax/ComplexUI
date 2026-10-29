@@ -32,9 +32,12 @@ from io import StringIO
 from typing import Any
 
 from .schemas import (
+    MODEL_SELECT_KINDS,
     InputSocket,
+    ModelSelectKind,
     NodeSchema,
     OutputSocket,
+    SocketType,
     SyntaxErrorInfo,
     WidgetCondition,
     WidgetParam,
@@ -509,7 +512,15 @@ def _is_model_selector_annotation(annotation: ast.expr) -> bool:
     return text in {"ModelSelector", "complexui.ModelSelector"}
 
 
-def _model_selector_type(value: ast.expr | None) -> str:
+@dataclass(frozen=True, slots=True)
+class _ModelSelectorOptions:
+    model_type: str
+    select: ModelSelectKind
+    required: bool
+    include: tuple[str, ...] = ()
+
+
+def _model_selector_type(value: ast.expr | None) -> _ModelSelectorOptions:
     if not isinstance(value, ast.Call):
         raise ValueError(
             "ModelSelector widgets must use "
@@ -525,13 +536,83 @@ def _model_selector_type(value: ast.expr | None) -> str:
     if name != "ModelSelector":
         raise ValueError("ModelSelector default must call ModelSelector(type=...)")
     if value.args:
-        raise ValueError("ModelSelector accepts only a type keyword argument")
+        raise ValueError(
+            "ModelSelector accepts only type, select, required and include "
+            "keyword arguments"
+        )
     selected: ast.expr | None = None
+    select: ModelSelectKind = "file"
+    required = False
+    include: tuple[str, ...] = ()
+    seen: set[str] = set()
     for keyword_item in value.keywords:
+        if keyword_item.arg is None:
+            raise ValueError("ModelSelector does not accept **kwargs")
+        if keyword_item.arg in seen:
+            raise ValueError(
+                f"ModelSelector received duplicate '{keyword_item.arg}' argument"
+            )
+        seen.add(keyword_item.arg)
         if keyword_item.arg == "type":
             selected = keyword_item.value
+        elif keyword_item.arg in {"select", "required", "include"}:
+            try:
+                option = ast.literal_eval(keyword_item.value)
+            except (ValueError, TypeError, SyntaxError) as exc:
+                raise ValueError(
+                    f"ModelSelector {keyword_item.arg} must be a literal value"
+                ) from exc
+            if keyword_item.arg == "select":
+                if option == "file":
+                    select = "file"
+                elif option == "folder":
+                    select = "folder"
+                elif option == "any":
+                    select = "any"
+                else:
+                    raise ValueError(
+                        "ModelSelector select must be one of "
+                        f"{list(MODEL_SELECT_KINDS)!r}"
+                    )
+            elif keyword_item.arg == "required":
+                if not isinstance(option, bool):
+                    raise ValueError(
+                        "ModelSelector required must be a boolean literal"
+                    )
+                required = option
+            else:
+                items = (
+                    [option]
+                    if isinstance(option, str)
+                    else list(option)
+                    if isinstance(option, (list, tuple))
+                    else []
+                )
+                if not items or len(items) > 8:
+                    raise ValueError(
+                        "ModelSelector include must list 1-8 model type names"
+                    )
+                cleaned_items: list[str] = []
+                for item in items:
+                    if not isinstance(item, str) or not _MODEL_TYPE_PATTERN.fullmatch(
+                        item.strip()
+                    ):
+                        raise ValueError(
+                            "ModelSelector include entries must match "
+                            "[A-Za-z0-9][A-Za-z0-9._-]{0,63}"
+                        )
+                    cleaned_item = item.strip()
+                    if cleaned_item in cleaned_items:
+                        raise ValueError(
+                            f"ModelSelector include repeats '{cleaned_item}'"
+                        )
+                    cleaned_items.append(cleaned_item)
+                include = tuple(cleaned_items)
         else:
-            raise ValueError("ModelSelector accepts only a type keyword argument")
+            raise ValueError(
+                "ModelSelector accepts only type, select, required and include "
+                "keyword arguments"
+            )
     if selected is None:
         raise ValueError("ModelSelector requires a type=... argument")
     try:
@@ -545,7 +626,61 @@ def _model_selector_type(value: ast.expr | None) -> str:
         raise ValueError(
             "ModelSelector type must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}"
         )
-    return cleaned
+    if cleaned in include:
+        raise ValueError("ModelSelector include must not repeat its type")
+    return _ModelSelectorOptions(
+        model_type=cleaned,
+        select=select,
+        required=required,
+        include=include,
+    )
+
+
+def _is_none_literal(node: ast.expr | None) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _optional_socket_annotation(annotation: ast.expr) -> tuple[ast.expr, bool]:
+    """Unwrap ``Optional[TYPE]`` / ``TYPE | None`` and report optionality."""
+    candidate = annotation
+    if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+        try:
+            candidate = ast.parse(candidate.value, mode="eval").body
+        except SyntaxError:
+            return annotation, False
+    if isinstance(candidate, ast.Subscript):
+        base = candidate.value
+        base_name = (
+            base.id
+            if isinstance(base, ast.Name)
+            else base.attr
+            if isinstance(base, ast.Attribute)
+            else ""
+        )
+        if base_name == "Optional":
+            if isinstance(candidate.slice, ast.Tuple):
+                raise ValueError(
+                    "Optional input sockets must wrap exactly one socket type"
+                )
+            return candidate.slice, True
+    if isinstance(candidate, ast.BinOp) and isinstance(candidate.op, ast.BitOr):
+        left_none = _is_none_literal(candidate.left)
+        right_none = _is_none_literal(candidate.right)
+        if left_none and right_none:
+            raise ValueError("Optional input sockets must wrap exactly one socket type")
+        if left_none:
+            return candidate.right, True
+        if right_none:
+            return candidate.left, True
+        raise ValueError(
+            "Socket unions must use Optional[TYPE] or TYPE | None"
+        )
+    return annotation, False
+
+
+def _input_socket_type(annotation: ast.expr) -> tuple[SocketType, bool]:
+    inner, optional = _optional_socket_annotation(annotation)
+    return normalize_socket_type(_annotation_text(inner)), optional
 
 
 def _call_target_name(value: ast.expr) -> str:
@@ -724,9 +859,42 @@ def _extract_bindings(source: str) -> _Bindings:
                 )
             )
             continue
-        type_text = _annotation_text(node.annotation)
         model_selector = _is_model_selector_annotation(node.annotation)
+        try:
+            socket_type, optional_socket = _input_socket_type(node.annotation)
+        except ValueError as exc:
+            errors.append(
+                SyntaxErrorInfo(
+                    line=node.lineno,
+                    column=node.col_offset,
+                    message=str(exc),
+                )
+            )
+            continue
+        if optional_socket:
+            if not _is_none_literal(node.value):
+                errors.append(
+                    SyntaxErrorInfo(
+                        line=node.lineno,
+                        column=node.col_offset,
+                        message=(
+                            f"Optional input socket '{name}' must declare "
+                            "'= None' as its default"
+                        ),
+                    )
+                )
+                continue
+            seen[name] = "input socket"
+            inputs.append(
+                InputSocket(
+                    name=name,
+                    data_type=socket_type,
+                    optional=True,
+                )
+            )
+            continue
         if node.value is None:
+            type_text = _annotation_text(node.annotation)
             if model_selector:
                 errors.append(
                     SyntaxErrorInfo(
@@ -746,7 +914,7 @@ def _extract_bindings(source: str) -> _Bindings:
             continue
         if model_selector:
             try:
-                model_type = _model_selector_type(node.value)
+                selector = _model_selector_type(node.value)
             except ValueError as exc:
                 errors.append(
                     SyntaxErrorInfo(
@@ -763,10 +931,14 @@ def _extract_bindings(source: str) -> _Bindings:
                     name=name,
                     data_type="ModelSelector",
                     default="",
-                    model_type=model_type,
+                    model_type=selector.model_type,
+                    model_select=selector.select,
+                    model_required=selector.required,
+                    model_include=list(selector.include),
                 )
             )
             continue
+        type_text = _annotation_text(node.annotation)
         options: list[Any] = []
         literal = _literal_subscript(node.annotation)
         if literal is not None:
@@ -918,7 +1090,11 @@ def _wrap(
     ]
 
     func_name = f"__node_exec_{_sanitize_name(node_id)}"
-    params = [socket.name for socket in inputs] + [
+    required_inputs = [socket.name for socket in inputs if not socket.optional]
+    optional_inputs = [
+        f"{socket.name}=None" for socket in inputs if socket.optional
+    ]
+    params = required_inputs + optional_inputs + [
         f"{widget.name}={widget.default!r}" for widget in widgets
     ]
     lines: list[str] = []

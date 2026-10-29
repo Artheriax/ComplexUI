@@ -450,7 +450,7 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
     "load_image": TemplateMeta(
         "Load Image",
         "Computer Vision",
-        "Read a workspace image into an RGB image",
+        "Read a workspace image into RGB plus an alpha/luminance mask",
     ),
     "load_images_from_folder": TemplateMeta(
         "Load Images From Folder",
@@ -487,12 +487,62 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
     "load_checkpoint": TemplateMeta(
         "Load Checkpoint",
         "Image Generation",
-        "Load a local SD1.5 or SDXL SafeTensors checkpoint",
+        "Load a local SD1.5 or SDXL SafeTensors checkpoint and adapter metadata",
     ),
     "clip_text_encode": TemplateMeta(
         "CLIP Text Encode",
         "Image Generation",
         "Encode a prompt with CLIP; SDXL adds pooled embeddings",
+    ),
+    "conditioning_zero_out": TemplateMeta(
+        "Conditioning Zero Out",
+        "Image Generation",
+        "Zero conditioning tensors for unconditional guidance",
+    ),
+    "encode_reference_images": TemplateMeta(
+        "Encode Reference Images",
+        "Image Generation",
+        "Encode up to ten numbered reference images into conditioning for editing",
+    ),
+    "model_guidance": TemplateMeta(
+        "Model Guidance",
+        "Image Generation",
+        "Attach a guidance embedding scale to a diffusion model",
+    ),
+    "attention_backend": TemplateMeta(
+        "Attention Backend",
+        "Image Generation",
+        "Select a capability-checked PyTorch SDPA attention backend",
+    ),
+    "model_precision": TemplateMeta(
+        "Model Precision",
+        "Image Generation",
+        "Set diffusion compute dtype and accumulation mode",
+    ),
+    "compile_model": TemplateMeta(
+        "Compile Model",
+        "Image Generation",
+        "Opt in to torch.compile with eager fallback",
+    ),
+    "model_memory": TemplateMeta(
+        "Model Memory",
+        "Image Generation",
+        "Set residency, offload, attention slicing and channels-last",
+    ),
+    "moss_guidance": TemplateMeta(
+        "MOSS Guidance",
+        "Image Generation",
+        "Configure MOSS Image negative skip layers and skip-layer guidance",
+    ),
+    "inpaint_conditioner": TemplateMeta(
+        "Inpaint Conditioner",
+        "Image Generation",
+        "Encode pixels plus a mask or segmentation masks into inpainting conditioning",
+    ),
+    "make_mask": TemplateMeta(
+        "Make Mask",
+        "Image Generation",
+        "Generate a feathered rectangular or elliptical mask",
     ),
     "empty_latent_image": TemplateMeta(
         "Empty Latent Image",
@@ -552,17 +602,22 @@ TEMPLATE_META: dict[str, TemplateMeta] = {
     "load_diffusion_model": TemplateMeta(
         "Load Diffusion Model",
         "Image Generation",
-        "Load a standalone diffusers UNet component",
+        "Load a diffusers repo or component with architecture metadata",
     ),
     "load_clip": TemplateMeta(
         "Load CLIP",
         "Image Generation",
-        "Load a CLIP component folder with tokenizer files",
+        "Load a CLIP/T5/Qwen/Mistral text-encoder bundle",
+    ),
+    "load_clip_dual": TemplateMeta(
+        "Load CLIP (Dual)",
+        "Image Generation",
+        "Combine CLIP-L + CLIP-G or CLIP + T5 component loaders",
     ),
     "load_vae": TemplateMeta(
         "Load VAE",
         "Image Generation",
-        "Load a standalone diffusers VAE component",
+        "Load a diffusers VAE with family-aware latent encoding",
     ),
     "vae_encode": TemplateMeta(
         "VAE Encode",

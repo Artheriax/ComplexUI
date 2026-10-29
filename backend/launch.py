@@ -34,6 +34,8 @@ import webbrowser
 from pathlib import Path
 from typing import IO
 
+from app.optimizations import allocator_conf
+
 BACKEND_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BACKEND_DIR.parent
 FRONTEND_DIR = REPO_ROOT / "frontend"
@@ -199,6 +201,60 @@ def _default_accelerator() -> str:
     return value if value in {"auto", "cpu", "cuda"} else "auto"
 
 
+def _default_attention() -> str:
+    value = os.environ.get("COMPLEXUI_ATTENTION", "auto").strip().lower()
+    allowed = {
+        "auto",
+        "sdpa",
+        "sdpa-flash",
+        "sdpa-mem-efficient",
+        "sdpa-cudnn",
+        "sdpa-math",
+        "xformers",
+        "flash-attn",
+        "flash-attn4",
+        "sageattention",
+        "comfy_kitchen_sol",
+        "comfy_kitchen_int8",
+    }
+    return value if value in allowed else "auto"
+
+
+def _default_memory_profile() -> str:
+    value = os.environ.get("COMPLEXUI_MEMORY_PROFILE", "auto").strip().lower()
+    return value if value in {"auto", "low", "balanced", "resident"} else "auto"
+
+
+def _default_compile_mode() -> str:
+    value = os.environ.get("COMPLEXUI_TORCH_COMPILE", "off").strip().lower()
+    allowed = {
+        "off",
+        "auto",
+        "default",
+        "reduce-overhead",
+        "max-autotune",
+        "max-autotune-no-cudagraphs",
+    }
+    return value if value in allowed else "off"
+
+
+def _default_allocator() -> str:
+    value = os.environ.get("COMPLEXUI_CUDA_ALLOCATOR", "native").strip()
+    if value.lower() in {"native", "cudamallocasync"}:
+        return "cudaMallocAsync" if value.lower() == "cudamallocasync" else "native"
+    return "native"
+
+
+def _default_compile_cache_dir() -> Path:
+    configured = os.environ.get("COMPLEXUI_COMPILE_CACHE_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    workspace = Path(
+        os.environ.get("COMPLEXUI_WORKSPACE", str(BACKEND_DIR / "workspace"))
+    ).expanduser()
+    return workspace / "cache" / "torchinductor"
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="launch.py",
@@ -234,6 +290,81 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--attention-backend",
+        choices=(
+            "auto",
+            "sdpa",
+            "sdpa-flash",
+            "sdpa-mem-efficient",
+            "sdpa-cudnn",
+            "sdpa-math",
+            "xformers",
+            "flash-attn",
+            "flash-attn4",
+            "sageattention",
+            "comfy_kitchen_sol",
+            "comfy_kitchen_int8",
+        ),
+        default=_default_attention(),
+        help=(
+            "attention backend for diffusion models (default: auto); optional "
+            "kernels must be installed separately"
+        ),
+    )
+    parser.add_argument(
+        "--attention-benchmark",
+        action="store_true",
+        default=os.environ.get("COMPLEXUI_ATTENTION_BENCHMARK", "").lower()
+        in {"1", "true", "on", "yes"},
+        help="benchmark available attention backends once and pick the fastest",
+    )
+    parser.add_argument(
+        "--memory-profile",
+        choices=("auto", "low", "balanced", "resident"),
+        default=_default_memory_profile(),
+        help="model residency profile (default: auto; auto follows VRAM tiers)",
+    )
+    parser.add_argument(
+        "--allocator",
+        choices=("native", "cudaMallocAsync"),
+        default=_default_allocator(),
+        help="CUDA caching allocator backend (default: native)",
+    )
+    parser.add_argument(
+        "--expandable-segments",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable expandable CUDA memory segments (default: Linux only)",
+    )
+    parser.add_argument(
+        "--pytorch-alloc-conf",
+        default=None,
+        help="raw PYTORCH_ALLOC_CONF value for the native allocator",
+    )
+    parser.add_argument(
+        "--torch-compile",
+        choices=(
+            "off",
+            "auto",
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ),
+        default=_default_compile_mode(),
+        help="opt-in torch.compile mode for diffusion models (default: off)",
+    )
+    parser.add_argument(
+        "--compile-cache-dir",
+        default=str(_default_compile_cache_dir()),
+        help="stable torch.compile cache directory (default: <workspace>/cache/torchinductor)",
+    )
+    parser.add_argument(
+        "--experimental-fp16-accumulation",
+        action="store_true",
+        help="unlock the experimental FP16-accumulation precision option",
+    )
+    parser.add_argument(
         "--log-level",
         default=os.environ.get("COMPLEXUI_LOG_LEVEL", "INFO"),
         help="backend console log level (default INFO)",
@@ -266,6 +397,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         value = getattr(args, flag)
         if not 1 <= value <= 65535:
             parser.error(f"--{flag.replace('_', '-')} must be 1-65535")
+    if args.allocator == "cudaMallocAsync" and (
+        args.expandable_segments is True or args.pytorch_alloc_conf
+    ):
+        parser.error(
+            "--allocator cudaMallocAsync cannot be combined with "
+            "--expandable-segments or --pytorch-alloc-conf; cudaMallocAsync "
+            "ignores native allocator options"
+        )
     if not is_loopback_host(args.host) and not args.allow_network:
         parser.error(
             f"--host {args.host} exposes the API beyond loopback; "
@@ -386,7 +525,30 @@ def backend_environment(args: argparse.Namespace, *, serve_dist: bool) -> dict[s
     environment["COMPLEXUI_LOG_LEVEL"] = args.log_level
     environment["COMPLEXUI_LOG_FORMAT"] = args.log_format
     environment["COMPLEXUI_ACCELERATOR"] = args.accelerator
+    environment["COMPLEXUI_ATTENTION"] = args.attention_backend
+    if args.attention_benchmark:
+        environment["COMPLEXUI_ATTENTION_BENCHMARK"] = "1"
+    environment["COMPLEXUI_MEMORY_PROFILE"] = args.memory_profile
+    environment["COMPLEXUI_CUDA_ALLOCATOR"] = args.allocator
+    environment["COMPLEXUI_TORCH_COMPILE"] = args.torch_compile
+    if args.experimental_fp16_accumulation:
+        environment["COMPLEXUI_EXPERIMENTAL_FP16_ACCUM"] = "1"
+    compile_cache = Path(args.compile_cache_dir).expanduser()
+    environment["COMPLEXUI_COMPILE_CACHE_DIR"] = str(compile_cache)
+    environment["TORCHINDUCTOR_CACHE_DIR"] = str(compile_cache)
+    environment["TRITON_CACHE_DIR"] = str(compile_cache / "triton")
     environment.setdefault("COMPLEXUI_CORS_ORIGINS", ",".join(frontend_origins(args)))
+    expandable = args.expandable_segments
+    if expandable is None:
+        expandable = sys.platform.startswith("linux")
+    conf = allocator_conf(
+        allocator=args.allocator,
+        expandable_segments=bool(expandable),
+        raw_conf=args.pytorch_alloc_conf,
+        environment=environment,
+    )
+    if conf:
+        environment["PYTORCH_ALLOC_CONF"] = conf
     if args.no_log_file:
         environment["COMPLEXUI_LOG_DIR"] = "0"
     elif args.log_dir:
@@ -752,6 +914,21 @@ def print_banner(
         f"{limits.get('run_timeout_seconds', '?')}s · memory "
         f"{limits.get('max_memory_mb', '?')} MiB"
     )
+    optimizations = health.get("optimizations")
+    optimizations = optimizations if isinstance(optimizations, dict) else {}
+    attention = optimizations.get("attention")
+    attention = attention if isinstance(attention, dict) else {}
+    memory = optimizations.get("memory")
+    memory = memory if isinstance(memory, dict) else {}
+    compile_info = optimizations.get("compile")
+    compile_info = compile_info if isinstance(compile_info, dict) else {}
+    print(
+        f"{theme.paint('performance', DIM)} attention "
+        f"{attention.get('configured', args.attention_backend)} · memory "
+        f"{memory.get('profile', args.memory_profile)} · allocator "
+        f"{memory.get('allocator', args.allocator)} · compile "
+        f"{compile_info.get('mode', args.torch_compile)}"
+    )
     print(
         f"{theme.paint('logs', DIM)} console {args.log_level.upper()}/"
         f"{args.log_format} · files "
@@ -773,6 +950,10 @@ def launch_servers(
     processes: dict[str, subprocess.Popen] = {}
     console = ConsoleRenderer()
     theme.console = console
+    try:
+        Path(args.compile_cache_dir).expanduser().mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        theme.warn(f"could not create compile cache directory: {exc}")
     theme.info(
         f"mode={'dev' if with_frontend else ('prod' if serve_dist else 'backend')} "
         f"backend=http://{args.host}:{args.backend_port} "

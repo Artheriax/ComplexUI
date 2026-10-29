@@ -35,6 +35,14 @@ function formatDuration(durationMs: number | null): string {
   return `${(durationMs / 1_000).toFixed(2)} s`;
 }
 
+function formatMemory(bytes: number): string {
+  const gib = bytes / (1024 ** 3);
+  if (gib >= 1) {
+    return `${gib.toFixed(2)} GiB`;
+  }
+  return `${Math.round(bytes / (1024 ** 2))} MiB`;
+}
+
 const runStatusClass: Record<string, string> = {
   completed: "bg-emerald-950 text-emerald-300",
   failed: "bg-red-950 text-red-300",
@@ -84,6 +92,8 @@ function RunErrorCard({
 function RunNodeCard({ node }: { node: RunNodeRecord }) {
   const hasOutputs =
     Object.keys(node.previews).length > 0 || node.rich_outputs.length > 0;
+  const peakValue = node.metrics?.cuda_peak_allocated_bytes;
+  const peakVram = typeof peakValue === "number" ? peakValue : null;
 
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-2.5">
@@ -114,6 +124,11 @@ function RunNodeCard({ node }: { node: RunNodeRecord }) {
         {node.cached && (
           <span className="rounded bg-zinc-800 px-1 py-px text-zinc-400">
             cached
+          </span>
+        )}
+        {peakVram !== null && (
+          <span className="rounded bg-zinc-800 px-1 py-px text-zinc-400">
+            VRAM {formatMemory(peakVram)}
           </span>
         )}
       </div>

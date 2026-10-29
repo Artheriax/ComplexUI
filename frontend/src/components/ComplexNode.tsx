@@ -146,6 +146,7 @@ function SocketHandle({
   id,
   type,
   occupied = false,
+  optional = false,
   bundleEdgeIds = [],
 }: {
   kind: "source" | "target";
@@ -153,6 +154,7 @@ function SocketHandle({
   id: string;
   type: SocketType;
   occupied?: boolean;
+  optional?: boolean;
   bundleEdgeIds?: string[];
 }) {
   const guide = useConnectionGuideStore((state) => state.guide);
@@ -203,7 +205,8 @@ function SocketHandle({
       style={socketStyle(type)}
       className={`nokey ${handleGuideClass(state)}${
         type === "IMAGE_BATCH" ? " cu-handle-batch" : ""
-      }`}
+      }${optional && !occupied ? " cu-handle-optional" : ""}`}
+      title={optional ? "Optional input — connect or leave empty" : undefined}
       onPointerDownCapture={
         kind === "target" && occupied
           ? (event) => startEdgeRetarget(event, nodeId, id)
@@ -223,6 +226,7 @@ function SocketHandle({
       data-node-id={nodeId}
       data-handle-id={id}
       data-socket-type={type}
+      data-socket-optional={optional ? "true" : undefined}
       data-bundle-count={bundleEdgeIds.length}
       data-node-editor-ignore="true"
     />
@@ -530,8 +534,23 @@ export function ComplexNode({ id, data, selected, width, height }: NodeProps<App
                 id={socket.name}
                 type={socket.data_type}
                 occupied={connectedTargets.has(socket.name)}
+                optional={socket.optional === true}
               />
-              <span className="text-xs text-zinc-300">{socket.name}</span>
+              <span
+                className="text-xs text-zinc-300"
+                title={
+                  socket.optional
+                    ? "Optional input — connect or leave empty"
+                    : undefined
+                }
+              >
+                {socket.name}
+              </span>
+              {socket.optional && (
+                <span className="rounded bg-zinc-800/70 px-1 py-px text-[8px] uppercase tracking-wide text-zinc-500">
+                  optional
+                </span>
+              )}
               <span className="ml-auto">
                 <SocketChip type={socket.data_type} />
               </span>
@@ -701,40 +720,60 @@ function PortRows({
 }) {
   return (
     <div className="py-0.5">
-      {sockets.map((socket) => (
-        <div
-          key={socket.name}
-          className={`relative flex items-center gap-2 py-1 ${
-            direction === "input" ? "pl-3 pr-2" : "pl-2 pr-3"
-          }`}
-        >
-          {direction === "input" && (
-            <SocketHandle
-              kind="target"
-              nodeId={nodeId}
-              id={socket.name}
-              type={socket.data_type}
-            />
-          )}
-          {direction === "output" && (
-            <span className="ml-auto text-xs text-zinc-300">{socket.name}</span>
-          )}
-          {direction === "input" && (
-            <span className="text-xs text-zinc-300">{socket.name}</span>
-          )}
-          <span className={direction === "input" ? "ml-auto" : ""}>
-            <SocketChip type={socket.data_type} />
-          </span>
-          {direction === "output" && (
-            <SocketHandle
-              kind="source"
-              nodeId={nodeId}
-              id={socket.name}
-              type={socket.data_type}
-            />
-          )}
-        </div>
-      ))}
+      {sockets.map((socket) => {
+        const optional = "optional" in socket && socket.optional === true;
+        return (
+          <div
+            key={socket.name}
+            className={`relative flex items-center gap-2 py-1 ${
+              direction === "input" ? "pl-3 pr-2" : "pl-2 pr-3"
+            }`}
+          >
+            {direction === "input" && (
+              <SocketHandle
+                kind="target"
+                nodeId={nodeId}
+                id={socket.name}
+                type={socket.data_type}
+                optional={optional}
+              />
+            )}
+            {direction === "output" && (
+              <span className="ml-auto text-xs text-zinc-300">
+                {socket.name}
+              </span>
+            )}
+            {direction === "input" && (
+              <span
+                className="text-xs text-zinc-300"
+                title={
+                  optional
+                    ? "Optional input — connect or leave empty"
+                    : undefined
+                }
+              >
+                {socket.name}
+              </span>
+            )}
+            {direction === "input" && optional && (
+              <span className="rounded bg-zinc-800/70 px-1 py-px text-[8px] uppercase tracking-wide text-zinc-500">
+                optional
+              </span>
+            )}
+            <span className={direction === "input" ? "ml-auto" : ""}>
+              <SocketChip type={socket.data_type} />
+            </span>
+            {direction === "output" && (
+              <SocketHandle
+                kind="source"
+                nodeId={nodeId}
+                id={socket.name}
+                type={socket.data_type}
+              />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -27,6 +27,7 @@ const model: ModelSummary = {
   mtime_ns: 123,
   fingerprint: "1024:123",
   executable: true,
+  is_directory: false,
 };
 
 function resetStore(): void {

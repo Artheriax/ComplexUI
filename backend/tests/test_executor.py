@@ -105,6 +105,73 @@ def _chain_graph(n_neighbors: int = 5) -> WorkflowGraph:
 EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "load_checkpoint": ([], ["model", "clip", "vae"], ["checkpoint_name"]),
     "clip_text_encode": (["clip"], ["conditioning"], ["text"]),
+    "conditioning_zero_out": (["conditioning"], ["conditioning"], []),
+    "encode_reference_images": (
+        [
+            "conditioning",
+            "vae",
+            "image1",
+            "image2",
+            "image3",
+            "image4",
+            "image5",
+            "image6",
+            "image7",
+            "image8",
+            "image9",
+            "image10",
+        ],
+        ["conditioning"],
+        ["max_pixels"],
+    ),
+    "model_guidance": (
+        ["model"],
+        ["model"],
+        ["guidance_mode", "guidance"],
+    ),
+    "attention_backend": (
+        ["model"],
+        ["model"],
+        ["backend", "benchmark", "sol_tau"],
+    ),
+    "model_precision": (
+        ["model"],
+        ["model"],
+        ["compute_dtype", "accumulation"],
+    ),
+    "compile_model": (
+        ["model"],
+        ["model"],
+        ["mode", "regional", "fullgraph", "dynamic"],
+    ),
+    "model_memory": (
+        ["model"],
+        ["model"],
+        [
+            "profile",
+            "offload",
+            "group_size",
+            "attention_slicing",
+            "channels_last",
+        ],
+    ),
+    "moss_guidance": (
+        ["model"],
+        ["model"],
+        [
+            "uncond_skip_layers",
+            "slg_layers",
+            "slg_scale",
+            "slg_start",
+            "slg_stop",
+        ],
+    ),
+    "inpaint_conditioner": (
+        ["positive", "negative", "vae", "pixels", "mask", "masks"],
+        ["positive", "negative"],
+        ["grow_mask_by"],
+    ),
+    "make_mask": ([], ["image"], ["width", "height", "shape", "margin", "feather"]),
     "empty_latent_image": (
         [],
         ["latent"],
@@ -158,7 +225,15 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "vae_decode": (
         ["samples", "vae"],
         ["image"],
-        ["tiled", "tile_size", "overlap", "temporal_size", "temporal_overlap"],
+        [
+            "tiled",
+            "tile_size",
+            "overlap",
+            "temporal_size",
+            "temporal_overlap",
+            "sliced",
+            "auto_tiled_retry",
+        ],
     ),
     "image_from_batch": (["images"], ["image"], ["index"]),
     "resolution": (
@@ -187,20 +262,61 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
         ["noise"],
         ["noise_type", "noise_seed", "alpha", "k", "scale"],
     ),
-    "cfg_guider": (["model", "positive", "negative"], ["guider"], ["cfg"]),
+    "cfg_guider": (
+        ["model", "positive", "negative"],
+        ["guider"],
+        ["cfg", "guidance_mode", "guidance", "start_percent", "end_percent"],
+    ),
     "sampler_custom_advanced": (
         ["noise", "guider", "sampler", "sigmas", "latent_image"],
         ["output", "denoised_output"],
         [],
     ),
     "preview_sigmas": (["sigmas"], ["sigmas"], []),
-    "load_diffusion_model": ([], ["model"], ["unet_name", "weight_dtype"]),
-    "load_clip": ([], ["clip"], ["clip_name", "type", "device"]),
-    "load_vae": ([], ["vae"], ["vae_name"]),
+    "load_diffusion_model": (
+        [],
+        ["model"],
+        ["unet_name", "type", "weight_dtype", "allow_custom_code"],
+    ),
+    "load_clip": (
+        [],
+        ["clip"],
+        [
+            "clip_name",
+            "type",
+            "device",
+            "max_sequence_length",
+            "allow_custom_code",
+        ],
+    ),
+    "load_clip_dual": (
+        [],
+        ["clip"],
+        [
+            "clip_name1",
+            "clip_name2",
+            "type",
+            "device",
+            "max_sequence_length",
+            "allow_custom_code",
+        ],
+    ),
+    "load_vae": (
+        [],
+        ["vae"],
+        ["vae_name", "weight_dtype", "compute_dtype", "allow_custom_code"],
+    ),
     "vae_encode": (
         ["pixels", "vae"],
         ["latent"],
-        ["tiled", "tile_size", "overlap", "temporal_size", "temporal_overlap"],
+        [
+            "tiled",
+            "tile_size",
+            "overlap",
+            "temporal_size",
+            "temporal_overlap",
+            "auto_tiled_retry",
+        ],
     ),
     "image_scale": (
         ["image"],
@@ -226,7 +342,7 @@ EXPECTED_SOCKETS: dict[str, tuple[list[str], list[str], list[str]]] = {
     "load_parquet": ([], ["df"], ["path"]),
     "load_excel": ([], ["df"], ["path", "sheet_id"]),
     "load_json": ([], ["df"], ["path"]),
-    "load_image": ([], ["image"], ["path", "max_pixels"]),
+    "load_image": ([], ["image", "mask"], ["path", "max_pixels"]),
     "preview_media": (["media"], ["media"], []),
     "save_media": (
         ["media"],
@@ -973,7 +1089,10 @@ def test_template_socket_types() -> None:
     assert evaluate.outputs[0].data_type is SocketType.METRICS
 
     load_image = parse_node(registry.get_template("load_image").code)
-    assert load_image.outputs[0].data_type is SocketType.IMAGE
+    assert [socket.data_type for socket in load_image.outputs] == [
+        SocketType.IMAGE,
+        SocketType.IMAGE,
+    ]
     save_media = parse_node(registry.get_template("save_media").code)
     assert save_media.inputs[0].data_type is SocketType.MEDIA
     assert save_media.outputs[1].data_type is SocketType.MEDIA
@@ -1579,3 +1698,58 @@ def test_execute_graph_reuses_preflight_plan(monkeypatch) -> None:
 
     execute_graph(graph, targets=["knn"])
     assert calls == 3
+
+
+def test_unconnected_optional_input_executes_with_none() -> None:
+    code = (
+        "image1: Optional[IMAGE] = None\n"
+        "value: int = 1\n"
+        "return image1: ANY, value: INT"
+    )
+    registry = _custom_registry(GraphNode(id="optional", code=code))
+    graph = WorkflowGraph(nodes=[GraphNode(id="optional", code=code)], edges=[])
+
+    result = execute_graph(graph, security=registry, allow_installs=False)
+
+    assert result.outputs_by_name["optional"] == {
+        "image1": None,
+        "value": 1,
+    }
+
+
+def test_required_input_is_still_rejected_when_unconnected() -> None:
+    code = "image: IMAGE\nreturn image: IMAGE"
+    graph = WorkflowGraph(nodes=[GraphNode(id="required", code=code)], edges=[])
+
+    with pytest.raises(GraphValidationError, match="Required input 'image'"):
+        validate_graph(graph)
+
+
+def test_optional_image_inputs_are_not_batch_expanded() -> None:
+    source_code = "values = [1, 2]\nreturn values: ANY"
+    target_code = (
+        "image1: Optional[IMAGE] = None\n"
+        "return batch_index: INT"
+    )
+    registry = _custom_registry(
+        GraphNode(id="source", code=source_code),
+        GraphNode(id="target", code=target_code),
+    )
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(id="source", code=source_code),
+            GraphNode(id="target", code=target_code),
+        ],
+        edges=[
+            GraphEdge(
+                source_node_id="source",
+                source_handle="values",
+                target_node_id="target",
+                target_handle="image1",
+            )
+        ],
+    )
+
+    result = execute_graph(graph, security=registry, allow_installs=False)
+
+    assert result.outputs_by_name["target"]["batch_index"] == 0

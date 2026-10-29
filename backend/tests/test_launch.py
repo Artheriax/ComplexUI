@@ -311,3 +311,87 @@ def test_node_version_support_matches_vite_engines() -> None:
     assert launch.node_version_supported((24, 1, 0)) is True
     assert launch.parse_node_version("v22.12.0") == (22, 12, 0)
     assert launch.parse_node_version("no version") is None
+
+
+def test_performance_flags_propagate_to_environment(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    cache_dir = tmp_path / "inductor"
+    args = launch.parse_args(
+        [
+            "backend",
+            "--attention-backend",
+            "sdpa-math",
+            "--memory-profile",
+            "low",
+            "--torch-compile",
+            "default",
+            "--compile-cache-dir",
+            str(cache_dir),
+            "--experimental-fp16-accumulation",
+        ]
+    )
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_ATTENTION"] == "sdpa-math"
+    assert environment["COMPLEXUI_MEMORY_PROFILE"] == "low"
+    assert environment["COMPLEXUI_TORCH_COMPILE"] == "default"
+    assert environment["COMPLEXUI_COMPILE_CACHE_DIR"] == str(cache_dir)
+    assert environment["TORCHINDUCTOR_CACHE_DIR"] == str(cache_dir)
+    assert environment["TRITON_CACHE_DIR"] == str(cache_dir / "triton")
+    assert environment["COMPLEXUI_EXPERIMENTAL_FP16_ACCUM"] == "1"
+
+
+def test_attention_benchmark_flag_propagates(monkeypatch) -> None:
+    monkeypatch.delenv("COMPLEXUI_ATTENTION_BENCHMARK", raising=False)
+    args = launch.parse_args(["backend", "--attention-benchmark"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_ATTENTION_BENCHMARK"] == "1"
+
+
+def test_allocator_profiles_and_conflicts(monkeypatch) -> None:
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    args = launch.parse_args(
+        ["backend", "--allocator", "cudaMallocAsync", "--no-expandable-segments"]
+    )
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["COMPLEXUI_CUDA_ALLOCATOR"] == "cudaMallocAsync"
+    assert environment["PYTORCH_ALLOC_CONF"] == "backend:cudaMallocAsync"
+
+    with pytest.raises(SystemExit):
+        launch.parse_args(
+            [
+                "backend",
+                "--allocator",
+                "cudaMallocAsync",
+                "--expandable-segments",
+            ]
+        )
+
+
+def test_expandable_segments_flag(monkeypatch) -> None:
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    args = launch.parse_args(["backend", "--expandable-segments"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["PYTORCH_ALLOC_CONF"] == "expandable_segments:True"
+
+
+def test_existing_allocator_environment_wins(monkeypatch) -> None:
+    monkeypatch.setenv("PYTORCH_ALLOC_CONF", "max_split_size_mb:128")
+    args = launch.parse_args(["backend", "--expandable-segments"])
+
+    environment = launch.backend_environment(args, serve_dist=False)
+
+    assert environment["PYTORCH_ALLOC_CONF"] == "max_split_size_mb:128"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.schemas import SocketType
+from app.schemas import MODEL_SELECT_KINDS, SocketType
 from app.security import code_hash
 
 FRONTEND_GRAPH = Path(__file__).resolve().parents[2] / "frontend/src/types/graph.ts"
@@ -25,6 +25,17 @@ def _frontend_socket_names() -> set[str]:
 
 def test_frontend_socket_types_match_backend_enum() -> None:
     assert _frontend_socket_names() == {member.name for member in SocketType}
+
+
+def test_frontend_model_select_kinds_match_backend_contract() -> None:
+    source = FRONTEND_GRAPH.read_text(encoding="utf-8")
+    match = re.search(
+        r'export type ModelSelectKind = ([^;]+);',
+        source,
+    )
+    if match is None:
+        raise AssertionError("Could not find ModelSelectKind in frontend graph types")
+    assert set(re.findall(r'"([a-z]+)"', match.group(1))) == set(MODEL_SELECT_KINDS)
 
 
 def test_frontend_and_backend_hash_vectors_match() -> None:

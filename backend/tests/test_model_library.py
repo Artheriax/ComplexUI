@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from app.executor import (
 from app.exporter import export_python
 from app.main import app
 from app.models import (
+    MODELS_ENV,
     InvalidModelPath,
     ModelNotFound,
     ModelStore,
@@ -32,8 +34,25 @@ def model_store(tmp_path: Path) -> ModelStore:
     return ModelStore(tmp_path / "library")
 
 
+@pytest.fixture()
+def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ModelStore]:
+    monkeypatch.setenv(MODELS_ENV, str(tmp_path / "library"))
+    get_model_store.cache_clear()
+    store = get_model_store()
+    yield store
+    get_model_store.cache_clear()
+
+
 def test_default_type_folders_are_created(model_store: ModelStore) -> None:
-    for name in ("yolo", "torchvision", "classification", "diffusion", "unet", "vae"):
+    for name in (
+        "yolo",
+        "torchvision",
+        "classification",
+        "diffusion",
+        "unet",
+        "vae",
+        "clip",
+    ):
         assert (model_store.root / name).is_dir()
     assert [item.name for item in model_store.list_types()] == [
         "yolo",
@@ -42,6 +61,7 @@ def test_default_type_folders_are_created(model_store: ModelStore) -> None:
         "diffusion",
         "unet",
         "vae",
+        "clip",
     ]
     assert all(item.count == 0 for item in model_store.list_types())
 
@@ -251,3 +271,221 @@ def test_empty_model_selector_uses_builtin_fallback() -> None:
     finally:
         clear_cache()
     assert result.outputs_by_name["selector"]["local_model"] == ""
+
+
+def _make_diffusers_folder(store: ModelStore) -> Path:
+    folder = store.root / "diffusion" / "example-flux"
+    transformer = folder / "transformer"
+    transformer.mkdir(parents=True)
+    (folder / "model_index.json").write_text("{}", encoding="utf-8")
+    (transformer / "config.json").write_text("{}", encoding="utf-8")
+    (transformer / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
+    return folder
+
+
+def test_diffusers_folder_is_listed_resolved_and_fingerprinted(
+    model_store: ModelStore,
+) -> None:
+    folder = _make_diffusers_folder(model_store)
+
+    models = model_store.list_models("diffusion")
+    assert [model.name for model in models] == ["example-flux"]
+    summary = models[0]
+    assert summary.is_directory is True
+    assert summary.format == "Folder"
+    assert summary.size_bytes > 0
+    assert summary.fingerprint.startswith("folder:")
+
+    assert (
+        model_store.resolve(
+            "diffusion",
+            "models/diffusion/example-flux",
+            select="folder",
+        )
+        == folder
+    )
+    assert (
+        model_store.resolve(
+            "diffusion",
+            "models/diffusion/example-flux/transformer",
+            select="any",
+        )
+        == folder / "transformer"
+    )
+    with pytest.raises(InvalidModelPath, match="requires a folder"):
+        model_store.resolve(
+            "diffusion",
+            "models/diffusion/example-flux/transformer/config.json",
+            select="folder",
+        )
+    with pytest.raises(InvalidModelPath, match="requires a file"):
+        model_store.resolve(
+            "diffusion",
+            "models/diffusion/example-flux",
+            select="file",
+        )
+
+    weight = folder / "transformer" / "diffusion_pytorch_model.safetensors"
+    first = model_store.describe(
+        "diffusion", "models/diffusion/example-flux", select="folder"
+    )
+    weight.write_bytes(b"changed weights")
+    os.utime(weight, ns=(weight.stat().st_mtime_ns + 1_000_000,) * 2)
+    second = model_store.describe(
+        "diffusion", "models/diffusion/example-flux", select="folder"
+    )
+    assert first.fingerprint != second.fingerprint
+
+
+def test_required_folder_selector_validates_and_resolves(
+    isolated_store: ModelStore,
+) -> None:
+    folder = _make_diffusers_folder(isolated_store)
+    file_model = isolated_store.root / "diffusion" / "single.safetensors"
+    file_model.write_bytes(b"single")
+    code = (
+        "local_model: ModelSelector = ModelSelector(\n"
+        '    type="diffusion", select="folder", required=True\n'
+        ")\n"
+        "return local_model: STRING"
+    )
+    registry = SecurityRegistry()
+    registry.approve("selector", code_hash(code))
+
+    empty = WorkflowGraph(nodes=[GraphNode(id="selector", code=code)], edges=[])
+    with pytest.raises(ModelSelectionError, match="requires one"):
+        validate_graph(empty, security=registry)
+
+    wrong_kind = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="selector",
+                code=code,
+                widget_values={"local_model": "models/diffusion/single.safetensors"},
+            )
+        ],
+        edges=[],
+    )
+    with pytest.raises(ModelSelectionError, match="requires a folder"):
+        validate_graph(wrong_kind, security=registry)
+
+    valid = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="selector",
+                code=code,
+                widget_values={"local_model": "models/diffusion/example-flux"},
+            )
+        ],
+        edges=[],
+    )
+    clear_cache()
+    try:
+        result = execute_graph(valid, security=registry, allow_installs=False)
+    finally:
+        clear_cache()
+    assert result.outputs_by_name["selector"]["local_model"] == str(folder)
+    assert repr(str(folder)) in export_python(valid).content
+
+
+def test_model_library_counts_diffusers_folders(model_store: ModelStore) -> None:
+    _make_diffusers_folder(model_store)
+    (model_store.root / "diffusion" / "single.safetensors").write_bytes(b"single")
+
+    types = {item.name: item for item in model_store.list_types()}
+    assert types["diffusion"].count == 2
+
+
+def test_models_api_lists_diffusers_folders(isolated_store: ModelStore) -> None:
+    _make_diffusers_folder(isolated_store)
+
+    with TestClient(app) as client:
+        response = client.get("/api/models", params={"type": "diffusion"})
+
+    assert response.status_code == 200
+    model = response.json()[0]
+    assert model["path"] == "models/diffusion/example-flux"
+    assert model["format"] == "Folder"
+    assert model["is_directory"] is True
+
+
+def test_include_types_resolves_cross_type_selections(
+    model_store: ModelStore,
+) -> None:
+    diffusion = _make_diffusers_folder(model_store)
+    clip_folder = model_store.root / "clip" / "clip-l"
+    clip_folder.mkdir(parents=True)
+    (clip_folder / "config.json").write_text("{}", encoding="utf-8")
+
+    assert (
+        model_store.resolve(
+            "vae",
+            "clip-l",
+            select="folder",
+            include=["clip"],
+        )
+        == clip_folder
+    )
+    assert (
+        model_store.resolve(
+            "vae",
+            "models/clip/clip-l",
+            select="folder",
+            include=["clip"],
+        )
+        == clip_folder
+    )
+    summary = model_store.describe(
+        "vae",
+        "models/clip/clip-l",
+        select="folder",
+        include=["clip"],
+    )
+    assert summary.model_type == "clip"
+    assert (
+        model_store.resolve(
+            "vae",
+            "models/diffusion/example-flux",
+            select="folder",
+            include=["diffusion"],
+        )
+        == diffusion
+    )
+    with pytest.raises(InvalidModelPath, match="does not match selector types"):
+        model_store.resolve(
+            "vae",
+            "models/clip/clip-l",
+            select="folder",
+        )
+
+
+def test_executor_resolves_selector_include_types(
+    isolated_store: ModelStore,
+) -> None:
+    folder = _make_diffusers_folder(isolated_store)
+    code = (
+        "local_model: ModelSelector = ModelSelector(\n"
+        '    type="vae", select="any", required=True, include=["diffusion"]\n'
+        ")\n"
+        "return local_model: STRING"
+    )
+    registry = SecurityRegistry()
+    registry.approve("selector", code_hash(code))
+    graph = WorkflowGraph(
+        nodes=[
+            GraphNode(
+                id="selector",
+                code=code,
+                widget_values={"local_model": "models/diffusion/example-flux"},
+            )
+        ],
+        edges=[],
+    )
+
+    clear_cache()
+    try:
+        validate_graph(graph, security=registry)
+        result = execute_graph(graph, security=registry, allow_installs=False)
+    finally:
+        clear_cache()
+    assert result.outputs_by_name["selector"]["local_model"] == str(folder)

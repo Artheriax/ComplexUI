@@ -507,6 +507,7 @@ export function buildSubgraphFromSelection(options: {
           : widget
             ? widgetSocketType(widget.data_type)
             : "ANY",
+        ...(socket?.optional ? { optional: true } : {}),
       };
       const binding = { port, nodeId: edge.target, handle };
       inputBindings.push(binding);

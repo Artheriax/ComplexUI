@@ -25,6 +25,29 @@ const health = {
     run_timeout_seconds: 3600,
     max_memory_mb: 4096,
   },
+  optimizations: {
+    attention: {
+      configured: "auto",
+      backends: ["auto", "sdpa", "sdpa-math"],
+      packages: { xformers: null },
+    },
+    precision: {
+      default: "keep",
+      fp16_accumulation: false,
+      quantization_formats: ["fp8-e4m3"],
+      quantized_runtime: false,
+    },
+    memory: {
+      profile: "resident",
+      allocator: "native",
+      alloc_conf: "expandable_segments:True",
+      pinned_memory: false,
+    },
+    compile: {
+      mode: "off",
+      cache_dir: "C:/workspace/cache/torchinductor",
+    },
+  },
 };
 
 afterEach(() => {
@@ -118,6 +141,9 @@ test("controls the system monitor and shows runtime diagnostics", async () => {
 
   expect(await screen.findByText("2.14.1+cpu")).toBeTruthy();
   expect(screen.getByText("cpu → cpu")).toBeTruthy();
+  expect(screen.getByText("auto")).toBeTruthy();
+  expect(screen.getByText("resident · native")).toBeTruthy();
+  expect(screen.getAllByText("off").length).toBeGreaterThanOrEqual(2);
 });
 
 test("controls execution behavior and shows read-only limits", async () => {

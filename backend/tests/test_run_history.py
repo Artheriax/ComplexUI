@@ -155,6 +155,10 @@ def test_recorder_aggregates_node_status_outputs_and_errors() -> None:
                     }
                 ],
                 "duration_ms": 12.5,
+                "metrics": {
+                    "cuda_peak_allocated_bytes": 1024,
+                    "cpu_rss_bytes": 2048,
+                },
             },
         )
     )
@@ -190,6 +194,10 @@ def test_recorder_aggregates_node_status_outputs_and_errors() -> None:
     assert first.duration_ms == 12.5
     assert first.previews == {"df": {"rows": 150, "cols": 5}}
     assert first.rich_outputs[0].kind == "text"
+    assert first.metrics == {
+        "cuda_peak_allocated_bytes": 1024,
+        "cpu_rss_bytes": 2048,
+    }
     assert second.label == "b"
     assert second.status == RunNodeStatus.ERROR
     assert second.error is not None

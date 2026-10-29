@@ -1,0 +1,275 @@
+{
+  "name": "imagegen_fibo2",
+  "title": "Fibo 2.0 - Multi-Reference Edit",
+  "category": "Image Generation",
+  "description": "Edit two numbered reference images with Fibo 2.0 context latents, zeroed negative conditioning and CFG at five.",
+  "nodes": [
+    {
+      "id": "resolution",
+      "template": "resolution",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "widget_values": {
+        "size_mode": "Resolution",
+        "width": 1024,
+        "height": 1024
+      }
+    },
+    {
+      "id": "diffusion",
+      "template": "load_diffusion_model",
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "widget_values": {
+        "unet_name": "models/diffusion/Fibo-2.0",
+        "type": "fibo2",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": "clip",
+      "template": "load_clip",
+      "position": {
+        "x": 0,
+        "y": 440
+      },
+      "widget_values": {
+        "clip_name": "models/diffusion/Fibo-2.0",
+        "type": "fibo2",
+        "max_sequence_length": 2048
+      }
+    },
+    {
+      "id": "vae",
+      "template": "load_vae",
+      "position": {
+        "x": 0,
+        "y": 660
+      },
+      "widget_values": {
+        "vae_name": "models/diffusion/Fibo-2.0",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": "positive",
+      "template": "clip_text_encode",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "widget_values": {
+        "text": "Combine the two reference objects on one pale stone plinth in soft studio daylight, keep both shapes and materials recognizable, editorial product photograph, clean background"
+      }
+    },
+    {
+      "id": "negative",
+      "template": "clip_text_encode",
+      "position": {
+        "x": 360,
+        "y": 180
+      },
+      "widget_values": {
+        "text": ""
+      }
+    },
+    {
+      "id": "zeroed",
+      "template": "conditioning_zero_out",
+      "position": {
+        "x": 720,
+        "y": 180
+      },
+      "widget_values": {}
+    },
+    {
+      "id": "reference1",
+      "template": "make_demo_image",
+      "position": {
+        "x": 360,
+        "y": 360
+      },
+      "widget_values": {
+        "width": 1024,
+        "height": 1024,
+        "seed": 41
+      }
+    },
+    {
+      "id": "reference2",
+      "template": "make_demo_image",
+      "position": {
+        "x": 360,
+        "y": 580
+      },
+      "widget_values": {
+        "width": 1024,
+        "height": 1024,
+        "seed": 42
+      }
+    },
+    {
+      "id": "references",
+      "template": "encode_reference_images",
+      "position": {
+        "x": 720,
+        "y": 420
+      },
+      "widget_values": {
+        "max_pixels": 16000000
+      }
+    },
+    {
+      "id": "latent",
+      "template": "empty_latent_image",
+      "position": {
+        "x": 1080,
+        "y": 420
+      },
+      "widget_values": {
+        "size_mode": "Resolution",
+        "batch_size": 1
+      }
+    },
+    {
+      "id": "sampler",
+      "template": "ksampler",
+      "position": {
+        "x": 1440,
+        "y": 160
+      },
+      "widget_values": {
+        "seed": 42,
+        "steps": 25,
+        "denoise": 1.0,
+        "cfg": 5.0,
+        "sampler_name": "euler",
+        "scheduler": "simple"
+      }
+    },
+    {
+      "id": "decode",
+      "template": "vae_decode",
+      "position": {
+        "x": 1800,
+        "y": 160
+      },
+      "widget_values": {
+        "tiled": false
+      }
+    },
+    {
+      "id": "save",
+      "template": "save_media",
+      "position": {
+        "x": 2160,
+        "y": 160
+      },
+      "widget_values": {
+        "model_name": "fibo2_edit"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source_node_id": "resolution",
+      "source_handle": "width",
+      "target_node_id": "latent",
+      "target_handle": "width"
+    },
+    {
+      "source_node_id": "resolution",
+      "source_handle": "height",
+      "target_node_id": "latent",
+      "target_handle": "height"
+    },
+    {
+      "source_node_id": "clip",
+      "source_handle": "clip",
+      "target_node_id": "positive",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "clip",
+      "source_handle": "clip",
+      "target_node_id": "negative",
+      "target_handle": "clip"
+    },
+    {
+      "source_node_id": "negative",
+      "source_handle": "conditioning",
+      "target_node_id": "zeroed",
+      "target_handle": "conditioning"
+    },
+    {
+      "source_node_id": "positive",
+      "source_handle": "conditioning",
+      "target_node_id": "references",
+      "target_handle": "conditioning"
+    },
+    {
+      "source_node_id": "vae",
+      "source_handle": "vae",
+      "target_node_id": "references",
+      "target_handle": "vae"
+    },
+    {
+      "source_node_id": "reference1",
+      "source_handle": "image",
+      "target_node_id": "references",
+      "target_handle": "image1"
+    },
+    {
+      "source_node_id": "reference2",
+      "source_handle": "image",
+      "target_node_id": "references",
+      "target_handle": "image2"
+    },
+    {
+      "source_node_id": "diffusion",
+      "source_handle": "model",
+      "target_node_id": "sampler",
+      "target_handle": "model"
+    },
+    {
+      "source_node_id": "references",
+      "source_handle": "conditioning",
+      "target_node_id": "sampler",
+      "target_handle": "positive"
+    },
+    {
+      "source_node_id": "zeroed",
+      "source_handle": "conditioning",
+      "target_node_id": "sampler",
+      "target_handle": "negative"
+    },
+    {
+      "source_node_id": "latent",
+      "source_handle": "latent",
+      "target_node_id": "sampler",
+      "target_handle": "latent_image"
+    },
+    {
+      "source_node_id": "sampler",
+      "source_handle": "latent",
+      "target_node_id": "decode",
+      "target_handle": "samples"
+    },
+    {
+      "source_node_id": "vae",
+      "source_handle": "vae",
+      "target_node_id": "decode",
+      "target_handle": "vae"
+    },
+    {
+      "source_node_id": "decode",
+      "source_handle": "image",
+      "target_node_id": "save",
+      "target_handle": "media"
+    }
+  ]
+}

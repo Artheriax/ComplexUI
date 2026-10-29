@@ -45,7 +45,7 @@ ignore = ["E501"]
 dev = [
     "accelerate>=1.0",
     "basedpyright>=1.40",
-    "diffusers>=0.31",
+    "diffusers>=0.42.0",
     "fastexcel>=0.21.0",
     "httpx2>=2.13.1",
     "imageio-ffmpeg>=0.5",
@@ -67,7 +67,7 @@ dev = [
     "torch>=2.2",
     "torchsde>=0.2.6",
     "torchvision>=0.17",
-    "transformers>=4.46",
+    "transformers>=5.0",
     "ultralytics>=8.3",
 ]
 

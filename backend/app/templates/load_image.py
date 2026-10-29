@@ -13,5 +13,10 @@ with Image.open(path) as source:
         raise ValueError(f"Image has {width * height:,} pixels; limit is {max_pixels:,}")
     source.load()
     image = source.convert("RGB")
+    if "A" in source.getbands() or "transparency" in source.info:
+        mask = source.convert("RGBA").getchannel("A")
+    else:
+        mask = source.convert("L")
+    mask = mask.convert("RGB")
 
-return image: IMAGE
+return image: IMAGE, mask: IMAGE

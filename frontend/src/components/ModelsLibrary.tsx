@@ -5,6 +5,14 @@ import {
   formatDatasetDate,
   formatDatasetSize,
 } from "../lib/datasets";
+import {
+  formatModelSize,
+  formatParameterCount,
+  memoryDetail,
+  memoryTag,
+  quantizationDetail,
+  quantizationTag,
+} from "../lib/modelMetadata";
 import { useModelsStore } from "../store/useModelsStore";
 import {
   ResetIcon,
@@ -43,7 +51,9 @@ export function ModelsLibrary() {
       }
       return (
         !needle ||
-        `${model.name} ${model.path} ${model.format} ${model.model_type}`
+        `${model.name} ${model.path} ${model.format} ${model.model_type} ${
+          quantizationTag(model.quantization) ?? ""
+        }`
           .toLowerCase()
           .includes(needle)
       );
@@ -111,7 +121,7 @@ export function ModelsLibrary() {
         )}
         {!loading && !error && visible.length === 0 && (
           <p className="px-1 py-2 text-[11px] leading-relaxed text-zinc-600">
-            No models match. Add files under{" "}
+            No models match. Add files or diffusers-style folders under{" "}
             <span className="font-mono">
               models/{typeFilter === "all" ? "<type>" : typeFilter}
             </span>{" "}
@@ -139,6 +149,33 @@ export function ModelsLibrary() {
                 <span className="rounded bg-zinc-800/80 px-1 py-px text-[9px] text-zinc-400">
                   {model.model_type}
                 </span>
+                {model.is_directory && (
+                  <span
+                    title="Diffusers-style model folder"
+                    className="rounded bg-cyan-950/60 px-1 py-px text-[8px] uppercase text-cyan-300"
+                  >
+                    folder
+                  </span>
+                )}
+                {quantizationTag(model.quantization) && (
+                  <span
+                    title={
+                      [
+                        quantizationDetail(model.quantization),
+                        ...(model.quantization?.warnings ?? []),
+                      ]
+                        .filter(Boolean)
+                        .join("\n") || undefined
+                    }
+                    className={`rounded px-1 py-px text-[8px] uppercase ${
+                      model.quantization?.valid
+                        ? "bg-violet-950/60 text-violet-300"
+                        : "bg-red-950/60 text-red-300"
+                    }`}
+                  >
+                    {quantizationTag(model.quantization)}
+                  </span>
+                )}
                 {model.executable && (
                   <span
                     title="PyTorch pickle file: may execute code when loaded"
@@ -150,9 +187,30 @@ export function ModelsLibrary() {
               </div>
             </div>
             <p className="mt-1 text-[10px] text-zinc-600">
-              {model.format} · {formatDatasetSize(model.size_bytes)} ·{" "}
-              {formatDatasetDate(model.modified_at)}
+              {model.format} · {formatDatasetSize(model.size_bytes)}
+              {formatParameterCount(model.parameter_count)
+                ? ` · ${formatParameterCount(model.parameter_count)} params`
+                : ""}{" "}
+              · {formatDatasetDate(model.modified_at)}
             </p>
+            {model.memory && (
+              <p
+                className="mt-0.5 text-[10px] text-zinc-500"
+                title={[
+                  memoryDetail(model.memory),
+                  ...(model.memory.assumptions ?? []),
+                ]
+                  .filter(Boolean)
+                  .join("\n")}
+              >
+                {memoryTag(model.memory)}
+                <span className="text-zinc-700">
+                  {" "}
+                  · {formatModelSize(model.memory.offload_ram_estimate_bytes)}{" "}
+                  offload RAM
+                </span>
+              </p>
+            )}
             <p
               className="mt-0.5 truncate font-mono text-[9px] text-zinc-700"
               title={model.fingerprint}

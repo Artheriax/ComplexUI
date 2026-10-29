@@ -9,6 +9,7 @@ import {
   formatDatasetSize,
 } from "../lib/datasets";
 import { useModelsStore } from "../store/useModelsStore";
+import type { ModelSelectKind } from "../types/graph";
 import {
   CheckIcon,
   CloseIcon,
@@ -22,23 +23,32 @@ const EMPTY_MODELS: ModelSummary[] = [];
 
 interface ModelPickerDialogProps {
   modelType: string;
+  modelTypes?: string[];
   currentPath: string;
+  select?: ModelSelectKind;
+  required?: boolean;
   onSelect: (path: string) => void;
   onClose: () => void;
 }
 
 export function ModelPickerDialog({
   modelType,
+  modelTypes,
   currentPath,
+  select = "file",
+  required = false,
   onSelect,
   onClose,
 }: ModelPickerDialogProps) {
-  const models = useModelsStore((state) =>
-    modelType ? (state.modelsByType[modelType] ?? EMPTY_MODELS) : EMPTY_MODELS,
+  const typesKey = (modelTypes?.length ? modelTypes : [modelType])
+    .filter(Boolean)
+    .join("|");
+  const activeTypes = useMemo(
+    () => (typesKey ? typesKey.split("|") : []),
+    [typesKey],
   );
-  const loaded = useModelsStore((state) =>
-    modelType ? Boolean(state.loadedTypes[modelType]) : false,
-  );
+  const modelsByType = useModelsStore((state) => state.modelsByType);
+  const loadedTypes = useModelsStore((state) => state.loadedTypes);
   const loading = useModelsStore((state) => state.loading);
   const refreshing = useModelsStore((state) => state.refreshing);
   const error = useModelsStore((state) => state.error);
@@ -47,21 +57,39 @@ export function ModelPickerDialog({
   const [query, setQuery] = useState("");
   useModelsAutoRefresh(modelType, true);
 
+  const models = useMemo(
+    () =>
+      activeTypes.flatMap(
+        (currentType) => modelsByType[currentType] ?? EMPTY_MODELS,
+      ),
+    [activeTypes, modelsByType],
+  );
+  const loaded =
+    activeTypes.length > 0 &&
+    activeTypes.every((currentType) => Boolean(loadedTypes[currentType]));
+  const eligible = useMemo(
+    () =>
+      models.filter((model) =>
+        select === "any" ? true : model.is_directory === (select === "folder"),
+      ),
+    [models, select],
+  );
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) {
-      return models;
+      return eligible;
     }
-    return models.filter((model) =>
-      `${model.name} ${model.path} ${model.format}`
+    return eligible.filter((model) =>
+      `${model.name} ${model.path} ${model.format} ${model.model_type}`
         .toLowerCase()
         .includes(needle),
     );
-  }, [models, query]);
+  }, [eligible, query]);
   const selectedMissing =
     loaded &&
-    currentPath !== "" &&
-    !models.some((model) => model.path === currentPath);
+    ((currentPath !== "" &&
+      !eligible.some((model) => model.path === currentPath)) ||
+      (required && currentPath === ""));
 
   return createPortal(
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-6">
@@ -79,11 +107,11 @@ export function ModelPickerDialog({
               id="model-picker-title"
               className="text-sm font-semibold text-zinc-100"
             >
-              Choose local model
+              Choose local {select === "folder" ? "folder" : "model"}
             </h2>
             <p className="mt-1 flex items-center gap-1 truncate font-mono text-[11px] text-zinc-500">
               <FolderIcon className="h-3 w-3 shrink-0 text-cyan-400" />
-              models/{modelType}
+              {activeTypes.map((type) => `models/${type}`).join(" · ")}
             </p>
           </div>
           <div className="flex items-center gap-1">
@@ -115,9 +143,9 @@ export function ModelPickerDialog({
           <div className="mb-2 flex items-start gap-2 rounded border border-amber-900/50 bg-amber-950/25 p-2 text-[10px] leading-relaxed text-amber-200/80">
             <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Model files can execute code when loaded. Only use trusted files;
-              prefer SafeTensors or ONNX. YOLO <code>.pt</code> loading is not a
-              sandbox.
+              Model files and diffusers-style folders can execute code when
+              loaded. Only use trusted files; prefer SafeTensors or ONNX. YOLO{" "}
+              <code>.pt</code> loading is not a sandbox.
             </span>
           </div>
 
@@ -140,38 +168,44 @@ export function ModelPickerDialog({
             <div className="mb-2 flex items-start gap-2 rounded border border-amber-900/60 bg-amber-950/30 p-2 text-[11px] text-amber-200">
               <WarningIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>
-                The selected model is no longer present. Choose another local
-                model or clear it to use the built-in fallback.
+                {required && currentPath === ""
+                  ? "A local model is required for this widget. Choose one below."
+                  : `The selected ${
+                      select === "folder" ? "folder" : "model"
+                    } is no longer present or does not match this selector.`}
               </span>
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => {
-              onSelect("");
-              onClose();
-            }}
-            className={`mb-2 flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left ${
-              currentPath === ""
-                ? "border-cyan-700 bg-cyan-950/30"
-                : "border-zinc-800 bg-zinc-950/40 hover:border-cyan-800 hover:bg-zinc-800/60"
-            }`}
-          >
-            <span className="flex h-6 w-6 items-center justify-center rounded bg-zinc-800 text-[10px] text-zinc-400">
-              B
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-xs font-medium text-zinc-200">
-                Built-in fallback
+          {!required && (
+            <button
+              type="button"
+              onClick={() => {
+                onSelect("");
+                onClose();
+              }}
+              className={`mb-2 flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left ${
+                currentPath === ""
+                  ? "border-cyan-700 bg-cyan-950/30"
+                  : "border-zinc-800 bg-zinc-950/40 hover:border-cyan-800 hover:bg-zinc-800/60"
+              }`}
+            >
+              <span className="flex h-6 w-6 items-center justify-center rounded bg-zinc-800 text-[10px] text-zinc-400">
+                B
               </span>
-              <span className="block text-[10px] text-zinc-500">
-                Use the predefined architecture and weights widgets
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-medium text-zinc-200">
+                  Built-in fallback
+                </span>
+                <span className="block text-[10px] text-zinc-500">
+                  Use the predefined architecture and weights widgets
+                </span>
               </span>
-            </span>
-            {currentPath === "" && <CheckIcon className="h-3.5 w-3.5 text-cyan-300" />}
-          </button>
-
+              {currentPath === "" && (
+                <CheckIcon className="h-3.5 w-3.5 text-cyan-300" />
+              )}
+            </button>
+          )}
           {!loaded && (loading || refreshing) && (
             <div className="flex items-center gap-2 p-2 text-xs text-zinc-500">
               <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> Loading
@@ -180,8 +214,12 @@ export function ModelPickerDialog({
           )}
           {loaded && visible.length === 0 && (
             <p className="p-2 text-[11px] leading-relaxed text-zinc-600">
-              No models in <span className="font-mono">models/{modelType}</span>.
-              Add a supported file and press <kbd>R</kbd> to refresh.
+              No matching {select === "folder" ? "folders" : "models"} in{" "}
+              <span className="font-mono">
+                {activeTypes.map((type) => `models/${type}`).join(", ")}
+              </span>
+              . Add a supported file or diffusers-style folder and press{" "}
+              <kbd>R</kbd> to refresh.
             </p>
           )}
           <div className="space-y-1.5">
@@ -202,6 +240,19 @@ export function ModelPickerDialog({
                 <span className="min-w-0">
                   <span className="flex items-center gap-1.5 text-xs font-medium text-zinc-200">
                     <span className="truncate">{model.name}</span>
+                    {activeTypes.length > 1 && (
+                      <span className="shrink-0 rounded bg-zinc-800/80 px-1 py-px text-[8px] uppercase text-zinc-400">
+                        {model.model_type}
+                      </span>
+                    )}
+                    {model.is_directory && (
+                      <span
+                        title="Diffusers-style model folder"
+                        className="shrink-0 rounded bg-cyan-950/60 px-1 py-px text-[8px] uppercase text-cyan-300"
+                      >
+                        folder
+                      </span>
+                    )}
                     {model.executable && (
                       <span
                         title="PyTorch pickle file: may execute code when loaded"
@@ -233,7 +284,9 @@ export function ModelPickerDialog({
         </div>
         <div className="flex items-center justify-between border-t border-zinc-800 px-3 py-2 text-[10px] text-zinc-600">
           <span>Auto-refreshes while open · Press R to refresh</span>
-          <span className="font-mono">models/{modelType}</span>
+          <span className="font-mono">
+            {activeTypes.map((type) => `models/${type}`).join(" · ")}
+          </span>
         </div>
       </div>
     </div>,

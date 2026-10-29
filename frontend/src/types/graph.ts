@@ -123,6 +123,7 @@ export interface PendingConnection {
 export interface InputSocket {
   name: string;
   data_type: SocketType;
+  optional?: boolean;
 }
 
 export interface OutputSocket {
@@ -131,6 +132,8 @@ export interface OutputSocket {
 }
 
 export type WidgetChoice = string | number | boolean;
+
+export type ModelSelectKind = "file" | "folder" | "any";
 
 export interface WidgetCondition {
   widget: string;
@@ -143,6 +146,9 @@ export interface WidgetParam {
   default: unknown;
   options?: WidgetChoice[];
   model_type?: string | null;
+  model_select?: ModelSelectKind;
+  model_required?: boolean;
+  model_include?: string[];
   visible_when?: WidgetCondition[];
 }
 
@@ -315,14 +321,60 @@ export interface BatchPreview {
   count: number;
 }
 
+export interface ModelQuantizationInfo {
+  format: string;
+  label: string;
+  runtime: string;
+  source: string;
+  mode: string;
+  variant?: string | null;
+  weight_bits?: number | null;
+  group_size?: number | null;
+  block_size?: number | null;
+  scale_dtype?: string | null;
+  compute_dtype?: string | null;
+  activation?: string | null;
+  accumulation?: string | null;
+  quantized_layer_count?: number | null;
+  excluded_layers?: string[];
+  valid: boolean;
+  warnings?: string[];
+}
+
+export interface ModelMemoryEstimate {
+  weights_bytes: number;
+  quantization_overhead_bytes: number;
+  resident_estimate_bytes: number;
+  offload_ram_estimate_bytes: number;
+  confidence: string;
+  assumptions?: string[];
+  unknown: boolean;
+}
+
 export interface DiffusionModelPreview {
   kind: "diffusion_model";
   arch: string;
+  arch_label?: string;
   name: string;
   class: string;
+  transformer_class?: string;
   parameters: number | null;
   device: string | null;
   dtype: string;
+  storage_dtype?: string | null;
+  compute_dtype?: string | null;
+  accumulation?: string | null;
+  quantization?: ModelQuantizationInfo | null;
+  memory?: ModelMemoryEstimate | null;
+  memory_profile?: string | null;
+  offload?: boolean;
+  offload_mode?: string | null;
+  channels_last?: boolean;
+  compiled?: boolean;
+  compile_mode?: string | null;
+  attention?: Record<string, unknown>;
+  compile?: Record<string, unknown>;
+  load_time_ms?: number | null;
   source: string;
   model_type: string | null;
   path: string | null;
@@ -330,23 +382,46 @@ export interface DiffusionModelPreview {
   fingerprint: string | null;
   preset: string | null;
   recommended: Record<string, unknown>;
+  capabilities?: Record<string, unknown>;
+  component_paths?: Record<string, unknown>;
+  latent_space?: string;
+  latent_channels?: number | null;
+  latent_packing?: number | null;
+  vae_scale_factor?: number | null;
+  is_distilled?: boolean;
 }
 
 export interface ClipPreview {
   kind: "clip";
   arch: string;
   encoders: number;
+  encoder_classes?: string[];
+  max_sequence_length?: number | null;
+  path?: string | null;
   device: string | null;
   dtype: string;
+  quantization?: ModelQuantizationInfo | null;
 }
 
 export interface VaePreview {
   kind: "vae";
   arch: string;
+  vae_class?: string;
   scaling_factor: number | null;
   shift_factor: number | null;
+  latent_space?: string;
+  latent_channels?: number | null;
+  vae_scale_factor?: number | null;
+  path?: string | null;
   device: string | null;
   dtype: string;
+  storage_dtype?: string | null;
+  compute_dtype?: string | null;
+  memory_profile?: string | null;
+  offload?: boolean;
+  offload_mode?: string | null;
+  channels_last?: boolean;
+  load_time_ms?: number | null;
 }
 
 export interface ConditioningPreview {
@@ -354,6 +429,10 @@ export interface ConditioningPreview {
   arch: string;
   shape: number[];
   pooled_shape: number[] | null;
+  attention_mask_shape?: number[] | null;
+  encoder_count?: number;
+  ref_count?: number;
+  inpaint?: boolean;
   text: string;
 }
 
@@ -365,6 +444,12 @@ export interface LatentPreview {
   width: number | null;
   height: number | null;
   batch_size: number | null;
+  arch?: string;
+  latent_space?: string;
+  latent_channels?: number | null;
+  latent_packing?: number | null;
+  scaling_factor?: number | null;
+  shift_factor?: number | null;
 }
 
 export interface SigmasPreview {
@@ -375,6 +460,7 @@ export interface SigmasPreview {
   denoise: number;
   sigma_max: number | null;
   sigma_min: number | null;
+  arch?: string;
 }
 
 export interface SamplerPreview {
@@ -395,6 +481,10 @@ export interface NoisePreview {
 export interface GuiderPreview {
   kind: "guider";
   cfg: number | null;
+  guidance?: number | null;
+  guidance_mode?: string;
+  start_percent?: number;
+  end_percent?: number;
   arch: string;
   model: string;
   positive_text: string;

@@ -36,6 +36,8 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   loading/error state.
 - `src/store/useOutputsStore.ts` — generated-output gallery list, refresh,
   deletion and error state.
+- `src/lib/modelMetadata.ts` — factual model tag/size/parameter/memory
+  formatters shared by the Models Library and MODEL previews.
 - `src/store/useModelsStore.ts` — repo model library cache by type, refresh
   coalescing, stale-selection lookup and load state.
 - `src/store/useEdgeDragStore.ts` / `useConnectionGuideStore.ts` — transient
@@ -99,9 +101,15 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
 - **System monitor**: a background-less, draggable overlay with CPU/GPU
   utilization, VRAM/RAM usage and GPU temperature. Position, visibility and
   refresh interval persist. Settings also exposes read-only accelerator, torch
-  build, CUDA/NVIDIA and execution-limit diagnostics.
+  build, CUDA/NVIDIA, attention backend, memory profile/allocator, compilation
+  mode, FP16-accumulation and execution-limit diagnostics. Run history shows
+  peak VRAM for nodes that report CUDA metrics.
 - **Execution behavior**: Settings controls whether the Execution panel opens
   automatically on run and whether Canvas Clear asks for confirmation.
+- Image-generation and CLIP model cards expose effective attention, precision,
+  offload, compilation, pre-quantization and memory-estimate tags from the
+  `MODEL` wrapper preview. Quantization tags are factual checkpoint metadata;
+  no per-GPU recommendation is shown.
 - Categorized node library with search and collapsible sections that start
   collapsed (production templates across values, data loaders, cleaning, EDA,
   preprocessing, imbalanced data, models, evaluation, PyTorch and Computer
@@ -113,7 +121,7 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   window keeps its own graph, viewport, undo history, execution state and
   project identity. Open windows are restored from localStorage, and only one
   backend run is allowed at a time (the running tab shows a spinner).
-- **Templates drawer**: 27 ready-to-run examples with collapsible categories;
+- **Templates drawer**: 38 ready-to-run examples with collapsible categories;
   opening one adds a fully wired graph (nodes, widgets and positions) in a new
   window.
 - **Assets drawer**: **Files** tab uploads CSV, TSV, Parquet, Excel, NDJSON,
@@ -133,7 +141,8 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   run-recorded artifact endpoints.
 - **Batches and folder loading**: `IMAGE_BATCH` wires into scalar `IMAGE`
   inputs with a batch chip and aggregate preview; each node runs once per
-  image and reports batch-aware progress. `Load Images From Folder` uses the
+  image and reports batch-aware progress. `Load Image` exposes an
+  alpha/luminance mask output alongside the RGB image. `Load Images From Folder` uses the
   `FolderPath` widget with native Browse, and the five-input `Switch` lets users
   rename inputs and pass the selected one through.
 - **Conditional sizing and resize fields**: widgets with `ShowIf` conditions
@@ -148,15 +157,31 @@ React 19 + TypeScript (strict) + XYFlow + Monaco + Zustand + TailwindCSS v4.
   the backend accepts non-loopback hosts. External Save Media destinations are
   not listed here; use the Save Media node actions instead.
 - **Models tab**: read-only browser for the repo-root `models/<type>` library.
-  It shows format, size, modified time, type and fingerprint, with search, type
-  filtering, a refresh button, **R** refresh, and automatic polling while open.
-  Custom model folders appear automatically.
+  It shows format, size, modified time, type, folder badge, parameter count,
+  pre-quantization format and static resident/offload estimates, with search,
+  type filtering, a refresh button, **R** refresh, and automatic polling while
+  open. Custom model folders and diffusers-style model directories appear
+  automatically. Estimates are heuristics based on checkpoint size and metadata;
+  run history remains the measured memory source.
 - **Local model selector**: nodes can declare
   `local_model: ModelSelector = ModelSelector(type="yolo")`. The widget opens a
-  type-scoped picker, stores a relative `models/<type>/<file>` path, warns when
-  a saved file disappears, and can clear back to the predefined built-in
-  fallback. Vision-model previews show a `local`/`built-in` badge, path, format
-  and fingerprint in both live output and run history.
+  type-scoped picker, stores a relative `models/<type>/<path>` path, warns when
+  a saved file or folder disappears, and can clear back to the predefined
+  built-in fallback. `select="file"|"folder"|"any"` filters the picker and is
+  enforced by the backend; `required=True` removes the fallback and blocks
+  execution until a local selection is made; `include=[...]` searches extra
+  type folders (for example a VAE selector that also lists full diffusers
+  repos). The picker shows the source model type when multiple types are
+  included. Diffusion MODEL/CLIP/VAE previews show architecture, component
+  classes, latent space and encoder counts; conditioning previews also show how
+  many reference images are attached and whether inpainting state is present.
+  Guider previews show guidance mode/value and the CFG window, and sigma previews
+  include the architecture. Vision-model previews show a
+  `local`/`built-in` badge, path, format and fingerprint in both live output and
+  run history.
+- **Optional input sockets**: inputs declared as `Optional[IMAGE] = None` (or
+  `IMAGE | None = None`) render an `optional` badge and a dashed handle. They
+  may stay unconnected; connected values are not expanded as image batches.
 - **Undo/redo** with a 100-step history (node/edge/widget edits, drags,
   arrangement and code commits), plus a **multi-node clipboard**: select several
   nodes and copy/cut/paste/duplicate them with the edges between them preserved.

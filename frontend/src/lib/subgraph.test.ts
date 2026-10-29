@@ -75,7 +75,11 @@ function edge(
   };
 }
 
-const dfIn: InputSocket = { name: "df", data_type: "DATAFRAME" };
+const dfIn: InputSocket = {
+  name: "df",
+  data_type: "DATAFRAME",
+  optional: true,
+};
 const anyOut: OutputSocket = { name: "result", data_type: "ANY" };
 const anyIn: InputSocket = { name: "result", data_type: "ANY" };
 
@@ -99,7 +103,7 @@ test("builds a subgraph from boundary edges and flattens it back", () => {
 
   expect(built.instance.data.subgraphId).toBe("def-1");
   expect(built.instance.data.schema.inputs).toEqual([
-    { name: "df", data_type: "DATAFRAME" },
+    { name: "df", data_type: "DATAFRAME", optional: true },
   ]);
   expect(built.instance.data.schema.outputs).toEqual([
     { name: "result", data_type: "ANY" },

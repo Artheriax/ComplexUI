@@ -443,6 +443,92 @@ def test_signature_orders_inputs_before_widgets() -> None:
     assert result.func(data=(1, 2)) == (1, 2)
 
 
+def test_optional_inputs_support_optional_and_union_annotations() -> None:
+    code = (
+        "from typing import Optional\n"
+        "image1: Optional[IMAGE] = None\n"
+        "image2: IMAGE | None = None\n"
+        "amount: int = 5\n"
+        "return image1: ANY, image2: ANY, amount: INT"
+    )
+    result = transpile_node(code, node_id="t")
+
+    assert result.schema.syntax_errors == []
+    assert [
+        (socket.name, socket.data_type, socket.optional)
+        for socket in result.schema.inputs
+    ] == [
+        ("image1", SocketType.IMAGE, True),
+        ("image2", SocketType.IMAGE, True),
+    ]
+    assert [widget.name for widget in result.schema.widgets] == ["amount"]
+    assert list(inspect.signature(result.func).parameters) == [
+        "image1",
+        "image2",
+        "amount",
+    ]
+    assert result.func() == (None, None, 5)
+    assert result.func(image1="one", image2="two", amount=2) == (
+        "one",
+        "two",
+        2,
+    )
+
+
+def test_optional_input_accepts_string_annotation_and_required_first() -> None:
+    code = (
+        "required: IMAGE\n"
+        "optional: \"IMAGE | None\" = None\n"
+        "return required: IMAGE, optional: ANY"
+    )
+    result = transpile_node(code, node_id="t")
+
+    assert [socket.name for socket in result.schema.inputs] == [
+        "required",
+        "optional",
+    ]
+    assert result.schema.inputs[1].optional is True
+    assert list(inspect.signature(result.func).parameters) == [
+        "required",
+        "optional",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (
+            "from typing import Optional\n"
+            "image: Optional[IMAGE]\n"
+            "return image: ANY",
+            "must declare",
+        ),
+        (
+            "from typing import Optional\n"
+            "image: Optional[IMAGE] = 'x'\n"
+            "return image: ANY",
+            "must declare",
+        ),
+        (
+            "image: IMAGE | STRING = None\nreturn image: ANY",
+            "Socket unions",
+        ),
+        (
+            "from typing import Optional\n"
+            "image: Optional[IMAGE, STRING] = None\n"
+            "return image: ANY",
+            "exactly one",
+        ),
+    ],
+)
+def test_optional_input_rejects_invalid_annotations(
+    code: str, message: str
+) -> None:
+    schema = parse_node(code)
+
+    assert any(message in error.message for error in schema.syntax_errors)
+
+
 def test_unknown_socket_type_maps_to_any() -> None:
     schema = parse_node("custom: SomethingExotic\nreturn custom: AlsoExotic")
     assert schema.inputs[0].data_type is SocketType.ANY

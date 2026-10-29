@@ -412,6 +412,10 @@ def test_diffusion_previews_cover_new_socket_types() -> None:
         "kind": "clip",
         "arch": "sdxl",
         "encoders": 2,
+        "encoder_classes": [],
+        "max_sequence_length": None,
+        "quantization": None,
+        "path": None,
         "device": "cpu",
         "dtype": "",
     }
@@ -785,10 +789,18 @@ def test_advanced_contract_previews() -> None:
             "positive": {"text": "hello"},
             "negative": {"text": "bad"},
             "cfg": 7.0,
+            "guidance": 3.5,
+            "guidance_mode": "inherit",
+            "start_percent": 0.1,
+            "end_percent": 0.8,
         },
     )
     assert guider["kind"] == "guider"
     assert guider["cfg"] == 7.0
+    assert guider["guidance"] == 3.5
+    assert guider["guidance_mode"] == "inherit"
+    assert guider["start_percent"] == 0.1
+    assert guider["end_percent"] == 0.8
     assert guider["positive_text"] == "hello"
     assert guider["negative_text"] == "bad"
 

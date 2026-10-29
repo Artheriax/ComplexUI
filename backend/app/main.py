@@ -84,6 +84,7 @@ from .network_security import (
     origin_is_allowed,
 )
 from .nvml import nvidia_available
+from .optimizations import optimization_health, optimization_summary
 from .os_actions import (
     FolderDialogBusy,
     PathActionError,
@@ -91,6 +92,7 @@ from .os_actions import (
     pick_folder,
     reveal_path,
 )
+from .quantization import quantization_health
 from .run_history import (
     InvalidRunId,
     RunHistoryError,
@@ -142,7 +144,9 @@ from .schemas import (
     SystemMetricsResponse,
     TemplateCreateRequest,
     TemplateInfo,
+    WorkflowEstimateRequest,
     WorkflowGraph,
+    WorkflowMemoryEstimate,
     WorkspaceSession,
     WorkspaceSessionRequest,
     WorkspaceSessionResponse,
@@ -162,6 +166,7 @@ from .workflow_catalog import (
     WorkflowTemplateInfo,
     get_workflows,
 )
+from .workflow_estimate import estimate_workflow_request
 from .workspace import (
     InvalidProjectDocument,
     InvalidProjectSlug,
@@ -349,6 +354,7 @@ if _LOG_DIR is not None:
 logger.info("CORS origins: %s", ", ".join(_CORS_ORIGINS) or "disabled")
 logger.info("workspace: %s", get_project_store().root)
 logger.info("models: %s", get_model_store().root)
+logger.info("optimizations: %s", optimization_summary())
 if "*" in _ALLOWED_HOSTS:
     logger.warning(
         "network mode is enabled: Host validation accepts any hostname and "
@@ -536,6 +542,8 @@ def health_endpoint() -> dict[str, object]:
             "run_timeout_seconds": limits.run_timeout_seconds,
             "max_memory_mb": limits.max_memory_bytes // (1024 * 1024),
         },
+        "optimizations": optimization_health(),
+        "quantization": quantization_health(),
     }
 
 
@@ -565,6 +573,14 @@ def list_models_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/estimate/workflow", response_model=WorkflowMemoryEstimate)
+def estimate_workflow_endpoint(
+    payload: WorkflowEstimateRequest,
+) -> WorkflowMemoryEstimate:
+    """Estimate distinct model memory for a workflow without executing it."""
+    return estimate_workflow_request(payload)
 
 
 @app.get("/api/status", response_model=ExecutionStatusResponse)

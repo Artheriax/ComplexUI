@@ -354,3 +354,23 @@ def test_exported_workflow_broadcasts_image_batches(tmp_path: Path) -> None:
         exported.content, tmp_path / "batch.py"
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_export_passes_none_for_unconnected_optional_inputs(tmp_path: Path) -> None:
+    code = (
+        "image1: Optional[IMAGE] = None\n"
+        "return image1: ANY\n"
+    )
+    graph = WorkflowGraph(
+        nodes=[GraphNode(id="optional_export", code=code)],
+        edges=[],
+    )
+
+    exported = export_python(graph, generated_at=GENERATED_AT)
+
+    assert "def __node_exec_optional_export(image1=None):" in exported.content
+    assert "image1=None" in exported.content
+    completed = _run_exported_script(
+        exported.content, tmp_path / "optional.py"
+    )
+    assert completed.returncode == 0, completed.stderr

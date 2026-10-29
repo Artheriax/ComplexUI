@@ -3,6 +3,8 @@
 # ///
 from typing import Any, Literal
 
+import math
+
 import torch
 from scipy.stats import beta as beta_distribution
 
@@ -52,6 +54,138 @@ def _sigmas_from_config(config: dict[str, Any]) -> torch.Tensor:
         )
     alphas_cumprod = torch.cumprod(1 - betas, dim=0)
     return ((1 - alphas_cumprod) / alphas_cumprod).sqrt().flip(0).float()
+
+
+def _flow_mu(
+    config: dict[str, Any],
+    arch: str,
+    width: int,
+    height: int,
+    distilled: bool,
+    steps: int,
+):
+    if arch != "fibo2" and not bool(
+        config.get("use_dynamic_shifting", False)
+    ):
+        return None
+    if arch == "krea2" and distilled:
+        return 1.15
+    scale = 8 if arch in {"z_image", "anima"} else 16
+    image_seq_len = max(1, (height // scale) * (width // scale))
+    if arch == "flux2":
+        a1, b1 = 8.73809524e-05, 1.89833333
+        a2, b2 = 0.00016927, 0.45666666
+        if image_seq_len > 4300:
+            return float(a2 * image_seq_len + b2)
+        m_200 = a2 * image_seq_len + b2
+        m_10 = a1 * image_seq_len + b1
+        slope = (m_200 - m_10) / 190.0
+        intercept = m_200 - 200.0 * slope
+        return float(slope * steps + intercept)
+    base_seq = int(config.get("base_image_seq_len", 256))
+    max_seq = int(config.get("max_image_seq_len", 4096))
+    base_shift = float(config.get("base_shift", 0.5))
+    max_shift = float(config.get("max_shift", 1.15))
+    if max_seq <= base_seq:
+        return max_shift
+    slope = (max_shift - base_shift) / (max_seq - base_seq)
+    return float(image_seq_len * slope + (base_shift - slope * base_seq))
+
+
+def _linear_flow_sigmas(steps: int) -> torch.Tensor:
+    """Linear flow schedule used by Anima and Fibo 2 inference."""
+    count = max(int(steps), 1)
+    return torch.cat(
+        (
+            torch.linspace(
+                1.0,
+                1.0 / count,
+                count,
+                dtype=torch.float64,
+            ).float(),
+            torch.zeros(1),
+        )
+    )
+
+
+def _shift_flow_sigmas(values: torch.Tensor, mu: float) -> torch.Tensor:
+    """Apply the exponential dynamic shift used by flow schedulers."""
+    exponential = math.exp(float(mu))
+    return exponential / (exponential + (1.0 / values - 1.0))
+
+
+def _moss_sigmas(config: dict[str, Any], steps: int) -> torch.Tensor:
+    """MOSS Image's shifted schedule snapped to its training grid."""
+    count = int(config.get("num_train_timesteps", 1000) or 1000)
+    shift = float(config.get("shift", 5.0) or 5.0)
+    training_shift = float(config.get("training_shift", 1.0) or 1.0)
+
+    def grid(size: int, scale: float) -> torch.Tensor:
+        lower = scale / (count + scale - 1)
+        values = torch.linspace(1.0, lower, size, dtype=torch.float64)
+        return scale * values / (1.0 + (scale - 1.0) * values)
+
+    sigmas = grid(max(int(steps), 1), shift)
+    training = grid(count, training_shift).flip(0)
+    upper = torch.searchsorted(training, sigmas).clamp(max=count - 1)
+    lower = (upper - 1).clamp(min=0)
+    nearest = torch.where(
+        (sigmas - training[lower]).abs()
+        <= (training[upper] - sigmas).abs(),
+        lower,
+        upper,
+    )
+    snapped = torch.unique_consecutive(training[nearest])
+    return torch.cat((snapped.float(), torch.zeros(1)))
+
+
+def _ideogram4_sigmas(
+    config: dict[str, Any],
+    width: int,
+    height: int,
+    steps: int,
+) -> torch.Tensor:
+    """Ideogram 4's resolution-aware logit-normal flow schedule."""
+    intervals = torch.linspace(0.0, 1.0, steps + 1, dtype=torch.float64)
+    z = torch.special.ndtri(intervals)
+    base_mu = float(config.get("base_mu", 0.0) or 0.0)
+    mu = base_mu + 0.5 * math.log(
+        max(width * height, 1) / (512 * 512)
+    )
+    t_min = 1.0 / (1.0 + math.exp(0.5 * 18.0))
+    t_max = 1.0 / (1.0 + math.exp(0.5 * -15.0))
+    values = (1.0 - torch.special.expit(mu + 1.5 * z)).clamp(
+        t_min,
+        t_max,
+    )
+    sigmas = (1.0 - values).flip(0)[:-1]
+    return torch.cat((sigmas.float(), torch.zeros(1)))
+
+
+def _flow_sigmas_from_config(
+    config: dict[str, Any],
+    mu: float | None = None,
+) -> torch.Tensor:
+    """Training sigma grid for flow-matching models (1.0 down to one step)."""
+    count = int(config.get("num_train_timesteps", 1000) or 1000)
+    shift = float(config.get("shift", 1.0) or 1.0)
+    values = torch.linspace(
+        1.0,
+        1.0 / max(count, 1),
+        count,
+        dtype=torch.float64,
+    )
+    if mu is not None:
+        if str(config.get("time_shift_type", "exponential")) == "linear":
+            values = mu / (mu + (1.0 / values - 1.0))
+        else:
+            exponential = math.exp(mu)
+            values = exponential / (
+                exponential + (1.0 / values - 1.0)
+            )
+    elif shift > 0 and shift != 1.0:
+        values = shift * values / (1.0 + (shift - 1.0) * values)
+    return values.float()
 
 
 def _timesteps_from_sigmas(sigmas: torch.Tensor, base_sigmas: torch.Tensor) -> torch.Tensor:
@@ -164,8 +298,72 @@ if denoise <= 0 or denoise > 1:
     raise ValueError("denoise must be greater than 0 and at most 1")
 
 base_sigmas = _sigmas_from_config(config)
-full_sigmas = _schedule(base_sigmas, scheduler, int(steps))
-timesteps = _timesteps_from_sigmas(full_sigmas, base_sigmas)
+flow_adapter = (
+    isinstance(model.get("sampler_adapter"), dict)
+    and str(model.get("arch", ""))
+    in {
+        "flux1",
+        "flux2",
+        "flux3",
+        "qwen_image",
+        "z_image",
+        "krea2",
+        "ideogram4",
+        "fibo2",
+        "anima",
+        "moss_image",
+    }
+)
+arch = str(model.get("arch", ""))
+if flow_adapter:
+    recommended = model.get("recommended")
+    if not isinstance(recommended, dict):
+        recommended = {}
+    flow_mu = _flow_mu(
+        config,
+        arch,
+        int(recommended.get("width", 1024)),
+        int(recommended.get("height", 1024)),
+        bool(model.get("is_distilled", False)),
+        int(steps),
+    )
+    if scheduler in {"normal", "simple"} and arch in {"anima", "fibo2"}:
+        base_sigmas = _linear_flow_sigmas(int(steps))
+        if arch == "fibo2" and flow_mu is not None:
+            base_sigmas = torch.cat(
+                (
+                    _shift_flow_sigmas(base_sigmas[:-1], flow_mu),
+                    torch.zeros(1),
+                )
+            )
+        full_sigmas = base_sigmas
+        timesteps = (full_sigmas[:-1] * 1000.0).to(torch.float32)
+    elif scheduler in {"normal", "simple"} and arch == "moss_image":
+        base_sigmas = _moss_sigmas(config, int(steps))
+        full_sigmas = base_sigmas
+        timesteps = (full_sigmas[:-1] * 1000.0).to(torch.float32)
+    else:
+        base_sigmas = _flow_sigmas_from_config(config, flow_mu)
+        full_sigmas = _schedule(base_sigmas, scheduler, int(steps))
+        timesteps = (full_sigmas[:-1] * 1000.0).to(torch.float32)
+else:
+    full_sigmas = _schedule(base_sigmas, scheduler, int(steps))
+    timesteps = _timesteps_from_sigmas(full_sigmas, base_sigmas)
+if (
+    flow_adapter
+    and arch == "ideogram4"
+    and scheduler in {"normal", "simple"}
+):
+    recommended = model.get("recommended")
+    if not isinstance(recommended, dict):
+        recommended = {}
+    full_sigmas = _ideogram4_sigmas(
+        config,
+        int(recommended.get("width", 2048)),
+        int(recommended.get("height", 2048)),
+        int(steps),
+    )
+    timesteps = (full_sigmas[:-1] * 1000.0).to(torch.float32)
 if denoise < 1.0:
     kept_steps = max(1, int(round(int(steps) * float(denoise))))
     full_sigmas = full_sigmas[-(kept_steps + 1) :]

@@ -7,7 +7,9 @@ FastAPI service and node-code toolchain for ComplexUI.
   returns, input/widget/output extraction, function wrapping). Assigned
   `typing.Literal[...]` annotations become fixed-choice widgets: the schema
   carries an `options` list, and defaults, workflow overrides and wired values
-  are validated against it.
+  are validated against it. Inputs annotated `Optional[TYPE]` or `TYPE | None`
+  with a `= None` default become optional sockets that may stay unconnected and
+  are excluded from image batch expansion.
 - `app/executor.py` — topological DAG executor with a bounded
   content-addressable LRU cache (64 outputs / 32 MiB), trust gating,
   cancellation checks and WebSocket-ready event streaming. Nodes receive
@@ -31,13 +33,15 @@ FastAPI service and node-code toolchain for ComplexUI.
   bounded allowlist of media paths produced by completed runs so external Save
   Media destinations can be previewed, copied, opened and revealed safely.
 - `app/models.py` — metadata-only scanner for the repo-root `models/` library.
-  It creates `yolo/`, `torchvision/`, and `classification/`, discovers custom
-  type folders, validates paths/extensions/symlinks, and returns size + mtime
-  fingerprints without importing model files. `COMPLEXUI_MODELS_DIR` overrides
-  the root.
+  It creates `yolo/`, `torchvision/`, `classification/`, `diffusion/`, `unet/`,
+  `vae/`, and `clip/`, discovers custom type folders, validates
+  paths/extensions/symlinks, and returns size + bounded mtime fingerprints for
+  files and diffusers-style folders without importing model contents.
+  `COMPLEXUI_MODELS_DIR` overrides the root.
 - `app/transpiler.py` recognizes `local_model: ModelSelector =
-  ModelSelector(type="yolo")` as a model widget and records `model_type` on the
-  schema.
+  ModelSelector(type="yolo")` as a model widget and records `model_type`,
+  `model_select` (`file`/`folder`/`any`), `model_required`, and
+  `model_include` on the schema.
 - `app/exporter.py` — standalone PEP 723 Python and nbformat 4.5 notebook
   generation using the same transpiler/DAG plan (scoped exports and deduped
   dependencies included).
@@ -51,6 +55,38 @@ FastAPI service and node-code toolchain for ComplexUI.
   build.
 - `app/accelerator.py` — accelerator configuration, NVML-based `auto` detection,
   and the torch CPU/CUDA wheel index selection.
+- `app/optimizations.py` — dependency-light runtime optimization configuration:
+  attention backend choices, memory profiles, allocator/`PYTORCH_ALLOC_CONF`
+  helpers, compile defaults, optional-package detection and the
+  `/api/health` optimization diagnostics. It never imports torch, so the server
+  can report settings before CUDA initialization.
+- `app/attention_dispatch.py` — worker-side capability checks, SDPA sub-backend
+  flags and the guarded optional-kernel dispatch wrapper for SageAttention,
+  FlashAttention 2/4, xFormers and Comfy Kitchen INT8/SOL. A process-wide
+  launch default is combined with a `ContextVar` per-MODEL override, so an
+  `Attention Backend` node only affects that model's diffusion forward. It
+  falls back to exact SDPA for unsupported shapes, masks, dtypes or versions.
+- `app/quantization.py` — metadata-only detection and capability gates for
+  pre-quantized SafeTensors/GGUF checkpoints. It reads Comfy `.comfy_quant`
+  tensors, sidecar JSON, legacy scaled-FP8 dtypes and bounded GGUF headers
+  without loading weights, and exposes the `/api/health` format registry.
+- `app/single_file_quantization.py` — single-file compatibility path. It
+  dequantizes Comfy LDM tensors, feeds the resulting state dict through
+  diffusers' key-based single-file conversion, then re-patches the SD/SDXL UNet
+  with native quantized weights using a marker-based module mapping. CLIP
+  components in the same checkpoint remain dequantized.
+- `app/quantized_loading.py` — worker-side Comfy-format component loader. It
+  reconstructs `comfy_kitchen` quantized tensors from `.comfy_quant` metadata,
+  replaces matching `nn.Linear`/`nn.Embedding` modules, and exposes a native
+  kernel path with an explicit dequantized fallback for
+  `full_precision_matrix_mult` or disabled formats. Single-file checkpoints are
+  intentionally not accepted here.
+- `app/memory_estimate.py` — static model memory estimates from checkpoint size
+  and quantization metadata. Run-history peak metrics remain the measured
+  source of truth.
+- `app/workflow_estimate.py` — discovers typed `ModelSelector` widgets in a
+  workflow graph and returns distinct model weights plus resident/offload
+  estimates without executing node code.
 - `app/nvml.py` — best-effort NVIDIA GPU discovery through `nvidia-ml-py`.
 - `app/system_metrics.py` — `psutil` CPU/RAM metrics plus NVML GPU utilization,
   VRAM and temperature. CPU temperature is intentionally not collected.
@@ -74,24 +110,27 @@ FastAPI service and node-code toolchain for ComplexUI.
   runs, used for external Save Media preview/copy/open/reveal actions.
 - `app/os_actions.py` — platform open/reveal helpers and the native folder
   dialog (Windows PowerShell, macOS `osascript`, Linux `zenity`/`kdialog`).
-- `app/templates/` — 115 official ML node templates across 11 categories:
+- `app/templates/` — 126 official ML node templates across 11 categories:
   scalar values (int/float/bool/string), data loaders (sklearn sets,
   synthetic/messy generators, CSV/Parquet/Excel/NDJSON), cleaning, EDA,
   preprocessing, imbalanced-data samplers, models (scikit-learn +
   XGBoost/LightGBM), evaluation, the PyTorch tensor path, image generation
-  (SD1.5/SDXL checkpoint, CLIP, VAE, scheduler and sampler nodes), and
-  computer vision (torchvision image classification/detection/segmentation,
-  video classification, YOLO image/video detection and segmentation,
-  image/video loaders, media preview and media saving). Resolution and Empty
-  Latent Image share resolution/megapixel modes, and Resize Image/Resize Latent
-  consolidate dimensions, side, megapixels and multiplier modes. Optional
-  dependencies (`torch`, `torchvision`,
-  `ultralytics`, `opencv-python`, `imageio-ffmpeg`, `safetensors`,
-  `onnxruntime`, `xgboost`, `lightgbm`, `fastexcel`, `imbalanced-learn`) are
-  declared in PEP 723 headers and installed on demand. Generated videos are
-  encoded as browser-playable H.264 MP4/MOV/MKV through the bundled
-  `imageio-ffmpeg` encoder. Save Media writes images and videos with a
-  configurable folder and filename template. The default is
+  (SD1.5/SDXL checkpoints plus diffusers component loaders for Stable
+  Diffusion, FLUX 1/2/3, Qwen Image 2.1, Z-Image, Krea 2, Ideogram 4, Fibo 2,
+  Anima and MOSS, CLIP/dual-CLIP, VAE, conditioning, scheduler and sampler
+  nodes), and computer vision (torchvision image
+  classification/detection/segmentation, video classification, YOLO
+  image/video detection and segmentation, image/video loaders, media preview
+  and media saving). Resolution and Empty Latent Image share
+  resolution/megapixel modes, and Resize Image/Resize Latent consolidate
+  dimensions, side, megapixels and multiplier modes. Optional dependencies
+  (`torch`, `torchvision`, `diffusers>=0.42`, `transformers`, `accelerate`,
+  `sentencepiece`, `ultralytics`, `opencv-python`, `imageio-ffmpeg`,
+  `safetensors`, `onnxruntime`, `xgboost`, `lightgbm`, `fastexcel`,
+  `imbalanced-learn`) are declared in PEP 723 headers and installed on demand.
+  Generated videos are encoded as browser-playable H.264 MP4/MOV/MKV through
+  the bundled `imageio-ffmpeg` encoder. Save Media writes images and videos with
+  a configurable folder and filename template. The default is
   `outputs/<YYYY-MM-DD>/<model>_<counter>[_<batch>].<ext>`; the folder may be a
   relative path under `outputs/` or an absolute folder chosen with the native
   Browse dialog. Filename tokens include `%date%`, `%time%`, `%counter%`,
@@ -105,7 +144,35 @@ FastAPI service and node-code toolchain for ComplexUI.
   Scalar outputs can also target any widget parameter (for example
   `float_value.result -> train_test_split.test_size`); the executor overrides
   that keyword argument after applying stored widget values.
-- `app/workflows/` — 27 example workflow definitions (JSON) served by the API
+  Image-generation tuning nodes: `Attention Backend` selects a capability-checked
+  PyTorch SDPA sub-backend; `Model Precision` converts diffusion weights in place
+  and tracks storage/compute/accumulation; `Compile Model` opts in to
+  `torch.compile` with eager fallback; and `Model Memory` sets residency,
+  model-level offload, attention slicing and channels-last. `Load Diffusion
+  Model` and `Load VAE` apply launcher defaults for attention, memory profile,
+  compilation and channels-last, and expose `storage_dtype`, `compute_dtype`,
+  `load_time_ms` and residency metadata for previews. `Attention Backend` is a
+  per-MODEL override: the launcher backend stays the global default outside the
+  diffusion forward, and optional kernels are skipped by `auto` compilation mode
+  because they can graph-break or fall back to SDPA.
+- Pre-quantized checkpoints are detected without loading weights. The format
+  registry covers INT8 W8A8, INT8 ConvRot W4A4, GGUF, NVFP4, MXFP8, scaled FP8
+  and NF4, with per-format runtime, package, component and compute-capability
+  gates. Detection accepts Comfy `.comfy_quant` JSON tensors, native GGUF
+  headers, sidecar `.quant.json` files and legacy scaled-FP8 dtypes. The Models
+  Library shows factual format/parameter/memory tags; no per-GPU recommendation
+  is made. `POST /api/estimate/workflow` returns distinct model weights,
+  resident and offload estimates for a `WorkflowGraph`. Diffusers component
+  folders with `.comfy_quant` metadata load through `comfy-kitchen` native
+  INT8/ConvRot native kernels and FP8/MXFP8/NVFP4 quantized storage with
+  dequantized linear fallback, plus INT8/FP8 embeddings; unsupported or
+  explicitly emulated layers dequantize to the compute dtype. Single-file
+  SD1.5/SDXL quantized checkpoints are converted to diffusers and the UNet is
+  re-patched with native INT8/ConvRot weights; CLIP components in the same
+  checkpoint remain dequantized. GGUF headers are detected and tagged, but no
+  GGUF weight runtime is wired into the loaders yet. Quantized VAEs are out of
+  scope.
+- `app/workflows/` — 38 example workflow definitions (JSON) served by the API
   and validated at load time, including offline vision image/video pipelines
   and local image-generation workflows.
 
@@ -119,16 +186,122 @@ distributing generated applications or network services that use YOLO nodes.
 `IMAGE_BATCH` is an ordered list of PIL images. When such a list reaches a
 scalar `IMAGE` input, the executor runs that node once per image, repeats scalar
 `IMAGE` inputs for every item, and requires equal lengths for multiple batch
-inputs. `MEDIA` and `IMAGE_BATCH` inputs receive the whole list. A node may read
+inputs. Optional inputs (`Optional[IMAGE] = None` or `IMAGE | None = None`) are
+exempt: they receive the whole value and may stay unconnected. `MEDIA` and
+`IMAGE_BATCH` inputs receive the whole list. A node may read
 the current item through the `batch_index`/`batch_size` globals; progress is
 mapped across the batch, cancellation is checked between items, errors report
 the failing item index, and the limit is 256 items. Empty batches produce empty
 output lists without executing the node. `Load Images From Folder` reads a
-bounded, name- or mtime-sorted folder of images into a batch; `FolderPath`
+bounded, name- or mtime-sorted folder of images into a batch; `Load Image`
+returns an RGB image plus an alpha/luminance mask output. `FolderPath`
 widgets resolve absolute paths or repo-relative paths and are read-only. The
 five-input `Switch` passes one renamed input through, and `Resize Image`,
 `Resize Latent` and `Preview Mask` accept batches through normal socket
 compatibility.
+
+## Attention, precision, compilation and memory
+
+The runtime exposes one capability-oriented SDPA selector rather than a fixed
+backend. `Attention Backend` and `Load Diffusion Model` validate the device
+capability, torch/CUDA version and requested backend before enabling
+`torch.backends.cuda` SDPA sub-backends. `auto` falls back to the safest
+available path; an explicit unsupported request fails with the failed
+capability and an install/arch hint. The selected backend and reason are printed
+by the node and stored on the `MODEL` wrapper for previews and diagnostics.
+SageAttention 2/2++, FlashAttention 2/3 and xFormers are selectable when the
+matching package is installed; their runtime adapters fall back to exact SDPA
+when a request shape, mask, dtype or package constraint is unsupported.
+FlexAttention and Comfy Kitchen kernels are detected/reported only. Optional
+kernels are not bundled dependencies; install the matching wheel manually.
+`--attention-benchmark` or the node's benchmark toggle times available backends
+on synthetic tensors, checks correctness against a float reference and selects
+the fastest; the per-backend results are retained on the `MODEL` wrapper.
+
+Windows SageAttention 2.2 installation (RTX 50 / cu130 / torch >= 2.10):
+
+```powershell
+uv pip install triton-windows
+uv pip install "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post6/sageattention-2.2.0%2Bcu130torch2.10.0andhigher.post6-cp310-abi3-win_amd64.whl"
+```
+
+`post6` is the latest NVIDIA wheel; `post7` is the AMD RDNA4 build. The wheel
+uses Python ABI3 (>=3.10), so it works with the backend's Python 3.13 venv.
+Select it with `--attention-backend sageattention` or the `Attention Backend`
+node. The non-square cross-attention path and unsupported masks deliberately
+fall back to SDPA; self-attention uses the quantized kernel. These packages are
+environment-local and are not added to `pyproject.toml`; a clean `uv sync
+--exact` may remove them, so reinstall the two wheels after rebuilding the
+venv. The validated combination on this machine is
+`sageattention 2.2.0+cu130torch2.10.0andhigher.post6` plus
+`triton-windows 3.9.0.post30`.
+
+`Model Precision` keeps checkpoint storage dtype, compute dtype and accumulation
+mode explicit. FP32, FP16 and BF16 conversion is supported for the diffusion
+transformer; VAE loading has an independent `compute_dtype` widget. FP16
+accumulation is experimental, requires `--experimental-fp16-accumulation`, and
+samplers reject non-finite predictions instead of silently propagating NaNs.
+Pre-quantized formats (FP8, MXFP8, NVFP4, INT8/W8A8, ConvRot, NF4 and GGUF) are
+reported by diagnostics but are refused by the current loader with an actionable
+message; they are never treated as interchangeable.
+
+`Compile Model` and `--torch-compile` apply `torch.compile` in place to the
+transformer forward call. Compilation is opt-in, uses a stable bounded Inductor
+cache directory, reports cold compile time separately, and falls back to eager
+on an `auto`/server-mode failure. Apply attention and precision patches before
+compilation so the captured graph sees the final backend and dtype. The
+`reduce-overhead` mode and compilation combined with offloading are rejected in
+this build because CUDA graphs and moving weights are not safe to combine yet.
+Channels-last is enabled for SD1.5/SDXL conv UNets and compatible VAEs; DiT
+models stay in their native format. The Inductor cache directory is stable but
+not automatically pruned; delete `<workspace>/cache/torchinductor` to reclaim
+disk space.
+
+`Model Memory` resolves `auto`, `low`, `balanced` and `resident` profiles. `low`
+offloads the diffusion transformer between sampler calls and offloads the VAE;
+`balanced` keeps the transformer resident and offloads the VAE. Samplers move an
+offloaded transformer to the target device before the denoise loop and back to
+CPU afterwards. `offload="sequential"` uses diffusers leaf-level hooks;
+`offload="block"` and `offload="group"` use diffusers group offloading with
+configurable `group_size`, CUDA stream prefetching, non-blocking transfers and
+pinned host buffers. Component loaders request `low_cpu_mem_usage` from
+diffusers/transformers where supported to reduce peak host memory during
+initialization. `VAE Decode` and `VAE Encode` expose slicing/tiling
+independently, clamp invalid overlap values, and retry once with tiling after an
+out-of-memory failure. Attention slicing is offered as a compatibility/low-memory
+fallback, not as a speed feature.
+
+Per-node telemetry includes best-effort CPU RSS, peak allocated/reserved VRAM and
+current free/total VRAM. Run history retains the metrics and displays peak VRAM
+when present. On OOM the executor drops intermediate cache entries, collects
+garbage, calls `torch.cuda.empty_cache()` only after dropping references, and
+retries once only when cleanup actually reclaimed memory. Otherwise it raises
+`NodeOOM` with the allocation message, memory breakdown and ranked suggestions.
+`empty_cache()` does not free live tensors or another process's allocations, so
+unchanged operations are never retried indefinitely. A retry re-runs the whole
+node, so side-effecting nodes should tolerate a repeated attempt. A caught OOM
+fails only the workflow; the disposable worker process is replaced on the next
+run if it crashes or loses its CUDA context.
+
+## Memory profiles and allocator configuration
+
+The launcher applies allocator configuration before the backend/worker imports
+torch or initializes CUDA:
+
+| Option | Recommended use |
+| --- | --- |
+| `expandable_segments:True` | Linux default for long-running servers with variable latent sizes; reduces fragmentation |
+| `max_split_size_mb:<N>` | Legacy fragmentation mitigation; superseded by expandable segments |
+| `garbage_collection_threshold:<f>` | Shared GPUs or multiple workloads |
+| `backend:cudaMallocAsync` | Explicit alternative allocator profile; native-only options are ignored and therefore rejected by the launcher |
+
+`PYTORCH_ALLOC_CONF` is the supported variable (`PYTORCH_CUDA_ALLOC_CONF` remains
+a deprecated alias). An existing value always wins over launcher defaults.
+`--allocator cudaMallocAsync` cannot be combined with `--expandable-segments` or
+`--pytorch-alloc-conf`. If reserved memory is much larger than allocated memory,
+fragmentation is likely; if allocated is close to capacity, reduce the workload
+or use a smaller/quantized checkpoint instead of expecting an allocator flag to
+help.
 
 ## Local models
 
@@ -138,7 +311,11 @@ The model library lives at the repo root, not inside the active workspace:
 models/
 ├── yolo/             # .pt / .onnx YOLO checkpoints
 ├── torchvision/      # .pt / .pth / .safetensors detection/segmentation state dicts
-└── classification/   # .pt / .pth / .safetensors / .onnx classifiers
+├── classification/   # .pt / .pth / .safetensors / .onnx classifiers
+├── diffusion/        # checkpoints, full diffusers repos and components
+├── unet/             # legacy diffusion UNet component files
+├── vae/              # standalone VAE files or folders
+└── clip/             # standalone CLIP/T5/Qwen/Mistral text-encoder folders
 ```
 
 Custom folders are discovered automatically. `COMPLEXUI_MODELS_DIR` can point
@@ -149,15 +326,105 @@ Code-first selector syntax:
 
 ```python
 local_model: ModelSelector = ModelSelector(type="yolo")
+diffusion_model: ModelSelector = ModelSelector(
+    type="diffusion",
+    select="any",       # file | folder | any
+    required=True,
+)
+vae_name: ModelSelector = ModelSelector(
+    type="vae",
+    select="any",
+    required=True,
+    include=["diffusion"],  # also search full diffusers repos
+)
 ```
 
 The marker is static DSL metadata and is never imported or executed. It becomes
 a STRING-compatible model widget whose value is
-`models/<type>/<file>`. At execution the executor resolves it to an absolute
-path. Empty means use the predefined fallback. Missing, mismatched, or
-unsupported selections fail during `validate_graph` before a run starts. The
-selected file's `size:mtime_ns` fingerprint is part of the node cache key, and
-exported scripts receive the resolved absolute model path.
+`models/<type>/<path>`. Diffusers-style folders are listed when they contain a
+`model_index.json`, `modular_model_index.json`, `config.json`, a supported
+weight file, or a standard component folder. `include=[...]` adds extra
+model-type folders to the picker and resolver, so a VAE selector can also list
+full diffusers repos. At execution the executor resolves the selection to an
+absolute file or folder path. Empty means use the predefined fallback unless
+`required=True`. Missing, mismatched (file versus folder), or unsupported
+selections fail during `validate_graph` before a run starts. File
+`size:mtime_ns` and bounded recursive folder fingerprints are part of the node
+cache key, and exported scripts receive the resolved absolute path.
+
+Diffusion loading is local-only and component-oriented:
+
+- `Load Diffusion Model` reads `model_index.json`/`modular_model_index.json`,
+  loads the UNet/transformer and scheduler through `diffusers.AutoModel`, and
+  falls back to the repository's `pipeline*.py` classes for custom components
+  such as MOSS Image. It stores architecture, latent-space, capability and
+  recommended-default metadata.
+- `Load CLIP` loads a full repo or component folder and exposes an `encode`
+  callable for SD1.5/SDXL, FLUX, Qwen, Z-Image, Krea 2, Ideogram 4, Fibo 2,
+  Anima and MOSS. `Load CLIP (Dual)` combines CLIP-L + CLIP-G or CLIP + T5.
+  Fibo 2 and MOSS Image accept structured/long prompts; raise
+  `max_sequence_length` (up to 8192) when the default truncates them.
+- `Load VAE` supports `AutoencoderKL`, `AutoencoderKLFlux2`,
+  `AutoencoderKLQwenImage`, `AutoencoderKLQwenImage21` and
+  `AutoencoderKLWan`, and exposes encode/decode callables with family-aware
+  scaling, shift, patch packing and latent normalization.
+- Architecture dropdowns list only implemented image families. Full repos and
+  components must be selected with `type="auto"` or the matching family;
+  mismatches fail with an actionable error. MOSS custom components require
+  `allow_custom_code=True`.
+- `KSampler`, `KSampler Advanced`, `Sampler Custom` and
+  `Sampler Custom Advanced` route through a per-architecture adapter stored on
+  the `MODEL` wrapper. Text-to-image, img2img, multi-reference editing and
+  masked inpainting are implemented for SD1.5, SDXL, FLUX.1, FLUX.2, FLUX.3,
+  Ideogram 4, Fibo 2, Anima, Qwen Image 2.1, Z-Image, Krea 2 and MOSS Image.
+  The adapter handles family-specific latent packing, text-id/RoPE preparation,
+  timestep scaling, dual-branch or skip-layer guidance, flow sigma schedules
+  and final latent unpacking. Flow schedulers share the same parity rules:
+  Anima and Fibo 2 use linear flow sigmas (Fibo 2 applies its resolution shift),
+  Ideogram 4 uses its resolution-aware logit-normal schedule, and MOSS Image
+  uses its shifted schedule snapped to the training grid; per-step skip-layer
+  guidance windows follow the sampler step fraction.
+- Recommended guidance defaults are exposed in `MODEL.recommended.guidance` and
+  `MODEL.capabilities.guidance_default`: SD1.5/SDXL use CFG 7, FLUX.1 uses
+  model guidance 3.5, FLUX.2 uses 4.0, FLUX.3 uses 1.0, Ideogram 4 uses 7.0,
+  Fibo 2 uses 5.0, Anima uses 4.0, Qwen Image 2.1 uses 4.0, Z-Image uses 5.0,
+  Krea 2 uses 4.5 and MOSS Image uses 3.0.
+  `MODEL.capabilities.model_guidance` reports whether the loaded transformer
+  accepts a guidance embedding; `dual_branch_guidance` and
+  `skip_layer_guidance` mark Ideogram 4 and MOSS Image respectively.
+- `Encode Reference Images` adds numbered optional `image1`…`image10` inputs,
+  encodes them through the selected VAE and stores their latents on the
+  conditioning. FLUX.1 Kontext, FLUX.2, FLUX.3, Fibo 2 and Qwen Image 2.1 consume
+  those latents; the node provides up to ten references and other families reject
+  them with an actionable error. References are never batch-expanded. Fibo 2
+  reference latents condition the transformer; its text encoder receives text
+  only, so edit prompts should describe the referenced images.
+- `Model Guidance` attaches a guidance-embedding scale to a `MODEL` wrapper for
+  guidance-distilled architectures such as FLUX.1 and FLUX.2. It can use the
+  architecture's recommended guidance default or an explicit override; models
+  without a guidance embedding reject it and use sampler CFG instead. Explicit
+  model guidance can be combined with CFG on FLUX adapters; the legacy fallback
+  (no `Model Guidance` node) continues to treat sampler CFG as the guidance
+  embedding for models that require one.
+- `CFG Guider` exposes `cfg`, `guidance_mode` (`inherit`/`override`), `guidance`
+  and a fractional `start_percent`/`end_percent` CFG window. The window is
+  consumed by `Sampler Custom Advanced`; outside the window CFG runs at 1.
+- `MOSS Guidance` configures MOSS Image's negative-branch skip layers and
+  optional skip-layer guidance (`slg_scale`, `slg_layers`, `slg_start`,
+  `slg_stop`). The defaults reproduce MOSS's CFG with block 22 skipped in the
+  negative branch.
+- `Inpaint Conditioner` encodes `pixels` and either an `IMAGE` mask or the first
+  (largest) candidate from a detection/segmentation `MASKS` value through the
+  VAE, then returns positive/negative conditioning carrying the inpaint state.
+  Four-channel UNets start from image latents and apply a latent noise mask,
+  nine-channel inpaint UNets receive mask plus masked-latent channels, and FLUX
+  Fill transformers receive packed mask/masked-image tokens. Ideogram 4, Fibo 2,
+  Anima and MOSS Image start from the masked latent (Fibo 2 and Ideogram 4 also
+  use it as context) because their reference pipelines have no dedicated mask
+  channel. `Load Image` exposes an alpha/luminance mask output for direct
+  wiring, and `Make Mask` generates a feathered rectangular or elliptical mask.
+- `Conditioning Zero Out` clears `cond`/`pooled` tensors while preserving
+  architecture metadata, reference images and inpaint state.
 
 Conditional widgets use the same static marker style:
 
@@ -201,6 +468,12 @@ the old template keep their old node code and need a one-time approval (or
 replacement); newly dragged nodes use the new template and bundled workflows
 materialize the new code.
 
+Note: `load_diffusion_model`, `load_vae`, `vae_decode` and `vae_encode` now
+carry runtime optimization metadata and VAE slicing/auto-tiled retry widgets.
+Existing canvases keep their old node code and need a one-time approval (or
+replacement) to pick up the new behavior; new nodes and bundled workflows use
+the updated templates.
+
 Note: `resolution` and `empty_latent_image` now expose resolution/megapixel
 modes and preset fields. Existing canvases keep their old node code and need a
 one-time approval (or replacement); new nodes and bundled workflows use the
@@ -221,10 +494,11 @@ machine is trusted: node code already runs with the backend user's permissions.
 | `/api/parse` | POST | Parse node code into a `NodeSchema` (never executes code). |
 | `/api/templates` | GET | Official templates with code, hash, category, description, `hidden` flag and socket schema. Hidden templates are still served (workflows depend on them); the UI keeps them out of the palette. |
 | `/api/workflows` | GET | Bundled example workflows (nodes, edges, widget values, positions), ordered by category. |
-| `/api/health` | GET | Liveness probe (`status`, `version`, template/workflow counts, `models_root`, accelerator/torch/CUDA/NVIDIA diagnostics and active run limits) used by the launcher and Settings. |
+| `/api/health` | GET | Liveness probe (`status`, `version`, template/workflow counts, `models_root`, accelerator/torch/CUDA/NVIDIA diagnostics, active run limits, attention/precision/memory/compile optimization settings and the quantization format registry) used by the launcher and Settings. |
 | `/api/system/metrics` | GET | Live CPU utilization/cores, RAM usage, and NVIDIA GPU utilization/VRAM/temperature for the system monitor. Missing sensors return `null`. |
-| `/api/models/types` | GET | List default and custom model type folders with file counts. |
-| `/api/models?type=<type>` | GET | List metadata for supported model files (optionally scoped to one type); never loads model contents. |
+| `/api/models/types` | GET | List default and custom model type folders with file/folder counts. |
+| `/api/models?type=<type>` | GET | List metadata for supported model files and diffusers-style folders (optionally scoped to one type), including `is_directory`, `parameter_count`, pre-quantization metadata and static memory estimates; never loads model contents. |
+| `/api/estimate/workflow` | POST | Body `{"workflow": WorkflowGraph}`. Returns distinct model weights, resident/offload estimates and per-reference errors for typed `ModelSelector` widgets without executing node code. |
 | `/api/status` | GET | Execution status (`idle`/`running` + `run_id`); clients call it after a WebSocket reconnect to resync. |
 | `/api/approve` | POST | Approve custom/modified node code for this session. |
 | `/api/export` | POST | Body `{"graph": ..., "format": "python" \| "notebook", "targets": [...] \| null}`. Returns `{filename, media_type, content}` for a standalone Python script or notebook; validates wiring/syntax but does not execute or require trust approval. |
@@ -300,6 +574,15 @@ Defaults and environment overrides:
 | `COMPLEXUI_INPUT_DIR` | repo-root `inputs/` | Uploaded-input directory |
 | `COMPLEXUI_OUTPUT_DIR` | repo-root `outputs/` | Generated-output directory |
 | `COMPLEXUI_ACCELERATOR` | `auto` | `cpu`, `cuda`, or `auto` (NVML GPU detection); the launcher flag `--accelerator` overrides it |
+| `COMPLEXUI_ATTENTION` | `auto` | `auto`, SDPA sub-backends, or optional `xformers`, `flash-attn`, `sageattention` (package required) |
+| `COMPLEXUI_ATTENTION_BENCHMARK` | unset | Benchmark available attention backends once and select the fastest |
+| `COMPLEXUI_MEMORY_PROFILE` | `auto` | `auto`, `low`, `balanced` or `resident`; `low` offloads the transformer |
+| `COMPLEXUI_CUDA_ALLOCATOR` | `native` | `native` or `cudaMallocAsync`; applied before CUDA initialization |
+| `COMPLEXUI_TORCH_COMPILE` | `off` | `off`, `auto`, `default`, `reduce-overhead` or `max-autotune` |
+| `COMPLEXUI_TORCH_COMPILE_RECOMPILE_LIMIT` | `8` | Bounded Dynamo recompile limit (1-64) |
+| `COMPLEXUI_COMPILE_CACHE_DIR` | `<workspace>/cache/torchinductor` | Stable Inductor/Triton compile cache root |
+| `COMPLEXUI_EXPERIMENTAL_FP16_ACCUM` | unset | Unlocks the experimental FP16-accumulation option |
+| `PYTORCH_ALLOC_CONF` | unset / Linux `expandable_segments:True` | Native allocator configuration; existing values win over launcher defaults |
 | `COMPLEXUI_TORCH_CUDA_INDEX` | `https://download.pytorch.org/whl/cu130` | CUDA wheel index for CUDA torch installs |
 | `COMPLEXUI_INSTALL_TIMEOUT_SECONDS` | `1200` | PEP 723 dependency install timeout |
 | `COMPLEXUI_CORS_ORIGINS` | local Vite origins | Comma-separated allowed CORS origins; `0` disables CORS |
@@ -307,7 +590,11 @@ Defaults and environment overrides:
 On Unix the worker also applies an address-space limit; the parent monitors
 resident memory on all platforms. Timeout, memory-limit and crash failures are
 persisted in run history with `NodeTimeout`, `RunTimeout`, `MemoryLimit` or
-`WorkerCrashed` error types. This isolation contains crashes and runaway
+`WorkerCrashed` error types. Out-of-memory failures caught inside a node are
+reported as `NodeOOM` with a memory breakdown and cleanup suggestions; the
+executor retries only after cleanup reclaimed memory. Per-node CPU RSS and CUDA
+peak metrics are attached to completed/error telemetry and retained in run
+history. This isolation contains crashes and runaway
 processes — it is **not** a filesystem/network security sandbox. Node code still
 runs with the backend user's permissions, so only execute trusted code and keep
 the API loopback-only unless the network is trusted. `File` widgets specifically

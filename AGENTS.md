@@ -27,6 +27,9 @@ engineering rules; keep it short and do not duplicate feature documentation.
   side effects, components own rendering.
 - Runtime data: workspace projects/versions/runs/logs, repo-root `inputs/`,
   `outputs/` and `models/`. All overrides use `COMPLEXUI_*` environment variables.
+- Optimization/quantization work: read `TODO.md` §9.2 for the remaining
+  checklist, implementation map, source links and validated package versions
+  before changing attention, precision, loader or memory code.
 
 ## 1. Architecture and modularity
 

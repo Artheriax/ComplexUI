@@ -3,6 +3,8 @@ import type {
   ExecuteResponse,
   ExportFormat,
   ExportedWorkflow,
+  ModelMemoryEstimate,
+  ModelQuantizationInfo,
   NodeSchema,
   PreviewValue,
   RichOutput,
@@ -12,6 +14,8 @@ import type {
   WorkflowTemplateInfo,
 } from "../types/graph";
 import type { SavedWorkflow } from "./persistence";
+
+export type { ModelMemoryEstimate, ModelQuantizationInfo } from "../types/graph";
 
 const API_BASE = "/api";
 
@@ -72,6 +76,7 @@ export interface RunNodeRecord {
   previews: Record<string, PreviewValue>;
   rich_outputs: RichOutput[];
   rich_outputs_truncated: boolean;
+  metrics?: Record<string, unknown> | null;
   error: RunErrorRecord | null;
 }
 
@@ -227,6 +232,38 @@ export interface ModelSummary {
   mtime_ns: number;
   fingerprint: string;
   executable: boolean;
+  is_directory: boolean;
+  parameter_count?: number | null;
+  quantization?: ModelQuantizationInfo | null;
+  memory?: ModelMemoryEstimate | null;
+}
+
+export interface WorkflowModelEstimate {
+  node_id: string;
+  widget: string;
+  value: string;
+  model_id?: string | null;
+  model_type?: string | null;
+  memory?: ModelMemoryEstimate | null;
+  error?: string | null;
+}
+
+export interface WorkflowMemoryEstimate {
+  models: WorkflowModelEstimate[];
+  weights_bytes: number;
+  resident_estimate_bytes: number;
+  offload_ram_estimate_bytes: number;
+  unknown: boolean;
+  warnings: string[];
+}
+
+export function estimateWorkflowMemory(
+  workflow: WorkflowGraphPayload,
+): Promise<WorkflowMemoryEstimate> {
+  return requestJson<WorkflowMemoryEstimate>("/estimate/workflow", {
+    method: "POST",
+    body: JSON.stringify({ workflow }),
+  });
 }
 
 export interface ModelTypeSummary {
@@ -284,6 +321,45 @@ export interface RuntimeLimits {
   max_memory_mb: number;
 }
 
+export interface OptimizationHealth {
+  attention: {
+    configured: string;
+    benchmark?: boolean;
+    backends: string[];
+    packages: Record<string, string | null>;
+  };
+  precision: {
+    default: string;
+    fp16_accumulation: boolean;
+    quantization_formats: string[];
+    quantized_runtime: boolean;
+  };
+  memory: {
+    profile: string;
+    allocator: string;
+    alloc_conf: string | null;
+    pinned_memory: boolean;
+  };
+  compile: {
+    mode: string;
+    cache_dir: string | null;
+  };
+}
+
+export interface QuantizationFormatHealth {
+  label: string;
+  bits: number | null;
+  runtime: string;
+  package: string | null;
+  installed: boolean;
+  components: string[];
+  notes: string;
+}
+
+export interface QuantizationHealth {
+  formats: Record<string, QuantizationFormatHealth>;
+}
+
 export interface HealthInfo {
   status: string;
   version: string;
@@ -296,6 +372,8 @@ export interface HealthInfo {
   torch_cuda: boolean;
   nvidia: boolean;
   limits: RuntimeLimits;
+  optimizations?: OptimizationHealth;
+  quantization?: QuantizationHealth;
 }
 
 export function fetchSystemMetrics(signal?: AbortSignal): Promise<SystemMetrics> {

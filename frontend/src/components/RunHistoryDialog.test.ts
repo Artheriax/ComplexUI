@@ -56,6 +56,7 @@ const detail: RunDetail = {
         },
       ],
       rich_outputs_truncated: false,
+      metrics: { cuda_peak_allocated_bytes: 2 * 1024 ** 3 },
       error: null,
     },
     {
@@ -98,6 +99,7 @@ test("lists retained runs and renders detailed outputs and failures", async () =
   expect(screen.getByText("Boom")).toBeTruthy();
   expect(screen.getByText("ok")).toBeTruthy();
   expect(screen.getByText("historical console output")).toBeTruthy();
+  expect(screen.getByText("VRAM 2.00 GiB")).toBeTruthy();
   expect(screen.getAllByText("division by zero").length).toBeGreaterThan(0);
   expect(screen.getByText("order: load → boom")).toBeTruthy();
   expect(fetchRun).toHaveBeenCalledWith(summary.run_id);

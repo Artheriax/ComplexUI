@@ -228,6 +228,7 @@ def _prepare(
                     socket.name
                     for socket in schema.inputs
                     if socket.data_type is SocketType.IMAGE
+                    and not socket.optional
                 ),
             )
         )
@@ -259,7 +260,11 @@ def _call_args(
 ) -> tuple[str, ...]:
     args: list[str] = []
     for socket in schema.inputs:
-        edge = incoming[socket.name]
+        edge = incoming.get(socket.name)
+        if edge is None:
+            if socket.optional:
+                args.append(f"{socket.name}=None")
+            continue
         args.append(f"{socket.name}={_source_expression(edge)}")
     for widget in schema.widgets:
         edge = incoming.get(widget.name)
@@ -269,7 +274,13 @@ def _call_args(
         value = node.widget_values.get(widget.name, widget.default)
         widget_kind = widget.data_type.strip().lower()
         if widget_kind == "modelselector":
-            value = _export_model_value(widget.model_type, value)
+            value = _export_model_value(
+                widget.model_type,
+                value,
+                widget.model_select,
+                widget.model_required,
+                widget.model_include,
+            )
         elif widget_kind == "outputfile":
             value = _export_output_value(value)
         args.append(f"{widget.name}={_literal(value)}")
@@ -286,12 +297,27 @@ def _export_output_value(value: object) -> object:
         raise ExportError(str(exc)) from exc
 
 
-def _export_model_value(model_type: str | None, value: object) -> object:
+def _export_model_value(
+    model_type: str | None,
+    value: object,
+    select: str = "any",
+    required: bool = False,
+    include: Sequence[str] = (),
+) -> object:
     """Export local models as absolute paths, since the root is outside the workspace."""
     if not isinstance(value, str) or not value.strip():
+        if required:
+            raise ExportError("No local model selected; this widget requires one")
         return value
     try:
-        return str(get_model_store().resolve(model_type or "", value))
+        return str(
+            get_model_store().resolve(
+                model_type or "",
+                value,
+                select=select,
+                include=include,
+            )
+        )
     except ModelError as exc:
         raise ExportError(str(exc)) from exc
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { ModelSummary } from "../lib/api";
 import { datasetFileName } from "../lib/datasets";
@@ -24,29 +24,55 @@ export function ModelSelectorField({
 }: ModelSelectorFieldProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const modelType = widget.model_type ?? "";
+  const select = widget.model_select ?? "file";
+  const required = widget.model_required === true;
   const path = value === undefined || value === null ? "" : String(value);
-  const models = useModelsStore((state) =>
-    modelType ? (state.modelsByType[modelType] ?? EMPTY_MODELS) : EMPTY_MODELS,
+  const typesKey = [modelType, ...(widget.model_include ?? [])]
+    .filter(Boolean)
+    .join("|");
+  const modelTypes = useMemo(
+    () => (typesKey ? typesKey.split("|") : []),
+    [typesKey],
   );
-  const loaded = useModelsStore((state) =>
-    modelType ? Boolean(state.loadedTypes[modelType]) : false,
-  );
+  const modelsByType = useModelsStore((state) => state.modelsByType);
+  const loadedTypes = useModelsStore((state) => state.loadedTypes);
   const ensureType = useModelsStore((state) => state.ensureType);
+  const models = useMemo(
+    () =>
+      modelTypes.flatMap(
+        (currentType) => modelsByType[currentType] ?? EMPTY_MODELS,
+      ),
+    [modelTypes, modelsByType],
+  );
+  const loaded =
+    modelTypes.length > 0 &&
+    modelTypes.every((currentType) => Boolean(loadedTypes[currentType]));
+  const eligible = models.filter((model) =>
+    select === "any" ? true : model.is_directory === (select === "folder"),
+  );
   const missing =
-    loaded && path !== "" && !models.some((model) => model.path === path);
-  const label = path ? datasetFileName(path) : "Built-in fallback";
+    loaded &&
+    ((path !== "" && !eligible.some((model) => model.path === path)) ||
+      (required && path === ""));
+  const label = path
+    ? datasetFileName(path)
+    : required
+      ? "Select model…"
+      : "Built-in fallback";
 
   useEffect(() => {
-    if (modelType) {
-      void ensureType(modelType);
+    for (const currentType of modelTypes) {
+      void ensureType(currentType);
     }
-  }, [ensureType, modelType]);
+  }, [ensureType, modelTypes]);
 
   return (
     <div className="flex items-center justify-between gap-2">
       <span
         className="min-w-0 truncate text-xs text-zinc-400"
-        title={`${widget.name}: model_type=${modelType || "unset"}`}
+        title={`${widget.name}: model_type=${modelTypes.join(", ") || "unset"}, select=${select}${
+          required ? ", required" : ""
+        }`}
       >
         {widget.name}
         {disabled && (
@@ -56,7 +82,11 @@ export function ModelSelectorField({
       <div className="flex min-w-0 max-w-full items-center gap-1">
         {missing && (
           <span
-            title={`Missing local model: ${path}`}
+            title={
+              required && path === ""
+                ? "A local model is required"
+                : `Missing or incompatible local model: ${path}`
+            }
             className="text-amber-400"
           >
             <WarningIcon className="h-3 w-3" />
@@ -64,7 +94,12 @@ export function ModelSelectorField({
         )}
         <button
           type="button"
-          title={path || `Use built-in fallback (models/${modelType})`}
+          title={
+            path ||
+            (required
+              ? `Select a required local ${select === "folder" ? "folder" : "model"}`
+              : `Use built-in fallback (${modelTypes.map((type) => `models/${type}`).join(", ")})`)
+          }
           aria-label={`Choose model for ${widget.name}`}
           aria-invalid={missing || undefined}
           disabled={disabled}
@@ -84,7 +119,10 @@ export function ModelSelectorField({
       {pickerOpen && (
         <ModelPickerDialog
           modelType={modelType}
+          modelTypes={modelTypes}
           currentPath={path}
+          select={select}
+          required={required}
           onSelect={onChange}
           onClose={() => setPickerOpen(false)}
         />

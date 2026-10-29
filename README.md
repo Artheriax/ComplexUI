@@ -27,24 +27,89 @@ Video inference is monolithic per backend/task and writes browser-playable H.264
 outputs under repo-root `outputs/`.
 
 The repo-root **`models/`** library is mandatory and ships with `yolo/`,
-`torchvision/`, and `classification/` folders. Custom type folders are discovered
-too. Node code can declare a local picker with
-`local_model: ModelSelector = ModelSelector(type="yolo")`; the widget lists files
-from `models/yolo`, while an empty selection keeps the existing built-in YOLO or
-torchvision model as fallback. Selections are repo-relative, block execution when
-stale, and contribute their size/mtime fingerprint to cache invalidation. Local
-formats are `.pt`, `.pth`, `.onnx`, and `.safetensors`; support is
+`torchvision/`, `classification/`, `diffusion/`, `unet/`, `vae/`, and `clip/`
+folders. Custom type folders are discovered too. Node code can declare a local
+picker with `local_model: ModelSelector = ModelSelector(type="yolo")`; the
+widget lists files from `models/yolo`, while an empty selection keeps the
+existing built-in YOLO or torchvision model as fallback. Add `select="folder"`
+or `select="any"` for diffusers-style model folders, `required=True` when a
+local model must be chosen, and `include=["diffusion"]` to search additional
+model-type folders. Selections are repo-relative, block execution when stale,
+and contribute their file or bounded folder fingerprint to cache invalidation.
+Local formats are `.pt`, `.pth`, `.onnx`, and `.safetensors`; support is
 backend-specific. Models Library is a read-only Assets tab and auto-refreshes
 while open (press `R` to refresh immediately). Only add trusted model files:
 loading `.pt`/pickle models is not a sandbox, so SafeTensors/ONNX are preferred.
 
+The diffusion loaders accept full diffusers repositories or individual
+component folders. `Load Diffusion Model` extracts the transformer/UNet and
+scheduler, `Load CLIP` loads CLIP/T5/Qwen/Mistral text encoders, `Load VAE`
+loads the matching VAE class, and `Load CLIP (Dual)` combines CLIP-L + CLIP-G
+or CLIP + T5. Architecture dropdowns list only implemented image families and
+adapters expose their latent space, capabilities, recommended defaults and
+bounded file/folder fingerprints. All four sampler/scheduler nodes route text-to-image, img2img, reference editing
+and masked inpainting through the selected MODEL adapter for SD1.5, SDXL,
+FLUX 1/2/3, Ideogram 4, Fibo 2, Anima, Qwen Image 2.1, Z-Image, Krea 2 and MOSS
+Image. `Conditioning Zero Out` builds unconditional conditioning, `Encode
+Reference Images` adds numbered references for FLUX.1 Kontext, FLUX.2/3, Qwen
+Image 2.1 (up to ten) and Fibo 2 (up to five), `Model Guidance` sets
+guidance-distilled scales, `MOSS Guidance` configures MOSS skip-layer guidance,
+and `Inpaint Conditioner` plus `Make Mask` drive masked inpainting through the
+regular sampler nodes. Architecture metadata also exposes recommended guidance
+defaults through the `MODEL` preview, used by `Model Guidance` unless explicitly
+overridden.
+
 The **System** settings tab controls a draggable, background-less system monitor
 showing CPU/GPU utilization, VRAM/RAM usage, and GPU temperature. NVIDIA GPU
-metrics come from NVML. The same tab shows read-only runtime diagnostics.
-**Execution** settings control whether the Execution panel opens on run, whether
-Canvas Clear asks for confirmation, and display the active node/run timeouts and
-memory limit. The monitor position, visibility, refresh interval, and both
-execution toggles persist in browser storage.
+metrics come from NVML. The same tab shows read-only runtime diagnostics,
+including the configured attention backend, memory profile, allocator and
+compilation mode. **Execution** settings control whether the Execution panel
+opens on run, whether Canvas Clear asks for confirmation, and display the active
+node/run timeouts and memory limit. The monitor position, visibility, refresh
+interval, and both execution toggles persist in browser storage.
+
+For per-workflow tuning, the Image Generation palette includes four
+`MODEL → MODEL` patch nodes: **Attention Backend**, **Model Precision**,
+**Compile Model**, and **Model Memory**. Attention uses PyTorch SDPA
+sub-backends (`auto`, `sdpa`, `sdpa-flash`, `sdpa-mem-efficient`, `sdpa-cudnn`,
+`sdpa-math`) plus optional SageAttention 2/2++, FlashAttention 2/4, xFormers and
+Comfy Kitchen INT8/SOL adapters when those packages are installed. The launcher
+backend is the global default; `Attention Backend` scopes an override to that
+model's diffusion forward. Explicit unsupported requests fail with an actionable
+error while `auto` stays on exact SDPA. Precision tracks checkpoint storage,
+compute dtype and accumulation mode separately, with FP16 accumulation available
+only through the experimental launcher gate. Compilation is opt-in and falls
+back to eager; `max-autotune-no-cudagraphs` keeps CUDA graphs disabled for that
+mode. Memory controls model-level, sequential,
+block or group offload, attention slicing and channels-last; block/group mode
+uses diffusers streamed prefetch and pinned host buffers. `Load VAE`, `VAE
+Decode` and `VAE Encode` expose independent slicing and tiling with an automatic
+tiled retry after an out-of-memory decode/encode failure.
+
+Process-wide defaults and allocator settings are applied by the launcher before
+CUDA initializes: `--attention-backend`, `--memory-profile`, `--allocator`,
+`--expandable-segments`, `--pytorch-alloc-conf`, `--torch-compile`,
+`--compile-cache-dir` and `--experimental-fp16-accumulation`. Existing
+`PYTORCH_ALLOC_CONF` values take precedence over launcher defaults; the
+`cudaMallocAsync` backend is mutually exclusive with native allocator options.
+CUDA/CPU out-of-memory failures are caught at node boundaries, clean up cached
+intermediates and allocator blocks, retry at most once when cleanup actually
+freed memory, and otherwise return a concise memory breakdown with concrete
+next steps. Optional attention kernels are not bundled; install the matching
+wheel manually and select it per workflow. On Windows RTX 50 / cu130, the
+validated SageAttention 2.2 combination is
+`sageattention-2.2.0+cu130torch2.10.0andhigher.post6` plus `triton-windows`;
+the backend README has the exact command. Pre-quantized checkpoint metadata
+(Comfy `.comfy_quant`, native GGUF headers, sidecar JSON and legacy scaled FP8)
+is detected without loading weights and shown in the Models Library with static
+memory estimates. Diffusers component folders with `.comfy_quant` metadata load
+through Comfy Kitchen; INT8/ConvRot use native linear kernels, while
+FP8/MXFP8/NVFP4 keep quantized storage and dequantize for linear execution until
+native kernels are wired (plus INT8/FP8 embeddings). Single-file SD1.5/SDXL
+quantized checkpoints are converted to diffusers and the UNet is re-patched with
+native quantized weights; CLIP components in the same checkpoint remain
+dequantized. GGUF weight loading is not wired yet. Quantized VAEs are out of
+scope.
 
 Nodes can stream coarse step progress through `NODE_PROGRESS`; the node footer
 and Execution panel show the percentage and message, and **Stop** cancels
@@ -66,8 +131,8 @@ through NVML. Switching between CPU and CUDA torch builds reinstalls the torch
 family, and large wheel downloads use `COMPLEXUI_INSTALL_TIMEOUT_SECONDS`
 (default 1200).
 
-The bundled catalog ships **115 node templates** (98 production nodes across
-11 categories plus 17 hidden example and legacy aliases) and **27 ready-to-run
+The bundled catalog ships **126 node templates** (109 production nodes across
+11 categories plus 17 hidden example and legacy aliases) and **38 ready-to-run
 example workflows**. Image batches use `IMAGE_BATCH` sockets: any node with a
 scalar `IMAGE` input runs once per image, while `MEDIA`/`IMAGE_BATCH` inputs
 receive the whole list. `Load Images From Folder` feeds a bounded folder batch;
@@ -85,7 +150,10 @@ workflow in a new tab, or upload a table, image or video for the
 directly into widget parameters; numeric values have `<`/`>` step buttons
 driven by an editable `step` field. Widgets annotated with
 `typing.Literal[...]` render fixed-choice dropdowns, and their
-defaults/overrides/wired values are validated before execution. Table uploads
+defaults/overrides/wired values are validated before execution.
+Inputs annotated as `Optional[TYPE]` or `TYPE | None` with a `= None` default
+are optional sockets: they may stay unconnected, are not batch-expanded, and
+are skipped by required-input validation. Table uploads
 can be previewed, and every asset can be searched or deleted from the sidebar. Press `Ctrl+S` to name and save the
 active workflow; later saves are silent, and overwrites retain up to 30 version
 snapshots. Selected nodes can be turned into reusable nested subgraphs with
@@ -169,8 +237,12 @@ torchvision templates so workflows that do not use YOLO do not install it.
 
 Useful flags: `--backend-port`, `--frontend-port`, `--host`, `--accelerator`
 (`auto`, `cpu`, or `cuda`), `--log-level`, `--log-format` (`text` or `json`),
-`--log-dir`, `--no-log-file`, `--no-reload`, `--no-color`, `--open` (e.g.
-`start.cmd dev --open --accelerator cuda`).
+`--log-dir`, `--no-log-file`, `--no-reload`, `--no-color`, `--open`, plus the
+performance flags `--attention-backend`, `--attention-benchmark`,
+`--memory-profile`, `--allocator`, `--expandable-segments/--no-expandable-segments`,
+`--pytorch-alloc-conf`, `--torch-compile`, `--compile-cache-dir` and
+`--experimental-fp16-accumulation` (e.g.
+`start.cmd dev --open --accelerator cuda --memory-profile low --attention-backend sdpa-flash`).
 
 By default the backend binds loopback and accepts only loopback `Host`/`Origin`
 headers. Binding beyond loopback requires `--allow-network`, which disables that

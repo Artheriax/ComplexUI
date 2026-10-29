@@ -22,6 +22,12 @@ import type {
   VideoPreview,
   VisionModelPreview,
 } from "../types/graph";
+import {
+  memoryDetail,
+  memoryTag,
+  quantizationDetail,
+  quantizationTag,
+} from "../lib/modelMetadata";
 
 function isDataFramePreview(value: PreviewValue): value is DataFramePreview {
   return (
@@ -228,6 +234,7 @@ function SigmasView({
       <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-zinc-500">
         <span>{preview.steps} steps</span>
         <span className="text-cyan-300">{preview.scheduler}</span>
+        {preview.arch && <span className="text-zinc-400">{preview.arch}</span>}
         {preview.sigma_max !== null && preview.sigma_min !== null && (
           <span>
             {formatNumber(preview.sigma_max)} → {formatNumber(preview.sigma_min)}
@@ -422,20 +429,78 @@ export function PreviewValueView({
           <span className="rounded bg-amber-950/60 px-1 py-px text-[9px] font-medium text-amber-300">
             {value.arch || "diffusion"}
           </span>
+          {value.arch_label && (
+            <span className="text-zinc-500">{value.arch_label}</span>
+          )}
           {value.preset && (
             <span className="text-zinc-500">{value.preset}</span>
           )}
           {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
+          {value.storage_dtype &&
+            value.storage_dtype !== value.dtype && (
+              <span className="text-zinc-600">store {value.storage_dtype}</span>
+            )}
+          {quantizationTag(value.quantization) && (
+            <span
+              title={
+                [
+                  quantizationDetail(value.quantization),
+                  ...(value.quantization?.warnings ?? []),
+                ]
+                  .filter(Boolean)
+                  .join("\n") || undefined
+              }
+              className={
+                value.quantization?.valid ? "text-violet-400" : "text-red-400"
+              }
+            >
+              {quantizationTag(value.quantization)}
+            </span>
+          )}
+          {memoryTag(value.memory) && (
+            <span
+              title={
+                [
+                  memoryDetail(value.memory),
+                  ...(value.memory?.assumptions ?? []),
+                ]
+                  .filter(Boolean)
+                  .join("\n") || undefined
+              }
+              className="text-zinc-500"
+            >
+              {memoryTag(value.memory)}
+            </span>
+          )}
           {value.device && (
             <span className="text-zinc-600">{value.device}</span>
+          )}
+          {typeof value.attention?.backend === "string" && (
+            <span className="text-cyan-500">
+              attn {value.attention.backend}
+            </span>
+          )}
+          {value.offload && (
+            <span className="text-emerald-500">offload</span>
+          )}
+          {!value.offload &&
+            value.offload_mode &&
+            value.offload_mode !== "none" && (
+              <span className="text-emerald-500">
+                offload {value.offload_mode}
+              </span>
+            )}
+          {value.compiled && (
+            <span className="text-amber-500">compiled</span>
           )}
         </div>
         <div className="truncate text-zinc-400">{value.name}</div>
         <div className="mt-0.5 flex flex-wrap gap-x-3 text-zinc-500">
-          <span>{value.class}</span>
+          <span>{value.transformer_class || value.class}</span>
           {value.parameters !== null && (
             <span>{value.parameters.toLocaleString()} params</span>
           )}
+          {value.latent_space && <span>{value.latent_space} latent</span>}
           {value.source !== "local" && <span>{value.source}</span>}
         </div>
         {value.recommended && Object.keys(value.recommended).length > 0 && (
@@ -454,7 +519,29 @@ export function PreviewValueView({
         <div className="flex flex-wrap gap-x-2">
           <span className="text-sky-300">CLIP {value.arch}</span>
           <span className="text-zinc-500">{value.encoders} encoder(s)</span>
+          {value.encoder_classes && value.encoder_classes.length > 0 && (
+            <span className="text-zinc-600">
+              {value.encoder_classes.join(" + ")}
+            </span>
+          )}
           {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
+          {quantizationTag(value.quantization) && (
+            <span
+              title={
+                [
+                  quantizationDetail(value.quantization),
+                  ...(value.quantization?.warnings ?? []),
+                ]
+                  .filter(Boolean)
+                  .join("\n") || undefined
+              }
+              className={
+                value.quantization?.valid ? "text-violet-400" : "text-red-400"
+              }
+            >
+              {quantizationTag(value.quantization)}
+            </span>
+          )}
           {value.device && <span className="text-zinc-600">{value.device}</span>}
         </div>
       </div>
@@ -465,6 +552,12 @@ export function PreviewValueView({
       <div className="text-[10px] text-zinc-300">
         <div className="flex flex-wrap gap-x-2">
           <span className="text-teal-300">VAE {value.arch}</span>
+          {value.vae_class && (
+            <span className="text-zinc-600">{value.vae_class}</span>
+          )}
+          {value.latent_space && (
+            <span className="text-zinc-500">{value.latent_space} latent</span>
+          )}
           {value.scaling_factor !== null && (
             <span className="text-zinc-500">
               scale {formatNumber(value.scaling_factor)}
@@ -472,6 +565,9 @@ export function PreviewValueView({
           )}
           {value.dtype && <span className="text-zinc-600">{value.dtype}</span>}
           {value.device && <span className="text-zinc-600">{value.device}</span>}
+          {value.offload && (
+            <span className="text-emerald-500">offload</span>
+          )}
         </div>
       </div>
     );
@@ -487,6 +583,14 @@ export function PreviewValueView({
             pooled {JSON.stringify(value.pooled_shape)}
           </div>
         )}
+        {value.ref_count ? (
+          <div className="text-cyan-400">
+            {value.ref_count} reference image{value.ref_count === 1 ? "" : "s"}
+          </div>
+        ) : null}
+        {value.inpaint ? (
+          <div className="text-emerald-400">inpainting mask attached</div>
+        ) : null}
         {value.text && <div className="truncate text-zinc-500">{value.text}</div>}
       </div>
     );
@@ -504,6 +608,8 @@ export function PreviewValueView({
             </span>
           )}
           {value.batch_size !== null && <span>batch {value.batch_size}</span>}
+          {value.latent_space && <span>{value.latent_space}</span>}
+          {value.arch && <span>{value.arch}</span>}
           {value.dtype && <span>{value.dtype}</span>}
         </div>
       </div>
@@ -544,6 +650,19 @@ export function PreviewValueView({
       <div className="text-[10px] text-zinc-300">
         <div className="flex flex-wrap gap-x-2">
           <span className="text-rose-300">CFG {String(value.cfg ?? "?")}</span>
+          {value.guidance !== null && value.guidance !== undefined && (
+            <span className="text-fuchsia-300">
+              guidance {formatNumber(value.guidance)}
+            </span>
+          )}
+          {value.start_percent !== undefined &&
+            value.end_percent !== undefined &&
+            (value.start_percent > 0 || value.end_percent < 1) && (
+              <span className="text-zinc-500">
+                CFG {formatNumber(value.start_percent)}–
+                {formatNumber(value.end_percent)}
+              </span>
+            )}
           {value.arch && <span className="text-zinc-500">{value.arch}</span>}
         </div>
         {value.model && <div className="truncate text-zinc-400">{value.model}</div>}

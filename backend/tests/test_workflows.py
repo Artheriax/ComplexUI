@@ -25,12 +25,23 @@ EXPECTED_WORKFLOWS = {
     "diabetes_ridge_regression",
     "digits_xgboost_classifier",
     "eda_iris_report",
+    "imagegen_anima",
+    "imagegen_fibo2",
+    "imagegen_flux1_kontext",
+    "imagegen_flux2",
+    "imagegen_flux3",
+    "imagegen_ideogram4",
+    "imagegen_krea2",
+    "imagegen_moss_image",
+    "imagegen_qwen_image",
     "imagegen_sd15_advanced",
     "imagegen_sd15_dreamshaper",
     "imagegen_sd15_img2img",
+    "imagegen_sd15_inpaint",
     "imagegen_sd15_ksampler_advanced",
     "imagegen_sd15_sampler_custom",
     "imagegen_sdxl_lightning",
+    "imagegen_z_image",
     "iris_knn_classification",
     "messy_data_cleaning_pipeline",
     "pca_kmeans_segmentation",
@@ -66,12 +77,23 @@ OPTIONAL_MODULES = {
 }
 
 GENERATION_WORKFLOWS = {
+    "imagegen_anima",
+    "imagegen_fibo2",
+    "imagegen_flux1_kontext",
+    "imagegen_flux2",
+    "imagegen_flux3",
+    "imagegen_ideogram4",
+    "imagegen_krea2",
+    "imagegen_moss_image",
+    "imagegen_qwen_image",
     "imagegen_sd15_advanced",
     "imagegen_sd15_dreamshaper",
     "imagegen_sd15_img2img",
+    "imagegen_sd15_inpaint",
     "imagegen_sd15_ksampler_advanced",
     "imagegen_sd15_sampler_custom",
     "imagegen_sdxl_lightning",
+    "imagegen_z_image",
 }
 
 def _today_output(model: str, counter: int = 1) -> str:
@@ -109,6 +131,31 @@ def test_bundled_workflows_load_with_expected_names() -> None:
         assert workflow.title.strip()
         assert workflow.description.strip()
         validate_workflow(workflow)
+
+
+def test_complex_family_workflows_cover_adapters() -> None:
+    workflows = get_workflows()
+    for name in (
+        "imagegen_anima",
+        "imagegen_fibo2",
+        "imagegen_ideogram4",
+        "imagegen_moss_image",
+    ):
+        templates = {node.template for node in workflows[name].nodes}
+        assert "load_diffusion_model" in templates
+        assert "conditioning_zero_out" in templates
+        assert "ksampler" in templates
+    fibo_templates = {
+        node.template for node in workflows["imagegen_fibo2"].nodes
+    }
+    assert "encode_reference_images" in fibo_templates
+    for name in ("imagegen_anima", "imagegen_moss_image"):
+        templates = {node.template for node in workflows[name].nodes}
+        assert "inpaint_conditioner" in templates
+    moss_templates = {
+        node.template for node in workflows["imagegen_moss_image"].nodes
+    }
+    assert "moss_guidance" in moss_templates
 
 
 def _write_catalog(tmp_path: Path, name: str, payload: dict) -> Path:

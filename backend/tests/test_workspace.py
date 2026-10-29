@@ -149,7 +149,7 @@ def make_subgraph_workflow() -> SavedWorkflowDocument:
                 "def-1": {
                     "id": "def-1",
                     "name": "Preprocess",
-                    "inputs": [{"name": "df", "data_type": "DATAFRAME"}],
+                    "inputs": [{"name": "df", "data_type": "DATAFRAME", "optional": True}],
                     "outputs": [{"name": "result", "data_type": "ANY"}],
                     "nodes": [
                         {
@@ -375,7 +375,9 @@ def test_project_api_preserves_subgraphs(project_client: TestClient) -> None:
     detail = project_client.get("/api/projects/nested-api").json()
     assert detail["workflow"]["nodes"][0]["isSubgraph"] is True
     definition = detail["workflow"]["subgraphs"]["def-1"]
-    assert definition["inputs"] == [{"name": "df", "data_type": "DATAFRAME"}]
+    assert definition["inputs"] == [
+        {"name": "df", "data_type": "DATAFRAME", "optional": True}
+    ]
     assert definition["nodes"][0]["id"] == "inside"
 
 

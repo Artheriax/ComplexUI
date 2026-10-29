@@ -168,7 +168,7 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
     const definition: SubgraphDefinition = {
       id: "def-1",
       name: "Preprocess",
-      inputs: [{ name: "df", data_type: "DATAFRAME" }],
+      inputs: [{ name: "df", data_type: "DATAFRAME", optional: true }],
       outputs: [{ name: "result", data_type: "ANY" }],
       nodes: [makeNode("inside")],
       edges: [
@@ -206,7 +206,7 @@ describe("serialiseWorkflow / parseWorkflowJson", () => {
     ]);
     const reparsed = parseWorkflowJson(JSON.stringify(saved));
     expect(reparsed.subgraphs?.["def-1"]?.inputs).toEqual([
-      { name: "df", data_type: "DATAFRAME" },
+      { name: "df", data_type: "DATAFRAME", optional: true },
     ]);
     expect(reparsed.nodes[0]?.isSubgraph).toBe(true);
     expect(reparsed.nodes[0]?.subgraphId).toBe("def-1");

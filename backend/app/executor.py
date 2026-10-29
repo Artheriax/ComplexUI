@@ -15,11 +15,14 @@ cached rich-output payloads such as base64 images and Plotly figures.
 from __future__ import annotations
 
 import base64
+import gc
 import hashlib
 import io
 import json
+import logging
 import pickle
 import re
+import sys
 import time
 import traceback
 from collections import OrderedDict, deque
@@ -82,6 +85,7 @@ __all__ = [
     "MAX_CACHE_ENTRIES",
     "NON_CACHEABLE_SOCKET_TYPES",
     "NodeExecutionError",
+    "NodeOOMError",
     "build_output_preview",
     "cache_snapshot",
     "clear_cache",
@@ -99,6 +103,7 @@ MAX_FOLDER_FINGERPRINT_FILES = 512
 MAX_ANY_PREVIEW_CHARS = 20_000
 MAX_CACHE_ENTRIES = 64
 MAX_CACHE_BYTES = 32 * 1024 * 1024
+logger = logging.getLogger("complexui.executor")
 NON_CACHEABLE_SOCKET_TYPES = {
     SocketType.MODEL,
     SocketType.CLIP,
@@ -275,6 +280,28 @@ class NodeExecutionError(Exception):
         self.traceback_text = traceback_text
 
 
+class NodeOOMError(NodeExecutionError):
+    """Raised when a node fails because GPU/CPU memory was exhausted."""
+
+    def __init__(
+        self,
+        node_id: str,
+        *,
+        line: int | None,
+        message: str,
+        traceback_text: str,
+        memory: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            node_id,
+            line=line,
+            message=message,
+            error_type="NodeOOM",
+            traceback_text=traceback_text,
+        )
+        self.memory = memory or {}
+
+
 class _OutputContractError(Exception):
     """Raised when a node's return value does not match its output sockets."""
 
@@ -349,9 +376,24 @@ def _validate_model_selections(
                 continue
             selected = node.widget_values.get(widget.name, widget.default)
             if not isinstance(selected, str) or not selected.strip():
+                if widget.model_required:
+                    issues.append(
+                        {
+                            "node_id": node.id,
+                            "widget": widget.name,
+                            "model_type": widget.model_type or "",
+                            "path": "",
+                            "message": "No local model selected; this widget requires one",
+                        }
+                    )
                 continue
             try:
-                get_model_store().resolve(widget.model_type or "", selected)
+                get_model_store().resolve(
+                    widget.model_type or "",
+                    selected,
+                    select=widget.model_select,
+                    include=widget.model_include,
+                )
             except ModelError as exc:
                 issues.append(
                     {
@@ -407,6 +449,206 @@ def _scope_to_targets(
                 allowed.add(source)
                 queue.append(source)
     return allowed
+
+
+def _is_oom_error(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA or CPU allocation failure."""
+    if isinstance(exc, MemoryError):
+        return True
+    if type(exc).__name__ == "OutOfMemoryError":
+        return True
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "out of memory",
+            "can't allocate memory",
+            "cannot allocate memory",
+            "cuda error: out of memory",
+            "defaultcpuallocator",
+        )
+    )
+
+
+def _torch_module() -> Any:
+    return sys.modules.get("torch")
+
+
+def _cpu_memory_bytes() -> tuple[int | None, int | None]:
+    try:
+        import psutil
+
+        process = psutil.Process()
+        rss = int(process.memory_info().rss)
+        available = int(psutil.virtual_memory().available)
+        return rss, available
+    except Exception as exc:
+        logger.debug("cpu memory snapshot unavailable: %s", exc)
+        return None, None
+
+
+def _cuda_memory_snapshot(torch: Any) -> dict[str, Any]:
+    if torch is None:
+        return {}
+    try:
+        if not torch.cuda.is_available():
+            return {}
+        free, total = torch.cuda.mem_get_info()
+        return {
+            "device": str(torch.cuda.get_device_name(0)),
+            "cuda_allocated_bytes": int(torch.cuda.memory_allocated()),
+            "cuda_reserved_bytes": int(torch.cuda.memory_reserved()),
+            "cuda_free_bytes": int(free),
+            "cuda_total_bytes": int(total),
+            "cuda_peak_allocated_bytes": int(torch.cuda.max_memory_allocated()),
+            "cuda_peak_reserved_bytes": int(torch.cuda.max_memory_reserved()),
+        }
+    except Exception as exc:
+        logger.debug("cuda memory snapshot unavailable: %s", exc)
+        return {}
+
+
+def _memory_snapshot() -> dict[str, Any]:
+    torch = _torch_module()
+    rss, available = _cpu_memory_bytes()
+    snapshot: dict[str, Any] = {}
+    if rss is not None:
+        snapshot["cpu_rss_bytes"] = rss
+    if available is not None:
+        snapshot["cpu_available_bytes"] = available
+    snapshot.update(_cuda_memory_snapshot(torch))
+    return snapshot
+
+
+def _reset_cuda_peaks() -> None:
+    torch = _torch_module()
+    if torch is None:
+        return
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception as exc:
+        logger.debug("cuda peak reset unavailable: %s", exc)
+
+
+def _collect_node_metrics() -> dict[str, Any]:
+    """Return best-effort per-node memory metrics for telemetry and history."""
+    return _memory_snapshot()
+
+
+def _oom_cleanup() -> tuple[bool, dict[str, Any]]:
+    """Drop intermediates and release cached allocator blocks.
+
+    The return value tells the caller whether anything was actually reclaimed.
+    An unchanged retry is never attempted.
+    """
+    global _CACHE_BYTES
+    torch = _torch_module()
+    before = _memory_snapshot()
+    dropped = len(_CACHE) > 0
+    _CACHE.clear()
+    _CACHE_BYTES = 0
+    gc.collect()
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as exc:
+            logger.debug("cuda cache cleanup unavailable: %s", exc)
+    after = _memory_snapshot()
+    freed_cuda = (
+        isinstance(before.get("cuda_free_bytes"), int)
+        and isinstance(after.get("cuda_free_bytes"), int)
+        and after["cuda_free_bytes"] > before["cuda_free_bytes"] + 1024 * 1024
+    )
+    freed_ram = (
+        isinstance(before.get("cpu_available_bytes"), int)
+        and isinstance(after.get("cpu_available_bytes"), int)
+        and after["cpu_available_bytes"]
+        > before["cpu_available_bytes"] + 1024 * 1024
+    )
+    return (dropped or freed_cuda or freed_ram), after
+
+
+def _format_bytes(value: Any) -> str:
+    if not isinstance(value, (int, float)) or value < 0:
+        return "?"
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024.0 or unit == "GiB":
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} GiB"
+
+
+def _oom_message(
+    node_id: str,
+    exc: BaseException,
+    memory: dict[str, Any],
+) -> str:
+    original = str(exc).strip().replace("\n", " ")
+    original = original[:300] + ("…" if len(original) > 300 else "")
+    details = [
+        f"allocated={_format_bytes(memory.get('cuda_allocated_bytes'))}",
+        f"reserved={_format_bytes(memory.get('cuda_reserved_bytes'))}",
+        f"free={_format_bytes(memory.get('cuda_free_bytes'))}",
+        f"total={_format_bytes(memory.get('cuda_total_bytes'))}",
+    ]
+    suggestions = [
+        "enable VAE slicing/tiling for decode out-of-memory errors",
+        "retry with the low memory profile or a Model Memory patch node",
+        "reduce batch size, resolution or steps",
+        "use a smaller or pre-quantized checkpoint when available",
+    ]
+    reserved = memory.get("cuda_reserved_bytes")
+    allocated = memory.get("cuda_allocated_bytes")
+    if isinstance(reserved, int) and isinstance(allocated, int) and reserved > allocated:
+        suggestions.append(
+            "reserved exceeds allocated; try expandable_segments on Linux"
+        )
+    return (
+        f"Node '{node_id}' ran out of memory. {original} "
+        f"Memory: {', '.join(details)}. "
+        f"Suggestions: {'; '.join(suggestions)}."
+    )
+
+
+def _execute_node_body(
+    *,
+    transpiled: Any,
+    schema: NodeSchema,
+    node_id: str,
+    kwargs: dict[str, Any],
+    batch_inputs: list[str],
+    batch_size: int,
+    should_stop: Callable[[], bool] | None,
+    progress_state: dict[str, Any],
+    current_index: list[int],
+) -> tuple[Any, ...]:
+    """Run one node attempt, including per-image batch expansion."""
+    if batch_size == 0:
+        return tuple([] for _ in schema.outputs)
+    if batch_inputs:
+        buckets: list[list[Any]] = [[] for _ in schema.outputs]
+        for index in range(batch_size):
+            if should_stop is not None and should_stop():
+                raise ExecutionCancelled("Execution cancelled by user")
+            current_index[0] = index
+            progress_state["index"] = index
+            transpiled.func.__globals__["batch_index"] = index
+            item_kwargs = {
+                key: (value[index] if key in batch_inputs else value)
+                for key, value in kwargs.items()
+            }
+            value = transpiled.func(**item_kwargs)
+            item_outputs = _normalize_outputs(
+                value, len(schema.outputs), node_id
+            )
+            for bucket, item in zip(buckets, item_outputs, strict=True):
+                bucket.append(item)
+        return tuple(buckets)
+    value = transpiled.func(**kwargs)
+    return _normalize_outputs(value, len(schema.outputs), node_id)
 
 
 def execute_graph(
@@ -501,6 +743,7 @@ def execute_graph(
                         "outputs": result.previews[node_id],
                         "rich_outputs": serialize_rich_outputs(result.rich_outputs[node_id]),
                         "duration_ms": 0.0,
+                        "metrics": {},
                     },
                 )
             )
@@ -537,7 +780,6 @@ def execute_graph(
         node_started = time.perf_counter()
         transpiled = transpile_node(node.code, node_id)
         batch_size = 1
-        current_index = 0
         progress_state = {"batch_size": 1, "index": 0}
 
         def report_progress(
@@ -606,6 +848,9 @@ def execute_graph(
                     kwargs[widget.name] = _resolve_model_selection(
                         widget.model_type,
                         kwargs.get(widget.name),
+                        widget.model_select,
+                        widget.model_required,
+                        widget.model_include,
                     )
                 if widget.options and not widget_choice_allowed(
                     kwargs.get(widget.name), widget.options
@@ -666,6 +911,7 @@ def execute_graph(
             socket.name
             for socket in schema.inputs
             if socket.data_type is SocketType.IMAGE
+            and not socket.optional
             and isinstance(kwargs.get(socket.name), (list, tuple))
         ]
         batch_lengths = {name: len(kwargs[name]) for name in batch_inputs}
@@ -687,78 +933,87 @@ def execute_graph(
         transpiled.func.__globals__["batch_size"] = batch_size
         transpiled.func.__globals__["batch_index"] = 0
 
+        current_index = [0]
         capture = OutputCapture()
-        try:
-            with capture.activate(transpiled.func):
-                if batch_size == 0:
-                    outputs = tuple([] for _ in schema.outputs)
-                elif batch_inputs:
-                    buckets: list[list[Any]] = [
-                        [] for _ in schema.outputs
-                    ]
-                    for index in range(batch_size):
-                        if should_stop is not None and should_stop():
-                            raise ExecutionCancelled(
-                                "Execution cancelled by user"
-                            )
-                        current_index = index
-                        progress_state["index"] = index
-                        transpiled.func.__globals__["batch_index"] = index
-                        item_kwargs = {
-                            key: (
-                                value[index]
-                                if key in batch_inputs
-                                else value
-                            )
-                            for key, value in kwargs.items()
-                        }
-                        value = transpiled.func(**item_kwargs)
-                        item_outputs = _normalize_outputs(
-                            value, len(schema.outputs), node_id
-                        )
-                        for bucket, item in zip(
-                            buckets, item_outputs, strict=True
-                        ):
-                            bucket.append(item)
-                    outputs = tuple(buckets)
-                else:
-                    value = transpiled.func(**kwargs)
-                    outputs = _normalize_outputs(
-                        value, len(schema.outputs), node_id
+
+        attempts = 0
+        while True:
+            _reset_cuda_peaks()
+            capture = OutputCapture()
+            try:
+                with capture.activate(transpiled.func):
+                    outputs = _execute_node_body(
+                        transpiled=transpiled,
+                        schema=schema,
+                        node_id=node_id,
+                        kwargs=kwargs,
+                        batch_inputs=batch_inputs,
+                        batch_size=batch_size,
+                        should_stop=should_stop,
+                        progress_state=progress_state,
+                        current_index=current_index,
                     )
-        except ExecutionCancelled:
-            raise
-        except Exception as exc:
-            line, traceback_text = _localize_failure(exc, node_id, transpiled.line_offset)
-            message = str(exc)
-            if batch_inputs and batch_size > 1:
-                message = (
-                    f"Batch item {current_index + 1}/{batch_size}: {message}"
+                break
+            except ExecutionCancelled:
+                raise
+            except Exception as exc:
+                memory = _memory_snapshot()
+                if _is_oom_error(exc) and attempts == 0:
+                    retried, memory = _oom_cleanup()
+                    if retried:
+                        attempts = 1
+                        logger.warning(
+                            "node %s ran out of memory; retrying once after "
+                            "cleanup",
+                            node_id,
+                        )
+                        continue
+                line, traceback_text = _localize_failure(
+                    exc, node_id, transpiled.line_offset
                 )
-            error_data: dict[str, Any] = {
-                "line": line,
-                "message": message,
-                "error_type": type(exc).__name__,
-                "traceback": traceback_text,
-                "rich_outputs": serialize_rich_outputs(capture.outputs),
-            }
-            if batch_inputs:
-                error_data["batch_index"] = current_index
-                error_data["batch_size"] = batch_size
-            sink(
-                ExecutionEvent(
-                    type=EventType.NODE_ERROR,
-                    node_id=node_id,
-                    data=error_data,
+                if _is_oom_error(exc):
+                    message = _oom_message(node_id, exc, memory)
+                    error_type = "NodeOOM"
+                else:
+                    message = str(exc)
+                    error_type = type(exc).__name__
+                if batch_inputs and batch_size > 1:
+                    message = (
+                        f"Batch item {current_index[0] + 1}/{batch_size}: {message}"
+                    )
+                error_data: dict[str, Any] = {
+                    "line": line,
+                    "message": message,
+                    "error_type": error_type,
+                    "traceback": traceback_text,
+                    "rich_outputs": serialize_rich_outputs(capture.outputs),
+                    "metrics": memory,
+                }
+                if batch_inputs:
+                    error_data["batch_index"] = current_index[0]
+                    error_data["batch_size"] = batch_size
+                sink(
+                    ExecutionEvent(
+                        type=EventType.NODE_ERROR,
+                        node_id=node_id,
+                        data=error_data,
+                    )
                 )
-            )
-            raise NodeExecutionError(
-                node_id,
-                line=line,
-                message=message,
-                error_type=type(exc).__name__,
-                traceback_text=traceback_text,
-            ) from exc
+                if error_type == "NodeOOM":
+                    raise NodeOOMError(
+                        node_id,
+                        line=line,
+                        message=message,
+                        traceback_text=traceback_text,
+                        memory=memory,
+                    ) from exc
+                raise NodeExecutionError(
+                    node_id,
+                    line=line,
+                    message=message,
+                    error_type=error_type,
+                    traceback_text=traceback_text,
+                ) from exc
 
         for socket, output in zip(schema.outputs, outputs, strict=True):
             if (
@@ -788,6 +1043,7 @@ def execute_graph(
                     "outputs": result.previews[node_id],
                     "rich_outputs": serialize_rich_outputs(result.rich_outputs[node_id]),
                     "duration_ms": round((time.perf_counter() - node_started) * 1000, 1),
+                    "metrics": _collect_node_metrics(),
                 },
             )
         )
@@ -1045,21 +1301,38 @@ def _image_batch_preview(value: Any) -> dict[str, Any]:
 def _diffusion_model_preview(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"kind": "diffusion_model", "name": repr(value)[:200]}
-    unet = value.get("unet")
+    component = value.get("transformer") or value.get("unet")
     parameters = None
-    if unet is not None and hasattr(unet, "parameters"):
+    if component is not None and hasattr(component, "parameters"):
         try:
-            parameters = sum(int(param.numel()) for param in unet.parameters())
+            parameters = sum(int(param.numel()) for param in component.parameters())
         except Exception:
             parameters = None
     return {
         "kind": "diffusion_model",
         "arch": str(value.get("arch", "")),
+        "arch_label": str(value.get("arch_label", "")),
         "name": str(value.get("name", "")),
-        "class": type(unet).__name__ if unet is not None else "UNet",
+        "class": type(component).__name__ if component is not None else "UNet",
+        "transformer_class": str(value.get("transformer_class", "")),
         "parameters": parameters,
         "device": value.get("device"),
         "dtype": str(value.get("dtype", "")),
+        "storage_dtype": value.get("storage_dtype"),
+        "compute_dtype": value.get("compute_dtype"),
+        "accumulation": value.get("accumulation"),
+        "quantization": _jsonable(value.get("quantization")),
+        "memory": _jsonable(value.get("memory")),
+        "size_bytes": value.get("size_bytes"),
+        "memory_profile": value.get("memory_profile"),
+        "offload": bool(value.get("offload", False)),
+        "offload_mode": value.get("offload_mode"),
+        "channels_last": bool(value.get("channels_last", False)),
+        "attention": _jsonable(value.get("attention") or {}),
+        "compiled": bool(value.get("compiled", False)),
+        "compile_mode": value.get("compile_mode"),
+        "compile": _jsonable(value.get("compile") or {}),
+        "load_time_ms": value.get("load_time_ms"),
         "source": str(value.get("source", "local")),
         "model_type": value.get("model_type"),
         "path": value.get("path"),
@@ -1067,16 +1340,38 @@ def _diffusion_model_preview(value: Any) -> dict[str, Any]:
         "fingerprint": value.get("fingerprint"),
         "preset": value.get("preset"),
         "recommended": _jsonable(value.get("recommended") or {}),
+        "capabilities": _jsonable(value.get("capabilities") or {}),
+        "component_paths": _jsonable(value.get("component_paths") or {}),
+        "latent_space": str(value.get("latent_space", "")),
+        "latent_channels": value.get("latent_channels"),
+        "latent_packing": value.get("latent_packing"),
+        "vae_scale_factor": value.get("vae_scale_factor"),
+        "is_distilled": bool(value.get("is_distilled", False)),
     }
 
 
 def _clip_preview(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"kind": "clip", "arch": "", "encoders": 0}
+    encoders = value.get("encoders")
+    encoder_count = len(encoders) if isinstance(encoders, list) else (
+        2 if value.get("text_encoder_2") is not None else 1
+    )
+    classes = []
+    if isinstance(encoders, list):
+        classes = [
+            str(entry.get("class_name", ""))
+            for entry in encoders
+            if isinstance(entry, dict) and entry.get("class_name")
+        ]
     return {
         "kind": "clip",
         "arch": str(value.get("arch", "")),
-        "encoders": 2 if value.get("text_encoder_2") is not None else 1,
+        "encoders": encoder_count,
+        "encoder_classes": classes,
+        "max_sequence_length": value.get("max_sequence_length"),
+        "quantization": _jsonable(value.get("quantization")),
+        "path": value.get("path"),
         "device": value.get("device"),
         "dtype": str(value.get("dtype", "")),
     }
@@ -1088,10 +1383,22 @@ def _vae_preview(value: Any) -> dict[str, Any]:
     return {
         "kind": "vae",
         "arch": str(value.get("arch", "")),
+        "vae_class": str(value.get("vae_class", "")),
         "scaling_factor": _optional_number(value.get("scaling_factor")),
         "shift_factor": _optional_number(value.get("shift_factor")),
+        "latent_space": str(value.get("latent_space", "")),
+        "latent_channels": value.get("latent_channels"),
+        "vae_scale_factor": value.get("vae_scale_factor"),
+        "path": value.get("path"),
         "device": value.get("device"),
         "dtype": str(value.get("dtype", "")),
+        "storage_dtype": value.get("storage_dtype"),
+        "compute_dtype": value.get("compute_dtype"),
+        "memory_profile": value.get("memory_profile"),
+        "offload": bool(value.get("offload", False)),
+        "offload_mode": value.get("offload_mode"),
+        "channels_last": bool(value.get("channels_last", False)),
+        "load_time_ms": value.get("load_time_ms"),
     }
 
 
@@ -1106,6 +1413,9 @@ def _conditioning_preview(value: Any) -> dict[str, Any]:
         }
     tensor = value.get("cond")
     pooled = value.get("pooled")
+    encoders = value.get("encoders")
+    mask = value.get("attention_mask")
+    references = value.get("ref_latents")
     return {
         "kind": "conditioning",
         "arch": str(value.get("arch", "")),
@@ -1113,6 +1423,12 @@ def _conditioning_preview(value: Any) -> dict[str, Any]:
         "pooled_shape": (
             list(getattr(pooled, "shape", ())) if pooled is not None else None
         ),
+        "attention_mask_shape": (
+            list(getattr(mask, "shape", ())) if mask is not None else None
+        ),
+        "encoder_count": len(encoders) if isinstance(encoders, dict) else 0,
+        "ref_count": len(references) if isinstance(references, list) else 0,
+        "inpaint": isinstance(value.get("inpaint"), dict),
         "text": str(value.get("text", ""))[:200],
     }
 
@@ -1129,6 +1445,12 @@ def _latent_preview(value: Any) -> dict[str, Any]:
         "width": value.get("width"),
         "height": value.get("height"),
         "batch_size": value.get("batch_size"),
+        "arch": str(value.get("arch", "")),
+        "latent_space": str(value.get("latent_space", "")),
+        "latent_channels": value.get("latent_channels"),
+        "latent_packing": value.get("latent_packing"),
+        "scaling_factor": _optional_number(value.get("scaling_factor")),
+        "shift_factor": _optional_number(value.get("shift_factor")),
     }
 
 
@@ -1166,6 +1488,7 @@ def _sigmas_preview(value: Any) -> dict[str, Any]:
         "denoise": _optional_number(value.get("denoise")) or 1.0,
         "sigma_max": sigma_max,
         "sigma_min": sigma_min,
+        "arch": str(value.get("arch", "")),
     }
 
 
@@ -1201,6 +1524,10 @@ def _guider_preview(value: Any) -> dict[str, Any]:
     return {
         "kind": "guider",
         "cfg": value.get("cfg"),
+        "guidance": value.get("guidance"),
+        "guidance_mode": str(value.get("guidance_mode", "inherit")),
+        "start_percent": value.get("start_percent", 0.0),
+        "end_percent": value.get("end_percent", 1.0),
         "arch": str(model.get("arch", "")) if isinstance(model, dict) else "",
         "model": str(model.get("name", "")) if isinstance(model, dict) else "",
         "positive_text": str(positive.get("text", ""))[:200]
@@ -1486,6 +1813,8 @@ def _plan(nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]) -> dict[str, N
     for node in nodes:
         handles = wired.get(node.id, set())
         for socket in schemas[node.id].inputs:
+            if socket.optional:
+                continue
             if socket.name not in handles:
                 raise GraphValidationError(
                     f"Required input '{socket.name}' of node '{node.id}' is not connected"
@@ -1611,12 +1940,27 @@ def _resolve_output_file(value: Any) -> str:
         raise FileAccessError(str(exc)) from exc
 
 
-def _resolve_model_selection(model_type: str | None, value: Any) -> str:
+def _resolve_model_selection(
+    model_type: str | None,
+    value: Any,
+    select: str = "any",
+    required: bool = False,
+    include: Sequence[str] = (),
+) -> str:
     """Resolve an empty or repo-relative ``ModelSelector`` value."""
     if not isinstance(value, str) or not value.strip():
+        if required:
+            raise ModelAccessError("No local model selected; this widget requires one")
         return ""
     try:
-        return str(get_model_store().resolve(model_type or "", value))
+        return str(
+            get_model_store().resolve(
+                model_type or "",
+                value,
+                select=select,
+                include=include,
+            )
+        )
     except ModelError as exc:
         raise ModelAccessError(str(exc)) from exc
 
@@ -1762,10 +2106,17 @@ def _widget_fingerprints(
         value = resolved_values.get(widget.name, widget.default)
         if kind == "modelselector":
             if not isinstance(value, str) or not value.strip():
-                fingerprints[widget.name] = "builtin"
+                fingerprints[widget.name] = (
+                    "missing:required" if widget.model_required else "builtin"
+                )
                 continue
             try:
-                summary = get_model_store().describe(widget.model_type or "", value)
+                summary = get_model_store().describe(
+                    widget.model_type or "",
+                    value,
+                    select=widget.model_select,
+                    include=widget.model_include,
+                )
             except ModelError:
                 fingerprints[widget.name] = f"missing:{value}"
             else:
