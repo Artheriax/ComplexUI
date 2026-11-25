@@ -34,7 +34,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .accelerator import configured_accelerator, effective_accelerator
 from .artifacts import get_output_artifact_registry
@@ -78,6 +77,7 @@ from .logging_setup import (
 )
 from .models import InvalidModelPath, get_model_store
 from .network_security import (
+    HostGuardMiddleware,
     RequestSizeLimitMiddleware,
     configured_allowed_hosts,
     configured_cors_origins,
@@ -331,9 +331,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(
-    TrustedHostMiddleware,
+    HostGuardMiddleware,
     allowed_hosts=_ALLOWED_HOSTS,
-    www_redirect=False,
 )
 app.add_middleware(
     RequestSizeLimitMiddleware,
