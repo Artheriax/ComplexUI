@@ -13,6 +13,7 @@ import it.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 from dataclasses import dataclass
@@ -103,7 +104,7 @@ class _QuantSource:
 
 def _comfy() -> Any:
     try:
-        from comfy_kitchen import tensor as comfy_tensor
+        comfy_tensor = importlib.import_module("comfy_kitchen.tensor")
     except ImportError as exc:
         raise QuantizedLoadingError(
             "comfy-kitchen is required to load pre-quantized weights; "

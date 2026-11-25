@@ -28,13 +28,14 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - run: uv sync --frozen
       - name: Run tests with torch, vision, ONNX, xgboost, and lightgbm
+        # torch, torchvision, ultralytics, safetensors and onnxruntime already
+        # come from the dev group (index-pinned and mutually compatible in
+        # uv.lock). Re-requesting them via --with re-resolves them from PyPI
+        # without the project's CPU/CUDA index pinning, which can shadow the
+        # locked builds or conflict with their exact transitive pins. Only
+        # overlay the runtimes that are genuinely absent from the dev group.
         run: >-
           uv run
-          --with "torch>=2.0"
-          --with "torchvision>=0.17"
-          --with "ultralytics>=8.3"
-          --with "safetensors>=0.4"
-          --with "onnxruntime>=1.18"
           --with "xgboost>=2.0"
           --with "lightgbm>=4.0"
           pytest
