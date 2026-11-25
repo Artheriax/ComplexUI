@@ -16,15 +16,25 @@ __all__ = [
     "ENV_ALLOWED_HOSTS",
     "ENV_CORS_ORIGINS",
     "MAX_REQUEST_BYTES",
+    "HostGuardMiddleware",
     "RequestSizeLimitMiddleware",
     "configured_allowed_hosts",
     "configured_cors_origins",
+    "host_is_allowed",
     "origin_is_allowed",
 ]
 
 ENV_ALLOWED_HOSTS = "COMPLEXUI_ALLOWED_HOSTS"
 ENV_CORS_ORIGINS = "COMPLEXUI_CORS_ORIGINS"
-DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "[::1]", "testserver")
+# IPv6 loopback appears bracketed with a port in Host headers (``[::1]:8000``)
+# and unbracketed as a URL hostname, so both spellings are listed.
+DEFAULT_ALLOWED_HOSTS = (
+    "localhost",
+    "127.0.0.1",
+    "[::1]",
+    "::1",
+    "testserver",
+)
 DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
@@ -89,6 +99,29 @@ def _host_matches(host: str, pattern: str) -> bool:
     return candidate == _normalize_host(normalized_pattern)
 
 
+def host_is_allowed(host_header: str | None, allowed_hosts: Sequence[str]) -> bool:
+    """Validate a raw ``Host`` header value against the allowlist.
+
+    Unlike Starlette's ``TrustedHostMiddleware``, which splits on the first
+    colon and therefore mangles bracketed IPv6 hosts such as ``[::1]:8000``,
+    this strips the port from the end of the value (keeping the brackets) and
+    compares with :func:`_host_matches`. A missing Host header is rejected;
+    HTTP/1.1 clients must always send one.
+    """
+    if not host_header:
+        return False
+    value = host_header.strip()
+    if value.startswith("["):
+        # Bracketed IPv6 literal: the port follows the closing bracket.
+        closing = value.find("]")
+        hostname = value[: closing + 1] if closing != -1 else value
+    elif ":" in value:
+        hostname = value.split(":")[0]
+    else:
+        hostname = value
+    return any(_host_matches(hostname, pattern) for pattern in allowed_hosts)
+
+
 def origin_is_allowed(
     origin: str | None, allowed_hosts: Sequence[str]
 ) -> bool:
@@ -109,6 +142,32 @@ def origin_is_allowed(
     if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
         return False
     return any(_host_matches(parsed.hostname, pattern) for pattern in allowed_hosts)
+
+
+class HostGuardMiddleware:
+    """Reject requests whose ``Host`` header is not on the allowlist.
+
+    Drop-in replacement for Starlette's ``TrustedHostMiddleware`` that handles
+    bracketed IPv6 hosts (``[::1]:8000``) correctly and keeps the same
+    loopback-only default policy.
+    """
+
+    def __init__(self, app: ASGIApp, *, allowed_hosts: Sequence[str]) -> None:
+        self.app = app
+        self.allowed_hosts = list(allowed_hosts)
+        self.allow_any = "*" in self.allowed_hosts
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.allow_any or scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        host = Headers(scope=scope).get("host")
+        if host_is_allowed(host, self.allowed_hosts):
+            await self.app(scope, receive, send)
+            return
+        await PlainTextResponse("Invalid host header", status_code=400)(
+            scope, receive, send
+        )
 
 
 class RequestSizeLimitMiddleware:
